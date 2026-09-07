@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: nas-feedops
+    environment: demo
+
+scrape_configs:
+  - job_name: nas-sentinel
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["sentinel:9108"]
+        labels:
+          service: nas-feedops-sentinel
+          tracon: PCT
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
