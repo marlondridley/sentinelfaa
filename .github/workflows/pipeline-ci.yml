@@ -1,0 +1,90 @@
+name: Data Pipeline CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'instraclustr/**'
+      - '.github/workflows/pipeline-ci.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'instraclustr/**'
+      - '.github/workflows/pipeline-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-and-test:
+    name: Validate, Build & Integration Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Environment
+        working-directory: instraclustr
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env || cp .env .env.ci
+          fi
+
+      - name: Validate Connector Configurations & Syntax
+        working-directory: instraclustr
+        run: |
+          echo "Validating JSON configs..."
+          jq . elasticsearch-sink-connector.json > /dev/null
+          jq . cassandra-source-connector.json > /dev/null
+          jq . cassandra-sink-connector.json > /dev/null
+          jq . sink-config.json > /dev/null
+          echo "JSON syntax valid!"
+
+      - name: Build Kafka Connect Custom Image
+        working-directory: instraclustr
+        run: |
+          echo "Building Kafka Connect image..."
+          docker build -t kafka-connect-with-jars:latest -f Dockerfile.connect .
+
+      - name: Start Pipeline Services
+        working-directory: instraclustr
+        run: |
+          echo "Starting Docker Compose services..."
+          docker compose up -d
+          echo "Waiting for services to become healthy..."
+          timeout 120 bash -c 'until docker compose ps | grep -E "instraclustr-kafka-connect-1|kafka-connect" | grep -q "healthy\|Up"; do sleep 3; done'
+          sleep 15
+
+      - name: Verify Service Health & Endpoints
+        working-directory: instraclustr
+        run: |
+          echo "=== Service Status ==="
+          docker compose ps
+          
+          echo "Checking Kafka Connect..."
+          curl -s --retry 10 --retry-delay 5 --retry-connrefused http://localhost:8083/connector-plugins | jq .
+
+          echo "Checking Elasticsearch..."
+          curl -s --retry 10 --retry-delay 5 --retry-connrefused http://localhost:9200/_cluster/health | jq .
+
+      - name: Deploy Kafka Connectors
+        working-directory: instraclustr
+        run: |
+          echo "Deploying Elasticsearch sink connector..."
+          curl -s -X POST http://localhost:8083/connectors \
+            -H "Content-Type: application/json" \
+            --data-binary "@elasticsearch-sink-connector.json"
+          
+          sleep 5
+          echo "Connector status:"
+          curl -s http://localhost:8083/connectors/elasticsearch-sink-connector/status | jq .
+
+      - name: Run End-to-End Pipeline Integration Test
+        working-directory: instraclustr
+        run: |
+          bash test-pipeline.sh
+
+      - name: Teardown Services
+        if: always()
+        working-directory: instraclustr
+        run: |
+          docker compose down -v

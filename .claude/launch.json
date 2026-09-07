@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "azure-demo-hub",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["C:\\Users\\marlo\\Azure 102 AI Cloud Exam Labs\\document_intelligence_pdfs\\azure_demo_hub\\app.py"],
+      "port": 5000
+    },
+    {
+      "name": "county-tax-services",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["C:\\Users\\marlo\\Azure 102 AI Cloud Exam Labs\\document_intelligence_pdfs\\county_tax_services\\app.py"],
+      "port": 8060
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "cassandra-source-connector",
+  "config": {
+    "connector.class": "com.datamountaineer.streamreactor.connect.cassandra.source.CassandraSourceConnector",
+    "tasks.max": "1",
+    "connect.cassandra.contact.points": "cassandra",
+    "connect.cassandra.port": "9042",
+    "connect.cassandra.key.space": "kafka_data",
+    "connect.cassandra.source.mode": "bulk",
+    "connect.cassandra.source.poll.interval": "1000",
+    "connect.cassandra.import.mode": "timestamp",
+    "connect.cassandra.kcql": "INSERT INTO pipeline-events SELECT * FROM kafka_data.events PK timestamp",
+    "topics": "pipeline-events"
+  }
+}

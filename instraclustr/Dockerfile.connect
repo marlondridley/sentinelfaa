@@ -1,0 +1,23 @@
+FROM confluentinc/cp-kafka-connect:7.5.0
+
+# Switch to root to fix directory and file permission errors during unpacking
+USER root
+
+# Install Elasticsearch and Cassandra connectors via confluent-hub
+RUN confluent-hub install --no-prompt confluentinc/kafka-connect-elasticsearch:15.1.3 && \
+    confluent-hub install --no-prompt confluentinc/kafka-connect-cassandra:2.0.19
+
+COPY jars/ /kafka/connect-jars/
+
+# Extract tar.gz files without preserving archive ownership, overwrite pre-existing files, and hand ownership to appuser
+RUN cd /kafka/connect-jars && \
+    for file in *.tar.gz; do \
+        if [ -f "$file" ]; then \
+            tar --no-same-owner --overwrite -xzf "$file"; \
+        fi; \
+    done && \
+    chown -R appuser:appuser /kafka/connect-jars && \
+    chown -R appuser:appuser /usr/share/confluent-hub-components
+
+# Switch back to default non-root user for security
+USER appuser

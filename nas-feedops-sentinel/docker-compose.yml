@@ -1,0 +1,102 @@
+# NAS FeedOps Sentinel — full observability stack
+# Brings up the agent + LiteLLM Proxy + Prometheus + Grafana
+
+services:
+  sentinel:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nas-feedops-sentinel:latest
+    container_name: nas-sentinel
+    restart: unless-stopped
+    command: ["python", "-m", "src.main", "--mode", "replay"]
+    environment:
+      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
+      - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-sk-1234}
+      - LITELLM_PROXY_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+      - LITELLM_API_KEY=${LLM_API_KEY:-sk-1234}
+      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
+      - POSTGRES_PORT=6432
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sentinel_password}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATA_DIR=${DATA_DIR:-/app/data}
+      - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
+    ports:
+      - "9108:9108"   # Prometheus /metrics
+    volumes:
+      - sentinel-data:/app/data
+      - ./data:/app/data
+        
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nas-feedops-sentinel:latest
+    container_name: nas-dashboard
+    restart: unless-stopped
+    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
+    environment:
+      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
+      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
+      - POSTGRES_PORT=6432
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sentinel_password}
+      - DATABASE_URL=${DATABASE_URL}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+    ports:
+      - "8501:8501"
+    volumes:
+      - sentinel-data:/app/data
+      - ./data:/app/data
+    depends_on:
+      - sentinel
+      
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nas-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - sentinel
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nas-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER is required}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  sentinel-data:
+  prometheus-data:
+  grafana-data:
+  
+networks:
+  default:
+    name: nas-network
+    external: true

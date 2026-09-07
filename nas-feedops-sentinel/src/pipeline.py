@@ -1,0 +1,117 @@
+"""Shared ingest → validate → alert → critic pipeline (CLI + Temporal)."""
+from __future__ import annotations
+
+from src.alert_engine import check_alerts
+from src.config import settings
+from src.critic_agent import CriticAgent
+from src.execution_gate import stage_critical_alert
+from src.feed_health import compute_feed_health
+from src.logging_config import bind_correlation_id, get_logger
+from src.metrics import ALERTS_TRIGGERED, EVENTS_INGESTED, EVENTS_VALIDATED, set_airport_status
+from src.models import NASEvent
+from src.storage import save_alerts, save_critic_result, save_events
+from src.validators import validate_event
+
+_log = get_logger(__name__)
+
+
+async def run_pipeline(
+    events: list[NASEvent],
+    label: str = "PIPELINE",
+    correlation_id: str | None = None,
+) -> dict:
+    """Validate, persist, alert, and summarise a batch of NASEvents."""
+    cid = bind_correlation_id(correlation_id)
+    _log.info(
+        "pipeline_start",
+        extra={"label": label, "event_count": len(events), "correlation_id": cid},
+    )
+
+    for event in events:
+        result = validate_event(event)
+        event.validation_status = "PASSED" if result.passed else "FAILED"
+        event.validation_errors = result.errors
+        EVENTS_INGESTED.labels(
+            source=label.lower(),
+            airport=event.airport_code or "unknown",
+            service=event.service_name or "unknown",
+        ).inc()
+        EVENTS_VALIDATED.labels(status=event.validation_status).inc()
+
+    await save_events(events)
+
+    alerts = check_alerts(events)
+    await save_alerts(alerts)
+
+    for a in alerts:
+        ALERTS_TRIGGERED.labels(
+            alert_type=a.alert_type,
+            severity=a.severity,
+            airport=a.airport_code or "unknown",
+        ).inc()
+
+    critic = CriticAgent()
+    critical_alerts = [a for a in alerts if a.severity == "CRITICAL"]
+    critic_results = {}
+    if critical_alerts:
+        to_evaluate = critical_alerts[: settings.MAX_CRITIC_PER_PASS]
+        skipped = len(critical_alerts) - len(to_evaluate)
+        suffix = f" (skipped {skipped})" if skipped > 0 else ""
+        print(f"  [CRITIC] Evaluating {len(to_evaluate)} CRITICAL alert(s){suffix} ...")
+        for alert in to_evaluate:
+            result = await critic.critique(alert)
+            await save_critic_result(result)
+            critic_results[alert.alert_id] = result
+
+    staged_count = 0
+    for alert in critical_alerts:
+        critic_for_alert = critic_results.get(alert.alert_id)
+        action = stage_critical_alert(alert, critic_for_alert)
+        if action is not None:
+            staged_count += 1
+    if staged_count:
+        print(f"  [HITL] Staged {staged_count} CRITICAL action(s) for human review.")
+
+    health = compute_feed_health(events)
+    for airport, status in health["airport_status"].items():
+        set_airport_status(airport, status)
+
+    passed = sum(1 for e in events if e.validation_status == "PASSED")
+    failed = len(events) - passed
+
+    sep = "-" * 50
+    print()
+    print(f"[{label}] {sep}")
+    print(f"  Events processed : {len(events)}")
+    print(f"  Validation passed: {passed}")
+    print(f"  Validation failed: {failed}")
+    print(f"  Alerts triggered : {len(alerts)}")
+    print(f"  Airport status   : {health['airport_status']}")
+    print(f"  SMES counts      : {health['smes_counts']}")
+
+    if alerts:
+        print(f"\n  Top alerts (showing up to 10 of {len(alerts)}):")
+        for alert in alerts[:10]:
+            print(f"    [{alert.severity:8s}] {alert.alert_type}: {alert.description}")
+            cr = critic_results.get(alert.alert_id)
+            if cr:
+                conf_str = f"{cr.confidence:.2f}" if cr.confidence is not None else "N/A"
+                escalate_flag = " [ESCALATE]" if cr.escalate else ""
+                print(f"             Critic: conf={conf_str} pattern={cr.pattern}{escalate_flag}")
+                print(f"             {cr.reasoning}")
+        if len(alerts) > 10:
+            print(f"    ... and {len(alerts) - 10} more. Run the dashboard for full list.")
+
+    print()
+    print("  Dashboard: streamlit run dashboard/app.py")
+    print(f"[{label}] Done. {sep}")
+
+    return {
+        "correlation_id": cid,
+        "event_count": len(events),
+        "passed": passed,
+        "failed": failed,
+        "alert_count": len(alerts),
+        "staged_count": staged_count,
+        "airport_status": health["airport_status"],
+    }

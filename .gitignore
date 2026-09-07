@@ -1,0 +1,64 @@
+# ── Python runtime ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.jar
+# ── Virtual environment ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Credentials and secrets -- NEVER commit these ────────────────────────────
+.env
+*.properties
+config/*local*
+config/*secret*
+
+# ── FAA SWIM / SCDS Jumpstart Kit output ─────────────────────────────────────
+# Raw STDDS messages from the Jumpstart consumer are operational data.
+# They may contain sensitive NAS traffic information.
+data/raw/swim_live/*
+!data/raw/swim_live/.gitkeep
+instraclustr/temporal_binary/temporal.exe
+instraclustr/jars/kafka-connect-elastic6-1.2.3-2.1.0-all.tar.gz
+instraclustr/cassandra-kafka-elasticsearch-open-source/plugins/*
+# ── Processed and failed ingest files ────────────────────────────────────────
+data/processed/*
+!data/processed/.gitkeep
+data/failed/*
+!data/failed/.gitkeep
+
+# ── SQLite database ───────────────────────────────────────────────────────────
+data/feedops.db
+data/*.db
+
+# ── Replay files (generated; not source) ─────────────────────────────────────
+# Comment this out if you want to commit specific replay fixtures.
+data/raw/sample_*.json
+
+# ── IDE and OS files ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Pytest / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── Streamlit cache ───────────────────────────────────────────────────────────
+.streamlit/
+datarawswim_live/
+jumpstart-latest/
+*.zip

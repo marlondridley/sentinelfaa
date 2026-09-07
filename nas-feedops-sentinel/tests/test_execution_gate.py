@@ -1,0 +1,277 @@
+"""
+Tests for the Human-in-the-Loop execution gate.
+
+Verifies the behavior contracts the README claims:
+  - CRITICAL alerts create a staged PENDING action.
+  - Non-CRITICAL alerts do NOT stage.
+  - Duplicate CRITICAL alerts are idempotent (one action, not many).
+  - approve / reject transition only from PENDING.
+  - Terminal states are sticky — re-approving an APPROVED action is a no-op.
+  - Every state transition writes an immutable audit row.
+"""
+from __future__ import annotations
+
+import pytest
+
+from src import storage
+from src.execution_gate import (
+    _idempotency_key,
+    approve_staged_action,
+    get_action_audit_log,
+    get_pending_staged_actions,
+    get_recent_staged_actions,
+    reject_staged_action,
+    stage_critical_alert,
+)
+from src.models import AlertEvent, CriticResult
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def isolated_db():
+    storage.override_db_path(":memory:")
+    yield
+    storage.reset_db()
+
+
+def _critical_alert(**kwargs) -> AlertEvent:
+    base = dict(
+        alert_type="ALERT_LOW_RVR",
+        severity="CRITICAL",
+        airport_code="KDCA",
+        service_name="APDS_RVR",
+        description="Low RVR 700 ft at touchdown on runway 19 at KDCA.",
+        event_id="evt-001",
+    )
+    base.update(kwargs)
+    return AlertEvent(**base)
+
+
+def _warning_alert(**kwargs) -> AlertEvent:
+    base = dict(
+        alert_type="ALERT_HIGH_LATENCY",
+        severity="WARNING",
+        airport_code="KIAD",
+        service_name="ISMC",
+        description="Latency 45 s on ISMC at KIAD.",
+    )
+    base.update(kwargs)
+    return AlertEvent(**base)
+
+
+def _critic(**kwargs) -> CriticResult:
+    base = dict(
+        alert_id="placeholder",
+        confidence=0.88,
+        reasoning="ISMC degraded concurrent with RVR drop; classic weather-correlated pattern.",
+        pattern="WEATHER_CORRELATED",
+        escalate=True,
+    )
+    base.update(kwargs)
+    return CriticResult(**base)
+
+
+# ── Staging behavior ──────────────────────────────────────────────────────────
+
+class TestStaging:
+    def test_critical_alert_creates_staged_action(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+
+        assert action is not None
+        assert action.status == "PENDING"
+        assert action.alert_id == alert.alert_id
+        assert action.airport_code == "KDCA"
+        assert action.severity == "CRITICAL"
+        assert action.recommended_action  # non-empty
+        assert action.rationale            # non-empty
+        assert action.idempotency_key      # non-empty
+
+    def test_non_critical_alert_does_not_stage(self):
+        warn = _warning_alert()
+        action = stage_critical_alert(warn)
+        assert action is None
+        assert get_pending_staged_actions() == []
+
+    def test_staged_action_starts_pending(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        assert action.status == "PENDING"
+        assert action.decided_at is None
+        assert action.decided_by is None
+
+    def test_duplicate_critical_alert_does_not_create_duplicate(self):
+        alert = _critical_alert()
+        first  = stage_critical_alert(alert)
+        second = stage_critical_alert(alert)  # same alert object → same idempotency_key
+
+        assert first.action_id == second.action_id, \
+            "Re-staging the same alert must return the existing action, not a new one"
+        assert len(get_pending_staged_actions()) == 1
+
+    def test_different_critical_alerts_create_different_actions(self):
+        a1 = _critical_alert(alert_type="ALERT_LOW_RVR")
+        a2 = _critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED", service_name="ISMC")
+        s1 = stage_critical_alert(a1)
+        s2 = stage_critical_alert(a2)
+        assert s1.action_id != s2.action_id
+        assert len(get_pending_staged_actions()) == 2
+
+    def test_critic_result_enriches_rationale_and_confidence(self):
+        alert = _critical_alert()
+        critic = _critic(alert_id=alert.alert_id, confidence=0.92)
+        action = stage_critical_alert(alert, critic)
+
+        assert action.critic_confidence == 0.92
+        assert action.critic_pattern == "WEATHER_CORRELATED"
+        # Rationale should come from the critic's reasoning
+        assert "weather-correlated" in action.rationale.lower()
+        # Recommended action should reference the critic confidence
+        assert "0.92" in action.recommended_action or "92%" in action.recommended_action
+
+    def test_no_critic_uses_deterministic_rationale(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert, critic_result=None)
+
+        assert action.critic_confidence is None
+        assert action.critic_pattern is None
+        # Deterministic rationale references the alert type
+        assert action.alert_type in action.rationale
+
+
+# ── Decision workflow (approve / reject) ─────────────────────────────────────
+
+class TestDecisionWorkflow:
+    def test_approve_transitions_pending_to_approved(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        updated = approve_staged_action(action.action_id, actor="supervisor_smith", note="verified")
+
+        assert updated is not None
+        assert updated.status == "APPROVED"
+        assert updated.decided_by == "supervisor_smith"
+        assert updated.decision_note == "verified"
+        assert updated.decided_at is not None
+
+    def test_reject_transitions_pending_to_rejected(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        updated = reject_staged_action(action.action_id, actor="supervisor_smith", note="false alarm")
+
+        assert updated is not None
+        assert updated.status == "REJECTED"
+        assert updated.decided_by == "supervisor_smith"
+        assert updated.decision_note == "false alarm"
+
+    def test_approve_writes_audit_row(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        before_count = len(get_action_audit_log(action_id=action.action_id))
+        approve_staged_action(action.action_id, actor="supervisor_smith", note="ok")
+
+        audit = get_action_audit_log(action_id=action.action_id)
+        assert len(audit) == before_count + 1
+        latest = audit[0]
+        assert latest["previous_status"] == "PENDING"
+        assert latest["new_status"] == "APPROVED"
+        assert latest["actor"] == "supervisor_smith"
+        assert latest["note"] == "ok"
+
+    def test_reject_writes_audit_row(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        reject_staged_action(action.action_id, actor="supervisor_smith", note="not real")
+
+        audit = get_action_audit_log(action_id=action.action_id)
+        latest = audit[0]
+        assert latest["previous_status"] == "PENDING"
+        assert latest["new_status"] == "REJECTED"
+        assert latest["actor"] == "supervisor_smith"
+
+    def test_duplicate_approval_is_idempotent(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        first = approve_staged_action(action.action_id, actor="a", note="first")
+        second = approve_staged_action(action.action_id, actor="b", note="second-attempt")
+
+        # State must not change on re-approval
+        assert second.status == "APPROVED"
+        assert second.decided_by == "a", \
+            "Terminal state must be sticky; second approval must not overwrite the first"
+        assert second.decision_note == "first"
+
+        # No second audit row for the duplicate
+        audit = get_action_audit_log(action_id=action.action_id)
+        # 1 from staging + 1 from first approval = 2; the duplicate must not add a third
+        assert len(audit) == 2
+
+    def test_rejected_action_cannot_later_be_approved(self):
+        alert = _critical_alert()
+        action = stage_critical_alert(alert)
+        reject_staged_action(action.action_id, actor="supervisor", note="ignore")
+        attempted = approve_staged_action(action.action_id, actor="supervisor2", note="overrule?")
+
+        # Terminal — must remain REJECTED.
+        assert attempted.status == "REJECTED"
+        assert attempted.decided_by == "supervisor"
+
+    def test_approving_unknown_action_returns_none(self):
+        result = approve_staged_action("nonexistent-id-12345", actor="x", note="")
+        assert result is None
+
+
+# ── Query semantics ───────────────────────────────────────────────────────────
+
+class TestQuerySemantics:
+    def test_pending_query_returns_only_pending(self):
+        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+                                                 service_name="ISMC"))
+        a3 = stage_critical_alert(_critical_alert(alert_type="ALERT_FEED_DISCONNECTED",
+                                                 service_name="SMES"))
+
+        approve_staged_action(a1.action_id, actor="x", note="")
+        reject_staged_action(a2.action_id, actor="x", note="")
+        # a3 stays PENDING
+
+        pending = get_pending_staged_actions()
+        assert len(pending) == 1
+        assert pending[0].action_id == a3.action_id
+
+    def test_recent_query_returns_all_statuses(self):
+        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+                                                 service_name="ISMC"))
+        approve_staged_action(a1.action_id, actor="x", note="")
+
+        recent = get_recent_staged_actions(limit=10)
+        statuses = {r.status for r in recent}
+        assert "APPROVED" in statuses
+        assert "PENDING" in statuses
+        assert len(recent) == 2
+
+    def test_audit_log_global_query_returns_all_entries(self):
+        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+                                                 service_name="ISMC"))
+        approve_staged_action(a1.action_id, actor="x", note="")
+        reject_staged_action(a2.action_id, actor="x", note="")
+
+        global_audit = get_action_audit_log(action_id=None, limit=50)
+        # 2 stagings (action) + 2 ticket DRAFT rows + 1 approve + 1 reject = 6
+        # (Each staging also creates an OperationalTicket whose initial draft
+        # transition is recorded in the shared action_audit_log table.)
+        assert len(global_audit) == 6
+
+
+# ── Idempotency key behavior ──────────────────────────────────────────────────
+
+class TestIdempotencyKey:
+    def test_same_alert_yields_same_key(self):
+        a = _critical_alert()
+        assert _idempotency_key(a) == _idempotency_key(a)
+
+    def test_different_alerts_yield_different_keys(self):
+        a1 = _critical_alert(alert_type="ALERT_LOW_RVR")
+        a2 = _critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED")
+        assert _idempotency_key(a1) != _idempotency_key(a2)

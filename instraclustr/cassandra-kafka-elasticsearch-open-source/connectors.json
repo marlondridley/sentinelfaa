@@ -1,0 +1,48 @@
+[
+  {
+    "name": "cassandra-source-events",
+    "config": {
+      "connector.class": "com.datamountaineer.streamreactor.connect.cassandra.source.CassandraSourceConnector",
+      "tasks.max": "1",
+      "connect.cassandra.contact.points": "cassandra",
+      "connect.cassandra.port": "9042",
+      "connect.cassandra.key.space": "nas_feedops",
+      "connect.cassandra.kcql": "INSERT INTO demo-events-by-marlon SELECT id, event_time, payload FROM events PK event_time INCREMENTALMODE=TIMESTAMP"
+    }
+  },
+	{
+	  "name": "elasticsearch-sink-events",
+	  "config": {
+		"connector.class": "com.datamountaineer.streamreactor.connect.elastic6.ElasticSinkConnector",
+		"tasks.max": "1",
+		"topics": "demo-events-by-marlon",
+		"connect.elastic.url": "elasticsearch:9200",
+		"connect.elastic.use.http": "http",
+		"connect.elastic.kcql": "INSERT INTO demo-events-by-marlon SELECT * FROM demo-events-by-marlon",
+		"connect.progress.enabled": "true"
+	  }
+	},
+  {
+    "name": "jms-source-connector",
+    "config": {
+      "connector.class": "io.confluent.connect.jms.JmsSourceConnector",
+      "tasks.max": "2",
+
+      "java.naming.factory.initial": "com.solacesystems.jndi.SolJNDIInitialContextFactory",
+      "java.naming.provider.url": "smfs://ems1.swim.faa.gov:55443",
+      "java.naming.security.principal": "your_jms_username",
+      "java.naming.security.credentials": "your_jms_password",
+
+      "jms.destination.type": "queue",
+      "jms.destination.name": "FAA_SWIM_INGEST_QUEUE",
+      "kafka.topic": "faa.swim.raw-telemetry",
+
+      "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+      "value.converter.schemas.enable": "false",
+      "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+
+      "confluent.topic.bootstrap.servers": "kafka:9092",
+      "confluent.topic.replication.factor": "1"
+    }
+  }
+]
