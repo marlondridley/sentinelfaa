@@ -5,7 +5,7 @@ No API key required — Anthropic client is mocked throughout.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -131,7 +131,7 @@ def test_build_status_context_empty_db():
 
 
 def test_build_status_context_with_events():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     storage.save_event(NASEvent(
         airport_code="KDCA", tracon="PCT", service_name="ISMC",
         message_type="link_status", event_time_utc=now, received_time_utc=now,
@@ -147,7 +147,7 @@ def test_build_status_context_with_events():
 
 
 def test_build_alert_context_delegates_to_router():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for _ in range(4):
         storage.save_event(NASEvent(
             airport_code="KIAD", tracon="PCT", service_name="APDS_RVR",

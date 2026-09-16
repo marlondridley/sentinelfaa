@@ -44,7 +44,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$LogPath = "C:\Users\marlo\source\peratonfaa\jumpstart-latest\log",
+    [string]$LogPath = "C:\Users\marlo\source\sentinelfaa\jumpstart-latest\log",
     [int]$MaxAgeMinutes = 5,
     [switch]$Watch,
     [int]$IntervalSeconds = 60

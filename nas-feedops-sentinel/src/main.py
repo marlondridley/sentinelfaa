@@ -3,6 +3,7 @@ NAS FeedOps Sentinel -- CLI entry point.
 """
 from __future__ import annotations
 
+import os
 import argparse
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from crewai import Crew, Task
 
 from src import config
+from src.async_bridge import run_async
 from src.agent_evaluator import AgentEvaluator, print_eval_report
 from src.alert_engine import check_alerts
 from src.critic_agent import get_critic_agent
@@ -56,10 +58,10 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
         ).inc()
         EVENTS_VALIDATED.labels(status=event.validation_status).inc()
 
-    save_events(events)
+    run_async(save_events(events))
 
     alerts = check_alerts(events)
-    save_alerts(alerts)
+    run_async(save_alerts(alerts))
 
     for a in alerts:
         ALERTS_TRIGGERED.labels(
@@ -87,17 +89,17 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
                 agent=critic_agent,
                 output_pydantic=CriticResult
             )
-            crew = Crew(agents=[critic_agent], tasks=[task], verbose=False)
+            crew = Crew(agents=[critic_agent], tasks=[task], verbose=False, memory=False)
             crew_output = crew.kickoff()
             result = crew_output.pydantic
             
-            save_critic_result(result)
+            run_async(save_critic_result(result))
             critic_results[alert.alert_id] = result
 
     staged_count = 0
     for alert in critical_alerts:
         critic_for_alert = critic_results.get(alert.alert_id)
-        action = stage_critical_alert(alert, critic_for_alert)
+        action = run_async(stage_critical_alert(alert, critic_for_alert))
         if action is not None:
             staged_count += 1
     if staged_count:
@@ -127,11 +129,11 @@ def run_demo() -> None:
         agent=planner_agent,
         output_pydantic=PlannerResult
     )
-    crew = Crew(agents=[planner_agent], tasks=[task], verbose=False)
+    crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False)
     crew_output = crew.kickoff()
     result = crew_output.pydantic
     
-    save_planner_result(result)
+    run_async(save_planner_result(result))
     print(f"  Confidence : {result.confidence:.0%}" if result.confidence else "N/A")
     print(f"  Answer     : {result.answer}")
 

@@ -66,7 +66,7 @@ async def run_pipeline(
     staged_count = 0
     for alert in critical_alerts:
         critic_for_alert = critic_results.get(alert.alert_id)
-        action = stage_critical_alert(alert, critic_for_alert)
+        action = await stage_critical_alert(alert, critic_for_alert)
         if action is not None:
             staged_count += 1
     if staged_count:

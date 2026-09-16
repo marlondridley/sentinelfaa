@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
-import psycopg
 from src.config import settings
 
 from src.models import (
@@ -33,13 +32,6 @@ async def create_asyncpg_pool() -> asyncpg.Pool:
         statement_cache_size=0,  # Critical for PgBouncer compatibility
         min_size=5,
         max_size=20,
-    )
-
-async def create_psycopg_connection() -> psycopg.AsyncConnection:
-    """Create a psycopg3 connection with disabled statement preparation."""
-    return await psycopg.AsyncConnection.connect(
-        conninfo=settings.DATABASE_URL,
-        prepare_threshold=None,  # Prevents prepared statement conflicts
     )
 
 
@@ -205,6 +197,17 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
                 decision_note           TEXT,
                 idempotency_key         TEXT UNIQUE
             );
+
+            -- ── Performance Indexes ─────────────────────────────────────────
+            CREATE INDEX IF NOT EXISTS idx_nas_events_airport_time ON nas_events (airport_code, received_time_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_nas_events_service_time ON nas_events (service_name, received_time_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_nas_events_aircraft_time ON nas_events (aircraft_id, received_time_utc DESC) WHERE aircraft_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_alert_events_airport_time ON alert_events (airport_code, triggered_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_staged_actions_status ON staged_actions (status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_staged_actions_alert_id ON staged_actions (alert_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_action_id ON operational_tickets (action_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_status ON operational_tickets (status, generated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_action_audit_action_id ON action_audit_log (action_id, created_at DESC);
         """)
 
 
@@ -302,14 +305,35 @@ async def save_alerts(alerts: list[AlertEvent]) -> None:
 # ── Read operations ───────────────────────────────────────────────────────────
 
 async def get_recent_events(limit: int = 500) -> list[dict]:
+    # NOTE: column list mirrors the full nas_events schema (see _init_schema) so the
+    # query is an explicit contract rather than SELECT *. If dashboard/metrics callers
+    # are confirmed not to need validation_errors (JSONB) or raw_message_path, drop them
+    # here to cut bytes-over-wire on this hot path.
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM nas_events ORDER BY received_time_utc DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT event_id, airport_code, tracon, service_name, message_type,
+                  event_time_utc, received_time_utc, latency_ms, runway,
+                  rvr_touchdown, rvr_midpoint, rvr_rollout, track_id,
+                  aircraft_id, vehicle_id, surface_event_type,
+                  lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
+                  flight_phase, flight_rules, beacon_code,
+                  feed_status, validation_status, validation_errors, raw_message_path
+           FROM nas_events ORDER BY received_time_utc DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
 async def get_recent_alerts(limit: int = 200) -> list[dict]:
+    # NOTE: column list mirrors the full alert_events schema; no JSON blobs on this table,
+    # so this is purely about making the read an explicit contract rather than SELECT *.
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT alert_id, alert_type, severity, airport_code, service_name,
+                  description, triggered_at, event_id
+           FROM alert_events ORDER BY triggered_at DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
@@ -418,8 +442,14 @@ async def get_alerts_for_critic(
 
 
 async def get_recent_critic_results(limit: int = 50) -> list[dict]:
+    # NOTE: column list mirrors the full critic_results schema, including the citations
+    # JSONB blob (dropping it here requires confirming the dashboard doesn't render it).
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM critic_results ORDER BY evaluated_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at
+           FROM critic_results ORDER BY evaluated_at DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
@@ -636,15 +666,28 @@ async def _write_audit(action_id: str, previous_status: str, new_status: str,
     )
 
 
+_STAGED_ACTION_COLUMNS = """
+    action_id, alert_id, event_id, airport_code, service_name, severity, alert_type,
+    recommended_action, rationale, critic_confidence, critic_pattern, status,
+    idempotency_key, created_at, decided_at, decided_by, decision_note
+"""  # every column _row_to_staged_action() reads; kept as one constant so the two
+# queries below and the mapper stay in sync as an explicit contract instead of SELECT *.
+
+
 async def get_pending_staged_actions() -> list[StagedAction]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC")
+    rows = await pool.fetch(
+        f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC"
+    )
     return [_row_to_staged_action(r) for r in rows]
 
 
 async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM staged_actions ORDER BY created_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions ORDER BY created_at DESC LIMIT $1",
+        limit,
+    )
     return [_row_to_staged_action(r) for r in rows]
 
 
@@ -910,12 +953,6 @@ async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTic
 async def get_draft_operational_tickets() -> list[OperationalTicket]:
     pool = await get_db_pool()
     rows = await pool.fetch("SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC")
-    return [_row_to_ticket(r) for r in rows]
-
-
-async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTicket]:
-    pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM operational_tickets ORDER BY generated_at DESC LIMIT $1", limit)
     return [_row_to_ticket(r) for r in rows]
 
 

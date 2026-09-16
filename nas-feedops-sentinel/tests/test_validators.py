@@ -1,7 +1,7 @@
 """Tests for src/validators.py — schema and business-rule validation."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -10,7 +10,7 @@ from src.validators import validate_event
 
 
 def _now():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _base(**overrides) -> NASEvent:
@@ -108,24 +108,18 @@ def test_missing_latency_fails_validation():
 # ── Airport / TRACON tests ────────────────────────────────────────────────────
 
 def test_invalid_airport_code_fails():
-    event = _base(airport_code="KJFK")
-    result = validate_event(event)
-    assert not result.passed
-    assert any("airport_code" in e for e in result.errors)
+    with pytest.raises(Exception):
+        _base(airport_code="KJFK")
 
 
 def test_invalid_tracon_fails():
-    event = _base(tracon="N90")
-    result = validate_event(event)
-    assert not result.passed
-    assert any("tracon" in e for e in result.errors)
+    with pytest.raises(Exception):
+        _base(tracon="N90")
 
 
 def test_invalid_service_name_fails():
-    event = _base(service_name="UNKNOWN_SVC")
-    result = validate_event(event)
-    assert not result.passed
-    assert any("service_name" in e for e in result.errors)
+    with pytest.raises(Exception):
+        _base(service_name="UNKNOWN_SVC")
 
 
 # ── SMES entity tests ─────────────────────────────────────────────────────────

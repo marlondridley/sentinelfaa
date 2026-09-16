@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.replay import (
@@ -25,7 +25,7 @@ def _write_json(path: Path, data) -> None:
 # ── load_raw_messages ─────────────────────────────────────────────────────────
 
 def test_replay_loads_single_object_file(tmp_path):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     msg = {
         "airport_code": "KDCA",
         "tracon": "PCT",
@@ -43,7 +43,7 @@ def test_replay_loads_single_object_file(tmp_path):
 
 
 def test_replay_loads_list_file(tmp_path):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     msgs = [
         {
             "airport_code": "KIAD",
@@ -79,7 +79,7 @@ def test_replay_skips_invalid_json(tmp_path):
 
 
 def test_replay_aggregates_multiple_files(tmp_path):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     base = dict(
         airport_code="KDCA", tracon="PCT", service_name="SMES",
         message_type="SURFACE_MOVEMENT",
@@ -95,7 +95,7 @@ def test_replay_aggregates_multiple_files(tmp_path):
 # ── parse_raw_message ─────────────────────────────────────────────────────────
 
 def test_parse_valid_message():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     raw = {
         "airport_code": "KIAD",
         "tracon": "PCT",
@@ -122,7 +122,7 @@ def test_parse_invalid_message_returns_error():
 
 
 def test_parse_recalculates_latency():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     raw = {
         "airport_code": "KDCA",
         "tracon": "PCT",
@@ -143,7 +143,7 @@ def test_parse_recalculates_latency():
 # ── replay_from_directory ─────────────────────────────────────────────────────
 
 def test_replay_from_directory_returns_events(tmp_path):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     msgs = [{
         "airport_code": "KADW",
         "tracon": "PCT",
@@ -164,7 +164,7 @@ def test_replay_from_directory_returns_events(tmp_path):
 
 
 def test_replay_handles_mixed_valid_invalid(tmp_path):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     msgs = [
         {
             "airport_code": "KDCA",

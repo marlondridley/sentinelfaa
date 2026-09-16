@@ -25,7 +25,7 @@ COPY src/ ./src/
 COPY prompts/ ./prompts/
 COPY dashboard/ ./dashboard/
 
-# Writable volume for SQLite + ingest folders
+# Writable volume for ingest folders
 RUN mkdir -p /app/data/raw/swim_live /app/data/processed /app/data/failed \
     && chown -R sentinel:sentinel /app
 
