@@ -124,6 +124,17 @@ class Settings(BaseSettings):
 
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
 
+    # ── Security & API ───────────────────────────────────────────────────────
+    API_KEY: str | None = None
+    CORS_ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:8501",
+            "http://localhost:3000",
+            "http://127.0.0.1:8501",
+            "http://127.0.0.1:3000",
+        ]
+    )
+
     # ── Vault ────────────────────────────────────────────────────────────────[cite: 4]
     VAULT_ADDR: str = "http://localhost:8200"
     VAULT_TOKEN: str = ""

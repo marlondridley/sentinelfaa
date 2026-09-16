@@ -171,7 +171,7 @@ Human Review Queue surfaces the staged action + ticket
         ↓
 Operator: Approve Escalation  |  Continue Monitoring  |  Reject
         ↓
-SQLite persists the decision
+PostgreSQL persists the decision
         ↓
 Audit Trail records the human transition
 ```
@@ -217,7 +217,7 @@ The brief answers four questions in structured form:
 - **Recommended human review** — what the operator should look at next
 - **Evidence** — the underlying numbers and identifiers
 
-That brief becomes the body of the internal **Operational Ticket Package**, persisted in SQLite at `data/feedops.db`. The package carries:
+That brief becomes the body of the internal **Operational Ticket Package**, persisted in PostgreSQL in the `operational_tickets` table. The package carries:
 
 - The original alert and staged action
 - Watch Officer posture (GOOD / NORMAL / ATTENTION / ACTION / UNKNOWN)
@@ -259,7 +259,7 @@ src/critic_agent.py — LLM-based pattern + escalation reasoning (CRITICAL only)
         ▼
 src/execution_gate.py — stages action; calls Watch Officer; creates Operational Ticket
         ▼
-SQLite: data/feedops.db
+PostgreSQL (asyncpg / PgBouncer):
    • nas_events
    • alert_events
    • critic_results
@@ -269,8 +269,23 @@ SQLite: data/feedops.db
    • watch_officer_briefs    ← brief narratives
    • operational_tickets     ← internal escalation packages
         ▼
-Streamlit dashboard + Prometheus /metrics
-http://localhost:8501       http://localhost:9108/metrics
+Streamlit dashboard + FastAPI API + Prometheus /metrics
+http://localhost:8501   http://localhost:8000/docs   http://localhost:9108/metrics
+```
+
+---
+
+## FastAPI HTTP Service & OpenAPI Documentation
+
+Sentinel includes an asynchronous HTTP service (`src/api.py`) exposing ingestion workflows, health probes, authentication gates (`X-API-Key` or `Authorization: Bearer <key>`), and distributed tracing via `X-Correlation-ID`.
+
+- **Interactive Swagger UI**: <http://localhost:8000/docs>
+- **OpenAPI Schema (JSON)**: <http://localhost:8000/openapi.json>
+- **Committed OpenAPI Spec**: [`openapi.json`](openapi.json)
+
+To run the API server locally:
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
@@ -400,7 +415,7 @@ Coverage areas:
 - `tests/test_planner_agent.py` — Planner output schema and degradation
 - `tests/test_execution_gate.py` — staging idempotency, terminal-state stickiness, audit-row creation, query semantics
 - `tests/test_operational_tickets.py` — DRAFT → APPROVED / REJECTED / MONITORING transitions, idempotency, audit integration
-- `tests/test_watch_officer_agent.py` — UNKNOWN / NORMAL / ATTENTION / ACTION postures, schema validation, SQLite round-trip, deterministic fallback
+- `tests/test_watch_officer_agent.py` — UNKNOWN / NORMAL / ATTENTION / ACTION postures, schema validation, storage round-trip, deterministic fallback
 - `tests/test_news_agent.py` — banner severity priority and item caps
 - `tests/test_guardrails_gate_eval.py` — input/output guardrails and end-to-end gate evaluation against golden scenarios
 
@@ -435,7 +450,7 @@ The same code runs against either. Swapping providers is an `.env` change, not a
 ## Security and Data Handling
 
 - `.env` is gitignored. Never commit real credentials.
-- SQLite database lives at `data/feedops.db` and is local to the host running the dashboard.
+- PostgreSQL database is configured via `DATABASE_URL` with asyncpg connection pooling and PgBouncer transaction-mode support.
 - The Jumpstart Kit log folder, `data/processed/`, and `data/failed/` are all gitignored.
 - The HITL gate has no auto-execute path: no controller is paged, no ATC system is contacted, no real FAA operational command is issued.
 - LLM calls go only to the configured provider endpoint. There is no telemetry, no third-party analytics, no background data exfiltration.
@@ -496,20 +511,20 @@ I'd run these three processes:
 
 PowerShell 1 — Jumpstart
 
-cd C:\Users\marlo\source\peratonfaa\jumpstart-latest
+cd C:\Users\marlo\source\sentinelfaa\jumpstart-latest
 
 Keep your existing SWIM consumer running.
 
 PowerShell 2 — Sentinel
 
-cd C:\Users\marlo\source\peratonfaa\nas-feedops-sentinel
+cd C:\Users\marlo\source\sentinelfaa\nas-feedops-sentinel
 .\.venv\Scripts\Activate.ps1
 pip install requirements
 python -m src.main --mode swim-folder
 
 PowerShell 3 — Dashboard
 
-cd C:\Users\marlo\source\peratonfaa\nas-feedops-sentinel\dashboard
+cd C:\Users\marlo\source\sentinelfaa\nas-feedops-sentinel\dashboard
 .\.venv\Scripts\Activate.ps1
 python -m streamlit run app.py
 

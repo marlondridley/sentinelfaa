@@ -108,7 +108,8 @@ class SentinelFlow(Flow[SentinelState]):
                 crew = Crew(
                     agents=[critic_agent, planner_agent],
                     tasks=[task_evaluate, task_plan],
-                    process=Process.sequential
+                    process=Process.sequential,
+                    memory=False,
                 )
 
                 result = crew.kickoff()
@@ -147,9 +148,10 @@ class SentinelFlow(Flow[SentinelState]):
             span.set_attribute("sentinel.hitl_required", True)
             
             # Deterministic execution gate boundary (awaits async staging)
+            critic_res = self.state.analysis_result if isinstance(self.state.analysis_result, CriticResult) else None
             self.state.staged_action = await stage_critical_alert(
                 alert=self.state.alert,
-                critic_result=self.state.analysis_result
+                critic_result=critic_res,
             )
             
             STAGED_ACTIONS_TOTAL.labels(
@@ -158,20 +160,20 @@ class SentinelFlow(Flow[SentinelState]):
             ).inc()
             
             # Build advisory narrative downstream of staging lock
-            context = build_watch_officer_context(alert=self.state.alert)
+            context = await build_watch_officer_context(alert=self.state.alert)
             self.state.watch_brief = generate_watch_officer_brief(context, use_llm=True)
             
             FLOW_DURATION.labels(step_name="stage_action_gate").observe(time.time() - start_time)
 
     @listen("generate_advisory_brief")
-    def build_standard_brief(self):
+    async def build_standard_brief(self):
         """
         Step 3b: Standard Operational Briefing Path (Non-Critical).
         Generates routine advisory briefing without staging execution actions.
         """
         start_time = time.time()
         with tracer.start_as_current_span("build_standard_brief") as span:
-            context = build_watch_officer_context(alert=self.state.alert)
+            context = await build_watch_officer_context(alert=self.state.alert)
             self.state.watch_brief = generate_watch_officer_brief(context, use_llm=True)
             
             FLOW_DURATION.labels(step_name="build_standard_brief").observe(time.time() - start_time)

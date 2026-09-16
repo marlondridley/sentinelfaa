@@ -83,8 +83,15 @@ def _rebuild_events(rows: list[dict]) -> tuple[list[NASEvent], int]:
                 if isinstance(value, str):
                     data[field_name] = datetime.fromisoformat(value)
 
-            if isinstance(data.get("validation_errors"), str):
-                data["validation_errors"] = json.loads(data["validation_errors"])
+            val_errs = data.get("validation_errors")
+            if isinstance(val_errs, str):
+                try:
+                    parsed_errs = json.loads(val_errs)
+                    data["validation_errors"] = [str(x) for x in parsed_errs] if isinstance(parsed_errs, list) else []
+                except Exception:
+                    data["validation_errors"] = []
+            elif isinstance(val_errs, list):
+                data["validation_errors"] = [str(x) for x in val_errs]
 
             events.append(NASEvent(**data))
 
@@ -191,6 +198,7 @@ def _detect_signals(context: dict[str, Any]) -> dict[str, Any]:
         "pending_actions_exist": context.get("pending_actions_count", 0) > 0,
         "draft_tickets_exist": context.get("draft_tickets_count", 0) > 0,
         "critical_alerts_exist": context.get("critical_alert_count", 0) > 0,
+        "critic_escalation_exists": False,
         "no_active_aircraft": context.get("active_aircraft", 0) == 0,
         "no_recent_events": context.get("events_in_window", 0) == 0,
         "latency_severe": False,
@@ -213,9 +221,19 @@ def _detect_signals(context: dict[str, Any]) -> dict[str, Any]:
     )
     signals["multi_airport_degradation"] = len(degraded_set) >= 2
 
+    for cr in context.get("recent_critic_results", []):
+        if cr.get("escalate"):
+            signals["critic_escalation_exists"] = True
+            break
+
     latency = context.get("avg_latency_ms")
     if latency is not None and latency >= 300_000:
         signals["latency_severe"] = True
+
+    events_in_window = context.get("events_in_window", 0)
+    active_aircraft = context.get("active_aircraft", 0)
+    if events_in_window > 50 and active_aircraft == 0:
+        signals["position_event_mismatch"] = True
 
     return signals
 
@@ -228,6 +246,7 @@ def _derive_posture(signals: dict[str, Any], context: dict[str, Any]) -> str:
         or signals["missing_airports"]
         or signals["degraded_airports"]
         or signals["latency_severe"]
+        or signals["position_event_mismatch"]
     ):
         return "ATTENTION"
     if context.get("active_aircraft", 0) > 0 or context.get("events_in_window", 0) > 50:
@@ -261,6 +280,113 @@ def _affected_airports(signals: dict[str, Any], context: dict[str, Any]) -> list
     return sorted(airports)
 
 
+def _deterministic_brief(context: dict[str, Any], signals: dict[str, Any]) -> WatchOfficerBrief:
+    posture = _derive_posture(signals, context)
+    trust = _derive_trust(signals, context)
+    aps = _affected_airports(signals, context)
+
+    what_changed: list[str] = []
+    why_it_matters: list[str] = []
+    recommended: list[str] = []
+    evidence: list[str] = []
+
+    if signals.get("critical_alerts_exist"):
+        n = context.get("critical_alert_count", 0)
+        what_changed.append(f"{n} CRITICAL alert(s) active in the last window.")
+        why_it_matters.append("CRITICAL alerts indicate a safety- or feed-significant condition; deterministic rules already classified them as worthy of supervisor attention.")
+        recommended.append("Open the Human Review Queue and triage each pending escalation package.")
+
+    if signals.get("pending_actions_exist"):
+        what_changed.append(f"{context.get('pending_actions_count', 0)} action(s) staged PENDING human review.")
+        recommended.append("Decide Approve Escalation, Reject, or Continue Monitoring on each staged action.")
+
+    if signals.get("draft_tickets_exist"):
+        what_changed.append(f"{context.get('draft_tickets_count', 0)} escalation package(s) drafted but not yet decided.")
+        evidence.append("operational_tickets table has DRAFT rows linked to staged actions.")
+
+    for ap in signals.get("missing_airports", []):
+        what_changed.append(f"{ap} TAIS feed is UNAVAILABLE/DISCONNECTED.")
+        why_it_matters.append(f"Aircraft movement picture at {ap} cannot be trusted while the feed is missing.")
+        recommended.append(f"Verify {ap} feed status against SWIM service desk and STARS console.")
+
+    for ap in signals.get("stale_airports", []):
+        what_changed.append(f"{ap} TAIS feed is STALE (no recent messages in window).")
+        why_it_matters.append(f"Stale data at {ap} means the displayed picture may be out of date.")
+        recommended.append(f"Confirm {ap} Jumpstart Kit is still publishing and broker is reachable.")
+
+    for ap in signals.get("degraded_airports", []):
+        what_changed.append(f"{ap} TAIS feed is DEGRADED.")
+        recommended.append(f"Investigate ISMC link and message latency at {ap}.")
+
+    if signals.get("multi_airport_degradation"):
+        why_it_matters.append("Multiple PCT airports degraded simultaneously suggests infrastructure rather than facility-local issue.")
+
+    if signals.get("latency_severe"):
+        avg = (context.get("avg_latency_ms") or 0) / 60_000.0
+        what_changed.append(f"Average event-to-ingest lag is {avg:.1f} min — system is processing a backlog, not live data.")
+        why_it_matters.append("Backlog processing means current dashboard reflects historical state, not real-time.")
+
+    if signals.get("position_event_mismatch"):
+        what_changed.append("Recent messages received but no aircraft positions available in last 5 minutes.")
+        why_it_matters.append("Could indicate TAIS parser drift or non-track message types dominating the feed.")
+
+    if signals.get("critic_escalation_exists"):
+        evidence.append("AI Critic recommends escalation on at least one recent CRITICAL alert.")
+
+    evidence.append(
+        f"events_in_window={context.get('events_in_window', 0)} · "
+        f"active_aircraft={context.get('active_aircraft', 0)} · "
+        f"critical_alerts={context.get('critical_alert_count', 0)} · "
+        f"pending_actions={context.get('pending_actions_count', 0)}"
+    )
+
+    if posture in ("GOOD", "NORMAL") and not what_changed:
+        what_changed.append("No concerning signals detected in the current window.")
+        why_it_matters.append("Live PCT picture appears trustworthy across all tracked airports.")
+        recommended.append("Continue passive monitoring; no human action required.")
+
+    if posture == "UNKNOWN":
+        what_changed.append("No recent events ingested.")
+        why_it_matters.append("Cannot assess the aircraft movement picture without data.")
+        recommended.append("Verify Jumpstart Kit is running and broker connection is healthy.")
+
+    if posture == "ACTION":
+        headline = (
+            f"ACTION required — {context.get('pending_actions_count', 0)} staged action(s) "
+            f"awaiting human review across PCT TRACON."
+        )
+    elif posture == "ATTENTION":
+        headline = (
+            f"ATTENTION — feed integrity concerns at {', '.join(aps) if aps else 'one or more PCT airports'}. "
+            "No safety claim, data picture may be stale."
+        )
+    elif posture == "GOOD":
+        headline = "All tracked PCT airports current; no pending human review."
+    elif posture == "NORMAL":
+        headline = "PCT aircraft movement picture nominal; routine monitoring."
+    else:
+        headline = "Insufficient data to assess the PCT picture."
+
+    return WatchOfficerBrief(
+        posture=posture,
+        trust_assessment=trust,
+        headline=headline,
+        what_changed=what_changed,
+        why_it_matters=why_it_matters,
+        recommended_human_review=recommended,
+        evidence=evidence,
+        pending_actions_count=context.get("pending_actions_count", 0),
+        critical_alert_count=context.get("critical_alert_count", 0),
+        affected_airports=aps,
+        confidence=0.6 if posture != "UNKNOWN" else 0.2,
+        llm_used=False,
+        limitations=[
+            "Deterministic rule-based brief; no LLM nuance.",
+            "Data-feed degradation does NOT imply unsafe airspace.",
+        ],
+    )
+
+
 class OutputGuardrail:
     @staticmethod
     def guard(
@@ -274,6 +400,23 @@ class OutputGuardrail:
         trust = _derive_trust(signals, context)
         affected = _affected_airports(signals, context)
 
+        evidence: list[str] = []
+        if signals.get("critical_alerts_exist"):
+            evidence.append(f"{context.get('critical_alert_count', 0)} critical alerts active")
+        if signals.get("pending_actions_exist"):
+            evidence.append(f"{context.get('pending_actions_count', 0)} pending staged actions")
+        if signals.get("draft_tickets_exist"):
+            evidence.append("operational_tickets table has DRAFT rows linked to staged actions.")
+        if signals.get("critic_escalation_exists"):
+            evidence.append("AI Critic recommends escalation on at least one recent CRITICAL alert.")
+
+        evidence.append(
+            f"events_in_window={context.get('events_in_window', 0)} · "
+            f"active_aircraft={context.get('active_aircraft', 0)} · "
+            f"critical_alerts={context.get('critical_alert_count', 0)} · "
+            f"pending_actions={context.get('pending_actions_count', 0)}"
+        )
+
         return WatchOfficerBrief(
             posture=posture,
             trust_assessment=trust,
@@ -281,6 +424,7 @@ class OutputGuardrail:
             what_changed=raw_narrative.what_changed,
             why_it_matters=raw_narrative.why_it_matters,
             recommended_human_review=raw_narrative.recommended_human_review,
+            evidence=evidence,
             pending_actions_count=context.get("pending_actions_count", 0),
             critical_alert_count=context.get("critical_alert_count", 0),
             affected_airports=affected,
@@ -296,11 +440,6 @@ def generate_watch_officer_brief(
     mcp_tools: list | None = None,
 ) -> WatchOfficerBrief:
     if context is None:
-        # build_watch_officer_context is async; run it on the same shared,
-        # persistent event loop the rest of the app uses (see
-        # src/async_bridge.py) rather than asyncio.run(), which would spin
-        # up a throwaway loop that clashes with storage.py's cached asyncpg
-        # pool the next time anything calls get_db_pool().
         context = run_async(build_watch_officer_context())
 
     signals = _detect_signals(context)
@@ -316,7 +455,7 @@ def generate_watch_officer_brief(
                 output_json=RawLLMNarrative,
             )
             
-            crew = Crew(agents=[agent], tasks=[task], verbose=True)
+            crew = Crew(agents=[agent], tasks=[task], verbose=True, memory=False)
             result = crew.kickoff()
             
             narrative = result.pydantic if hasattr(result, "pydantic") and result.pydantic else RawLLMNarrative.model_validate_json(result.raw)
@@ -325,9 +464,4 @@ def generate_watch_officer_brief(
         except Exception as exc:  # noqa: BLE001
             _log.warning("watch_officer_crew_execution_failed", extra={"error": str(exc)})
 
-    raw = RawLLMNarrative(
-        headline=f"Operational Posture: {_derive_posture(signals, context)}.",
-        confidence=0.5,
-        limitations=["Deterministic fallback brief generated; no LLM narrative used."],
-    )
-    return OutputGuardrail.guard(raw, context, signals, llm_used=False)
+    return _deterministic_brief(context, signals)

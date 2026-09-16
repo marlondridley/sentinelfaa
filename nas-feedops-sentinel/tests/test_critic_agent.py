@@ -12,7 +12,7 @@ Tests verify:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -162,7 +162,7 @@ def test_build_context_with_events(monkeypatch):
     from src.models import NASEvent
     from src.storage import save_alert, save_event
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for i in range(3):
         save_event(NASEvent(
             airport_code="KDCA",

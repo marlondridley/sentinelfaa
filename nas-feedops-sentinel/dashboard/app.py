@@ -11,8 +11,9 @@ Run with:
 from __future__ import annotations
 
 import json
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow imports from the repository root when running dashboard/app.py
@@ -28,6 +29,7 @@ from src import config, storage
 from src.alert_engine import check_alerts
 from src.async_bridge import run_async as _run
 from src.feed_health import compute_feed_health
+from src.logging_config import get_logger
 from src.maintenance import purge_old_kit_files
 from src.models import NASEvent
 from src.news_agent import build_ticker_items
@@ -40,6 +42,42 @@ from src.watch_officer_agent import (
     build_watch_officer_context,
     generate_watch_officer_brief,
 )
+
+_log = get_logger(__name__)
+
+
+def _parse_json_str_list(raw: Any, field_name: str = "json_field") -> list[str]:
+    """Safely decode and validate that a value or JSON string is a list[str]."""
+    if raw is None:
+        return []
+    parsed = raw
+    if isinstance(raw, str):
+        raw_stripped = raw.strip()
+        if not raw_stripped or raw_stripped == "[]":
+            return []
+        try:
+            parsed = json.loads(raw_stripped)
+        except json.JSONDecodeError as exc:
+            _log.warning(
+                "json_decode_failed",
+                extra={"field": field_name, "error": str(exc), "raw_sample": raw[:100]},
+            )
+            return []
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "json_parse_error",
+                extra={"field": field_name, "error": str(exc)},
+            )
+            return []
+
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed if item is not None]
+
+    _log.warning(
+        "json_shape_mismatch",
+        extra={"field": field_name, "expected": "list[str]", "actual_type": type(parsed).__name__},
+    )
+    return []
 
 # ── Async bridge ────────────────────────────────────────────────────────────
 # storage.py is fully async (asyncpg), and so is anything built directly on
@@ -60,6 +98,74 @@ st.set_page_config(
     page_icon="✈",
     layout="wide",
 )
+
+# ── OIDC / Keycloak Authentication Gate ────────────────────────────────────────
+_oidc_configured = False
+try:
+    if hasattr(st, "secrets") and "auth" in st.secrets:
+        _oidc_configured = True
+except Exception:
+    _oidc_configured = False
+
+if _oidc_configured:
+    try:
+        if hasattr(st, "user") and hasattr(st.user, "is_logged_in") and not st.user.is_logged_in:
+            st.title("✈ NAS FeedOps Sentinel")
+            st.info("🔐 **Authentication required** to access the operations dashboard and human review queue.")
+            c_auth1, _ = st.columns([1, 3])
+            with c_auth1:
+                st.button(
+                    "Sign in with Keycloak OIDC",
+                    on_click=st.login,
+                    args=["keycloak"],
+                    type="primary",
+                    use_container_width=True,
+                )
+            st.stop()
+    except Exception as _auth_exc:
+        _log.warning("oidc_auth_check_error", extra={"error": str(_auth_exc)})
+
+# ── Operator Authentication / Identity (Sidebar) ──────────────────────────────
+with st.sidebar:
+    st.markdown("### 👤 Watch Officer Session")
+    st.caption("Attributed operator identity for all Execution Gate & Escalation decisions.")
+
+    _oidc_user = None
+    if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+        _oidc_user = (
+            getattr(st.user, "email", None)
+            or getattr(st.user, "preferred_username", None)
+            or getattr(st.user, "name", None)
+        )
+
+    _default_op = _oidc_user or os.getenv("OPERATOR_ID") or os.getenv("USERNAME") or os.getenv("USER") or "watch_officer_primary"
+    if "operator_id" not in st.session_state:
+        st.session_state["operator_id"] = _default_op
+
+    _op_input = st.text_input(
+        "Operator ID / Callsign",
+        value=st.session_state["operator_id"],
+        help="This callsign/ID is recorded in the immutable action_audit_log table on every approve/reject transition.",
+    )
+    if _op_input:
+        st.session_state["operator_id"] = _op_input.strip()
+
+    _op_role = st.selectbox(
+        "Role / Station",
+        [
+            "Watch Officer",
+            "Supervisory Traffic Management Coordinator (STMC)",
+            "Operations Manager in Charge (OMIC)",
+            "Systems Engineer",
+        ],
+        index=0,
+    )
+    st.session_state["operator_role"] = _op_role
+
+    st.success(f"Authenticated: **{st.session_state['operator_id']}** ({_op_role})")
+    if _oidc_user and hasattr(st, "logout"):
+        st.button("Sign out", on_click=st.logout, use_container_width=True)
+    st.divider()
 
 # ── Status colour mapping ─────────────────────────────────────────────────────
 STATUS_EMOJI = {
@@ -94,11 +200,11 @@ for _row in _news_events_raw[:300]:
         _r = dict(_row)
         _r["event_time_utc"] = datetime.fromisoformat(_r["event_time_utc"])
         _r["received_time_utc"] = datetime.fromisoformat(_r["received_time_utc"])
-        if isinstance(_r.get("validation_errors"), str):
-            _r["validation_errors"] = json.loads(_r["validation_errors"])
+        if isinstance(_r.get("validation_errors"), (str, list)):
+            _r["validation_errors"] = _parse_json_str_list(_r.get("validation_errors"), "validation_errors")
         _news_live.append(NASEvent(**_r))
-    except Exception:
-        pass
+    except Exception as _reconstruct_exc:
+        _log.warning("news_event_reconstruct_failed", extra={"error": str(_reconstruct_exc)})
 
 _news_health = compute_feed_health(_news_live) if _news_live else {"airport_status": {}}
 
@@ -408,7 +514,7 @@ st.markdown('<div id="watch-officer"></div>', unsafe_allow_html=True)
 st.subheader("🧠 PCT Watch Officer Brief — *What changed and what needs review?*")
 st.caption(
     "**Answers:** *In one screen, what is the operational story right now?* "
-    "The Watch Officer reads current SQLite state, runs deterministic signal "
+    "The Watch Officer reads current PostgreSQL state, runs deterministic signal "
     "detection, and (when an LLM is configured) drafts a narrative brief. "
     "This brief is the **explanation layer** between the banner (fast signal) "
     "and the escalation package (durable record)."
@@ -496,11 +602,11 @@ for row in events_raw[:500]:
         r = dict(row)
         r["event_time_utc"] = datetime.fromisoformat(r["event_time_utc"])
         r["received_time_utc"] = datetime.fromisoformat(r["received_time_utc"])
-        if isinstance(r.get("validation_errors"), str):
-            r["validation_errors"] = json.loads(r["validation_errors"])
+        if isinstance(r.get("validation_errors"), (str, list)):
+            r["validation_errors"] = _parse_json_str_list(r.get("validation_errors"), "validation_errors")
         _live_events.append(NASEvent(**r))
-    except Exception:
-        pass
+    except Exception as _reconstruct_exc:
+        _log.warning("event_reconstruct_failed", extra={"error": str(_reconstruct_exc)})
 
 health = compute_feed_health(_live_events) if _live_events else {
     "airport_status": {}, "service_status": {}, "latency_stats": {}, "smes_counts": {}
@@ -805,7 +911,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"DB: `{config.DB_PATH}`")
-    st.caption(f"Refreshed: {datetime.utcnow().strftime('%H:%M:%S')} UTC")
+    st.caption(f"Refreshed: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
     if st.button("Refresh dashboard (auto-cleanup)", use_container_width=True, type="primary"):
         removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
         if removed > 0:
@@ -1203,10 +1309,7 @@ else:
             st.markdown(reasoning if reasoning else "_No reasoning recorded._")
             # Citations
             cits_raw = cr.get("citations", "[]")
-            try:
-                cits = json.loads(cits_raw) if isinstance(cits_raw, str) else cits_raw
-            except Exception:
-                cits = []
+            cits = _parse_json_str_list(cits_raw, "citations")
             if cits:
                 st.caption(f"Evidence event_ids: `{', '.join(cits[:6])}`")
 
@@ -1314,6 +1417,12 @@ else:
                 )
 
             # Decision note + three-button row
+            _active_actor = (
+                f"{st.session_state.get('operator_id', 'watch_officer_primary')}"
+                f" ({st.session_state.get('operator_role', 'Watch Officer')})"
+            )
+            st.caption(f"🛡 Decisions will be signed & attributed in audit log as: **{_active_actor}**")
+
             note_key = f"note_{_action.action_id}"
             ap_key = f"approve_{_action.action_id}"
             mo_key = f"monitor_{_action.action_id}"
@@ -1328,26 +1437,26 @@ else:
             
             # Wrap all approval/rejection functions in _run()
             if b1.button("✅ Approve Escalation", key=ap_key, type="primary", use_container_width=True):
-                _run(gate_approve(_action.action_id, actor="dashboard_operator", note=note or ""))
+                _run(gate_approve(_action.action_id, actor=_active_actor, note=note or ""))
                 if _ticket:
-                    _run(approve_operational_ticket(_ticket.ticket_id, actor="dashboard_operator", note=note or ""))
-                st.toast(f"Escalation APPROVED for {_action.action_id[:8]}", icon="✅")
+                    _run(approve_operational_ticket(_ticket.ticket_id, actor=_active_actor, note=note or ""))
+                st.toast(f"Escalation APPROVED for {_action.action_id[:8]} by {_active_actor}", icon="✅")
                 st.rerun()
                 
             if b2.button("👁 Continue Monitoring", key=mo_key, use_container_width=True,
                          help="Keep staged action PENDING; mark ticket MONITORING"):
                 if _ticket:
-                    _run(mark_operational_ticket_monitoring(_ticket.ticket_id, actor="dashboard_operator", note=note or ""))
-                    st.toast(f"Ticket {_ticket.ticket_id[:8]} -> MONITORING", icon="👁")
+                    _run(mark_operational_ticket_monitoring(_ticket.ticket_id, actor=_active_actor, note=note or ""))
+                    st.toast(f"Ticket {_ticket.ticket_id[:8]} -> MONITORING by {_active_actor}", icon="👁")
                 else:
                     st.warning("No ticket linked to this action; cannot mark monitoring.")
                 st.rerun()
                 
             if b3.button("❌ Reject", key=rj_key, use_container_width=True):
-                _run(gate_reject(_action.action_id, actor="dashboard_operator", note=note or ""))
+                _run(gate_reject(_action.action_id, actor=_active_actor, note=note or ""))
                 if _ticket:
-                    _run(reject_operational_ticket(_ticket.ticket_id, actor="dashboard_operator", note=note or ""))
-                st.toast(f"Action {_action.action_id[:8]} REJECTED", icon="❌")
+                    _run(reject_operational_ticket(_ticket.ticket_id, actor=_active_actor, note=note or ""))
+                st.toast(f"Action {_action.action_id[:8]} REJECTED by {_active_actor}", icon="❌")
                 st.rerun()
 
 # Decision Audit Trail (always rendered)
@@ -1455,11 +1564,7 @@ if not alerts_df.empty:
                 st.caption(reasoning)
 
                 cit_raw = cr.get("citations", "[]")
-                try:
-                    import json as _json
-                    cits = _json.loads(cit_raw) if isinstance(cit_raw, str) else cit_raw
-                except Exception:
-                    cits = []
+                cits = _parse_json_str_list(cit_raw, "citations")
                 if cits:
                     st.caption(f"Citations: {', '.join(cits[:5])}")
 

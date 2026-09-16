@@ -1,7 +1,7 @@
 """Tests for src/feed_health.py — health aggregation and stale feed detection."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src import config
 from src.feed_health import compute_feed_health
@@ -9,7 +9,7 @@ from src.models import NASEvent
 
 
 def _now():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _event(

@@ -17,11 +17,12 @@ langchain>=0.2.0
 langchain-openai
 langchain-anthropic
 langchain-deepseek
-crewai
+# crewai transitive dependency chromadb has known CVEs (CVE-2026-45829, CVE-2026-45830, CVE-2026-45831, CVE-2026-45833).
+# memory=False is explicitly enforced across all Crew instantiations to prevent ChromaDB initialization.
+crewai>=0.80.0,<1.0.0
 asyncpg>=0.29.0
 hvac>=2.1.0
 pydantic-settings>=2.0.0
-psycopg[binary]>=3.1.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 litellm>=1.30.0

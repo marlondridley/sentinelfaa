@@ -200,7 +200,7 @@ def _derive_rationale(
     return deterministic
 
 
-def _refresh_hitl_queue_metric() -> None:
+async def _refresh_hitl_queue_metric() -> None:
     """
     Refresh the current pending-action gauge.
 
@@ -208,14 +208,13 @@ def _refresh_hitl_queue_metric() -> None:
     """
 
     try:
-        HITL_QUEUE_DEPTH.set(
-            len(storage.get_pending_staged_actions())
-        )
+        pending = await storage.get_pending_staged_actions()
+        HITL_QUEUE_DEPTH.set(len(pending))
     except Exception:  # noqa: BLE001
         return
 
 
-def stage_critical_alert(
+async def stage_critical_alert(
     alert: AlertEvent,
     critic_result: CriticResult | None = None,
 ) -> StagedAction | None:
@@ -279,15 +278,15 @@ def stage_critical_alert(
 
     # Storage is responsible for enforcing uniqueness and returning the
     # existing action when this alert has already been staged.
-    result = storage.create_staged_action(action)
+    result = await storage.create_staged_action(action)
 
-    _refresh_hitl_queue_metric()
+    await _refresh_hitl_queue_metric()
 
     # Advisory ticket generation happens AFTER the action has been staged.
     #
     # If Watch Officer fails, the transactional HITL action remains intact.
     try:
-        _build_escalation_package(
+        await _build_escalation_package(
             result,
             alert,
             critic_result,
@@ -308,7 +307,7 @@ def stage_critical_alert(
     return result
 
 
-def _build_escalation_package(
+async def _build_escalation_package(
     staged: StagedAction,
     alert: AlertEvent,
     critic_result: CriticResult | None,
@@ -331,7 +330,7 @@ def _build_escalation_package(
         generate_watch_officer_brief,
     )
 
-    existing = storage.get_ticket_by_action_id(
+    existing = await storage.get_ticket_by_action_id(
         staged.action_id
     )
 
@@ -340,7 +339,7 @@ def _build_escalation_package(
 
     # Explicitly bind the Watch Officer context to the alert that caused
     # this staged action.
-    context = build_watch_officer_context(
+    context = await build_watch_officer_context(
         alert=alert,
     )
 
@@ -349,7 +348,7 @@ def _build_escalation_package(
         use_llm=True,
     )
 
-    storage.save_watch_officer_brief(
+    await storage.save_watch_officer_brief(
         brief
     )
 
@@ -411,7 +410,7 @@ def _build_escalation_package(
         ),
     )
 
-    return storage.create_operational_ticket(
+    return await storage.create_operational_ticket(
         ticket
     )
 
@@ -615,9 +614,13 @@ class ExecutionGate:
                 event_id=None,
             )
 
-            staged = stage_critical_alert(
-                synthetic,
-                critic_result,
+            from src.async_bridge import run_async
+
+            staged = run_async(
+                stage_critical_alert(
+                    synthetic,
+                    critic_result,
+                )
             )
 
             if staged:
@@ -640,27 +643,21 @@ def get_staged_actions(
 ) -> list[dict]:
     """
     Legacy alias returning staged_actions as dictionaries.
-
-    Uses a context manager so the database connection is always released.
     """
+    from src.async_bridge import run_async
 
-    with storage._get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM staged_actions
-            WHERE status = ?
-            ORDER BY created_at DESC
-            """,
-            (status,),
-        ).fetchall()
+    if status == "PENDING":
+        actions = run_async(storage.get_pending_staged_actions())
+    else:
+        actions = run_async(storage.get_recent_staged_actions())
 
-        return [
-            {
-                **dict(row),
-                "ticket_id": (
-                    f"HITL-{row['action_id'][:8].upper()}"
-                ),
-            }
-            for row in rows
-        ]
+    return [
+        {
+            **a.model_dump(),
+            "ticket_id": (
+                f"HITL-{a.action_id[:8].upper()}"
+            ),
+        }
+        for a in actions
+        if a.status == status or status != "PENDING"
+    ]
