@@ -21,6 +21,7 @@ Public API:
     get_recent_staged_actions(limit)                   -> list[StagedAction]
     get_action_audit_log(action_id=None, limit)        -> list[dict]
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,9 +41,9 @@ from src.models import (
 
 # Re-export the storage-layer helpers so callers can use a single import path.
 approve_staged_action = storage.approve_staged_action
-reject_staged_action  = storage.reject_staged_action
+reject_staged_action = storage.reject_staged_action
 get_pending_staged_actions = storage.get_pending_staged_actions
-get_recent_staged_actions  = storage.get_recent_staged_actions
+get_recent_staged_actions = storage.get_recent_staged_actions
 get_action_audit_log = storage.get_action_audit_log
 
 
@@ -51,7 +52,9 @@ def _idempotency_key(alert: AlertEvent) -> str:
     Deterministic key based on the alert identity. Re-staging the same alert
     (e.g., on pipeline retry) returns the existing action, not a duplicate.
     """
-    seed = f"{alert.alert_id}|{alert.alert_type}|{alert.airport_code}|{alert.service_name}"
+    seed = (
+        f"{alert.alert_id}|{alert.alert_type}|{alert.airport_code}|{alert.service_name}"
+    )
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
 
@@ -139,6 +142,7 @@ def stage_critical_alert(
     except Exception as exc:
         # Ticket creation is advisory — if it fails the action still stages.
         from src.logging_config import get_logger
+
         get_logger(__name__).warning(
             "ticket_creation_failed",
             extra={"action_id": result.action_id, "error": str(exc)},
@@ -175,9 +179,10 @@ def _build_escalation_package(
 
     # Compose ticket from brief + alert + critic
     title = f"{alert.alert_type or 'CRITICAL'} at {alert.airport_code or 'PCT'}"
-    summary = (
-        brief.headline
-        + (f" Critic: {critic_result.reasoning[:160]}" if critic_result and critic_result.reasoning else "")
+    summary = brief.headline + (
+        f" Critic: {critic_result.reasoning[:160]}"
+        if critic_result and critic_result.reasoning
+        else ""
     )
 
     ticket = OperationalTicket(
@@ -210,12 +215,12 @@ def _build_escalation_package(
 # doesn't — but we keep the old surface working to avoid breaking eval scenarios.
 
 _PATTERN_BASE_TIER: dict[str, str] = {
-    "CASCADE_FAILURE":    "CRITICAL",
-    "ISOLATED_FAULT":     "HIGH",
+    "CASCADE_FAILURE": "CRITICAL",
+    "ISOLATED_FAULT": "HIGH",
     "WEATHER_CORRELATED": "HIGH",
-    "DATA_ANOMALY":       "MEDIUM",
-    "TRANSIENT":          "LOW",
-    "UNKNOWN":            "MEDIUM",
+    "DATA_ANOMALY": "MEDIUM",
+    "TRANSIENT": "LOW",
+    "UNKNOWN": "MEDIUM",
 }
 
 
@@ -270,9 +275,11 @@ class ExecutionGate:
         if critic_result:
             pattern = critic_result.pattern
             escalate = bool(critic_result.escalate)
-            confidence = (critic_result.confidence
-                          if critic_result.confidence is not None
-                          else planner_result.confidence)
+            confidence = (
+                critic_result.confidence
+                if critic_result.confidence is not None
+                else planner_result.confidence
+            )
         else:
             escalate = False
             confidence = planner_result.confidence
@@ -283,7 +290,9 @@ class ExecutionGate:
             else:
                 pattern = "TRANSIENT"
 
-        tier, factors = _derive_tier(pattern, confidence, escalate, critical_alert_count)
+        tier, factors = _derive_tier(
+            pattern, confidence, escalate, critical_alert_count
+        )
         idem_key = idempotency_key or (
             (planner_result.question or "")[:64]
             + (critic_result.alert_id if critic_result else "")
@@ -297,7 +306,9 @@ class ExecutionGate:
                 alert_id=idem_key,
                 alert_type=f"LEGACY_{pattern}",
                 severity="CRITICAL",
-                airport_code=critic_result.alert_id.split("-")[0] if critic_result else None,
+                airport_code=critic_result.alert_id.split("-")[0]
+                if critic_result
+                else None,
                 service_name=None,
                 description=f"Legacy gate evaluation: tier={tier} factors={factors}",
                 event_id=None,
@@ -322,5 +333,6 @@ def get_staged_actions(status: str = "PENDING") -> list[dict]:
         "SELECT * FROM staged_actions WHERE status = ? ORDER BY created_at DESC",
         (status,),
     ).fetchall()
-    return [{**dict(r), "ticket_id": f"HITL-{r['action_id'][:8].upper()}"}
-            for r in rows]
+    return [
+        {**dict(r), "ticket_id": f"HITL-{r['action_id'][:8].upper()}"} for r in rows
+    ]

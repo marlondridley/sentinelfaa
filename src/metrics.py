@@ -11,6 +11,7 @@ Metrics families:
   Gate activity     — decisions by risk tier, HITL queue depth
   Feed health       — per-airport overall status gauge
 """
+
 from __future__ import annotations
 
 from threading import Thread
@@ -92,7 +93,11 @@ AIRPORT_OVERALL_STATUS = Gauge(
 )
 
 _STATUS_LEVEL = {
-    "OK": 0, "STALE": 1, "DEGRADED": 2, "UNAVAILABLE": 3, "DISCONNECTED": 4,
+    "OK": 0,
+    "STALE": 1,
+    "DEGRADED": 2,
+    "UNAVAILABLE": 3,
+    "DISCONNECTED": 4,
 }
 
 
@@ -101,6 +106,7 @@ def set_airport_status(airport: str, status: str) -> None:
 
 
 # ── /metrics HTTP server ──────────────────────────────────────────────────────
+
 
 class _SilentHandler(WSGIRequestHandler):
     def log_message(self, format, *args):  # silence default per-request logs

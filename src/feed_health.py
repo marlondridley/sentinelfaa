@@ -6,6 +6,7 @@ consumed by the Streamlit dashboard and CLI output.
 
 Status priority (worst wins): OK < STALE < DEGRADED < UNAVAILABLE < DISCONNECTED
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

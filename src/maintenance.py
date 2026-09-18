@@ -7,6 +7,7 @@ a single-pass purge primitive that mirrors scripts/Cleanup-KitLog.ps1, so the
 Streamlit dashboard can invoke it on every refresh without shelling out to
 PowerShell.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

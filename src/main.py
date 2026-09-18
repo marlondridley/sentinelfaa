@@ -8,6 +8,7 @@ Usage:
     python -m src.main --mode swim-folder --watch --reconcile-interval 300
     python -m src.main --mode live
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,7 +38,12 @@ from src.models import NASEvent
 from src.planner_agent import PlannerAgent
 from src.replay import replay_from_directory, write_sample_replay_file
 from src.sample_data import generate_sample_batch
-from src.storage import save_alerts, save_critic_result, save_events, save_planner_result
+from src.storage import (
+    save_alerts,
+    save_critic_result,
+    save_events,
+    save_planner_result,
+)
 from src.swim_live_adapter import connect_and_consume
 from src.validators import validate_event
 
@@ -46,6 +52,7 @@ _log = get_logger(__name__)
 
 
 # ── Shared pipeline ───────────────────────────────────────────────────────────
+
 
 def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
     """Validate, persist, alert, and summarise a batch of NASEvents."""
@@ -102,7 +109,9 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
     # The LLM never sees the approval/reject API; staging is enforced here.
     staged_count = 0
     for alert in critical_alerts:
-        critic_for_alert = critic_results.get(alert.alert_id)  # may be None if skipped or disabled
+        critic_for_alert = critic_results.get(
+            alert.alert_id
+        )  # may be None if skipped or disabled
         action = stage_critical_alert(alert, critic_for_alert)
         if action is not None:
             staged_count += 1
@@ -132,12 +141,18 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
             print(f"    [{alert.severity:8s}] {alert.alert_type}: {alert.description}")
             cr = critic_results.get(alert.alert_id)
             if cr:
-                conf_str = f"{cr.confidence:.2f}" if cr.confidence is not None else "N/A"
+                conf_str = (
+                    f"{cr.confidence:.2f}" if cr.confidence is not None else "N/A"
+                )
                 escalate_flag = " [ESCALATE]" if cr.escalate else ""
-                print(f"             Critic: conf={conf_str} pattern={cr.pattern}{escalate_flag}")
+                print(
+                    f"             Critic: conf={conf_str} pattern={cr.pattern}{escalate_flag}"
+                )
                 print(f"             {cr.reasoning}")
         if len(alerts) > 10:
-            print(f"    ... and {len(alerts) - 10} more. Run the dashboard for full list.")
+            print(
+                f"    ... and {len(alerts) - 10} more. Run the dashboard for full list."
+            )
 
     print()
     print("  Dashboard: streamlit run dashboard/app.py")
@@ -145,6 +160,7 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
 
 
 # ── Mode handlers ─────────────────────────────────────────────────────────────
+
 
 def run_sample(count: int) -> None:
     print(f"[SAMPLE] Generating {count} synthetic NAS events ...")
@@ -167,7 +183,11 @@ def run_replay(source: Path) -> None:
     if errors:
         _log.warning(
             "replay_directory_parse_errors",
-            extra={"error_count": len(errors), "source": str(source), "sample_errors": errors[:5]},
+            extra={
+                "error_count": len(errors),
+                "source": str(source),
+                "sample_errors": errors[:5],
+            },
         )
         print(f"[REPLAY] {len(errors)} parse error(s):")
         for err in errors[:5]:
@@ -232,15 +252,21 @@ def run_swim_folder_watch(source: Path, reconcile_interval: float) -> None:
         "swim_folder_watch_start",
         extra={"source": str(source), "reconcile_interval": reconcile_interval},
     )
-    print(f"[SWIM-FOLDER] Watching {source} for new STDDS messages "
-          f"(reconcile every {reconcile_interval:.0f}s) ... Ctrl+C to stop.")
+    print(
+        f"[SWIM-FOLDER] Watching {source} for new STDDS messages "
+        f"(reconcile every {reconcile_interval:.0f}s) ... Ctrl+C to stop."
+    )
 
     def _on_events(events, stats) -> None:
-        print(f"[SWIM-FOLDER] {stats.events_parsed} event(s) from "
-              f"{stats.files_processed} file(s); running pipeline ...")
+        print(
+            f"[SWIM-FOLDER] {stats.events_parsed} event(s) from "
+            f"{stats.files_processed} file(s); running pipeline ..."
+        )
         _run_pipeline(events, "SWIM-FOLDER")
 
-    watch_swim_folder(source, reconcile_interval=reconcile_interval, on_events=_on_events)
+    watch_swim_folder(
+        source, reconcile_interval=reconcile_interval, on_events=_on_events
+    )
     print("[SWIM-FOLDER] Watch stopped.")
 
 
@@ -310,7 +336,9 @@ def run_eval(llm: bool = False) -> None:
     print()
     print(sep)
     print("  NAS FeedOps Sentinel -- EVAL MODE")
-    llm_note = "LLM evals ENABLED" if llm else "deterministic only (add --llm for LLM evals)"
+    llm_note = (
+        "LLM evals ENABLED" if llm else "deterministic only (add --llm for LLM evals)"
+    )
     print(f"  {llm_note}")
     print(sep)
     evaluator = AgentEvaluator(run_llm=llm)
@@ -323,6 +351,7 @@ def run_live() -> None:
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -413,9 +442,11 @@ Examples:
 # currently being ingested -- see swim_file_ingest.request_shutdown(), which
 # the scan loop polls between files -- rather than dropping it.
 
+
 def _install_shutdown_handler() -> None:
     def _handle_shutdown_signal(signum: int, frame) -> None:
         from src.swim_file_ingest import request_shutdown
+
         _log.warning(
             "shutdown_signal_received",
             extra={"signal": signal.Signals(signum).name},

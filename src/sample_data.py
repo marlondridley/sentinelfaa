@@ -7,6 +7,7 @@ Messages reflect actual PCT TRACON operational parameters:
 - ISMC feed_status probabilities skew toward operational (75%) with occasional anomalies.
 - Latency is randomized across a wide range to exercise the high-latency alert rule.
 """
+
 from __future__ import annotations
 
 import random
@@ -29,21 +30,47 @@ RUNWAYS: dict[str, list[str]] = {
 }
 
 SURFACE_EVENT_TYPES: list[str] = [
-    "TAXI_OUT", "TAXI_IN", "PUSHBACK", "RUNWAY_ENTER",
-    "RUNWAY_EXIT", "GATE_DEPARTURE", "GATE_ARRIVAL", "HOLD_SHORT",
+    "TAXI_OUT",
+    "TAXI_IN",
+    "PUSHBACK",
+    "RUNWAY_ENTER",
+    "RUNWAY_EXIT",
+    "GATE_DEPARTURE",
+    "GATE_ARRIVAL",
+    "HOLD_SHORT",
 ]
 
 # Representative airline/cargo callsigns operating in the PCT area
 AIRCRAFT_IDS: list[str] = [
-    "UAL123", "DAL456", "AAL789", "SWA321", "FDX101",
-    "UPS202", "JBU303", "SKW404", "EJA505", "N12345",
-    "ASA601", "WN2271", "DL9823", "AA1547", "UA5588",
+    "UAL123",
+    "DAL456",
+    "AAL789",
+    "SWA321",
+    "FDX101",
+    "UPS202",
+    "JBU303",
+    "SKW404",
+    "EJA505",
+    "N12345",
+    "ASA601",
+    "WN2271",
+    "DL9823",
+    "AA1547",
+    "UA5588",
 ]
 
 # Ground vehicle types at major airports
 VEHICLE_IDS: list[str] = [
-    "TUG-01", "TUG-02", "FUEL-A", "FUEL-B", "MAINT-1",
-    "FOLLOW-ME", "DEICER-3", "RESCUE-1", "SECURITY-7", "CATERING-4",
+    "TUG-01",
+    "TUG-02",
+    "FUEL-A",
+    "FUEL-B",
+    "MAINT-1",
+    "FOLLOW-ME",
+    "DEICER-3",
+    "RESCUE-1",
+    "SECURITY-7",
+    "CATERING-4",
 ]
 
 FEED_STATUSES: list[str] = ["operational", "degraded", "unavailable", "disconnected"]
@@ -52,9 +79,12 @@ FEED_STATUS_WEIGHTS: list[float] = [0.75, 0.12, 0.08, 0.05]
 
 # ── Timestamp helpers ─────────────────────────────────────────────────────────
 
+
 def _event_time() -> datetime:
     """Recent event time with slight random jitter (simulates real-time stream)."""
-    return datetime.now(timezone.utc) - timedelta(milliseconds=random.randint(50, 5_000))
+    return datetime.now(timezone.utc) - timedelta(
+        milliseconds=random.randint(50, 5_000)
+    )
 
 
 def _received_time(event_time: datetime) -> datetime:
@@ -83,6 +113,7 @@ def _base_fields(airport: str, service: str, message_type: str) -> dict:
 
 
 # ── Individual service generators ─────────────────────────────────────────────
+
 
 def generate_smes_event(airport: str | None = None) -> NASEvent:
     """Surface Movement Event Service — aircraft/vehicle position update."""
@@ -128,7 +159,9 @@ def generate_ismc_event(airport: str | None = None) -> NASEvent:
     """Infrastructure, System Monitoring and Control — link health report."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "ISMC", "LINK_STATUS")
-    fields["feed_status"] = random.choices(FEED_STATUSES, weights=FEED_STATUS_WEIGHTS)[0]
+    fields["feed_status"] = random.choices(FEED_STATUSES, weights=FEED_STATUS_WEIGHTS)[
+        0
+    ]
     return NASEvent(**fields)
 
 

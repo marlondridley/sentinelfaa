@@ -7,6 +7,7 @@ and returns them for the standard validation + alert pipeline.
 File format: each .json file may contain a single dict or a list of dicts.
 Timestamps must be ISO-8601 strings; latency_ms is recalculated on load.
 """
+
 from __future__ import annotations
 
 import json

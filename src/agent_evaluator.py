@@ -20,6 +20,7 @@ Each scenario generates events → runs the full deterministic pipeline →
 scores against expected values. LLM scenarios additionally call the
 PlannerAgent/CriticAgent and score their structured outputs.
 """
+
 from __future__ import annotations
 
 import time
@@ -38,6 +39,7 @@ from src.validators import validate_event
 
 # ── Golden scenario definitions ───────────────────────────────────────────────
 
+
 @dataclass
 class EvalScenario:
     name: str
@@ -45,8 +47,8 @@ class EvalScenario:
     generate_events: Callable[[], list[NASEvent]]
     # Deterministic expectations
     expected_min_alerts: int
-    expected_alert_types: list[str]        # all must be present
-    expected_gate_tier: str                # CRITICAL | HIGH | MEDIUM | LOW
+    expected_alert_types: list[str]  # all must be present
+    expected_gate_tier: str  # CRITICAL | HIGH | MEDIUM | LOW
     expected_hitl: bool
     # LLM expectations (None = skip LLM check)
     planner_question: str | None = None
@@ -60,16 +62,21 @@ def _now_minus(minutes: float) -> datetime:
 
 
 def _event(**kwargs) -> NASEvent:
-    base = dict(tracon="PCT", message_type="eval", validation_status="PASSED", latency_ms=200.0)
+    base = dict(
+        tracon="PCT", message_type="eval", validation_status="PASSED", latency_ms=200.0
+    )
     base.update(kwargs)
     if "received_time_utc" not in base:
-        base["received_time_utc"] = base.get("event_time_utc", datetime.now(timezone.utc))
+        base["received_time_utc"] = base.get(
+            "event_time_utc", datetime.now(timezone.utc)
+        )
     return NASEvent(**base)
 
 
 def _gen_cascade_failure() -> list[NASEvent]:
     """CASCADE_FAILURE: ISMC disconnected + low RVR + SMES spike at KDCA."""
     from src.demo_scenario import generate_cascade_failure_scenario
+
     return generate_cascade_failure_scenario()
 
 
@@ -78,18 +85,30 @@ def _gen_isolated_ismc() -> list[NASEvent]:
     t = _now_minus(5)
     events = []
     for _ in range(3):
-        events.append(_event(
-            airport_code="KIAD", service_name="ISMC", message_type="link_status",
-            event_time_utc=t, received_time_utc=t,
-            feed_status="degraded", latency_ms=260.0,
-        ))
+        events.append(
+            _event(
+                airport_code="KIAD",
+                service_name="ISMC",
+                message_type="link_status",
+                event_time_utc=t,
+                received_time_utc=t,
+                feed_status="degraded",
+                latency_ms=260.0,
+            )
+        )
     # Healthy baseline at other airports
     for ap in ("KDCA", "KBWI", "KADW"):
-        events.append(_event(
-            airport_code=ap, service_name="ISMC", message_type="link_status",
-            event_time_utc=t, received_time_utc=t,
-            feed_status="operational", latency_ms=180.0,
-        ))
+        events.append(
+            _event(
+                airport_code=ap,
+                service_name="ISMC",
+                message_type="link_status",
+                event_time_utc=t,
+                received_time_utc=t,
+                feed_status="operational",
+                latency_ms=180.0,
+            )
+        )
     return events
 
 
@@ -98,20 +117,33 @@ def _gen_low_rvr_weather() -> list[NASEvent]:
     t = _now_minus(8)
     events = []
     # RVR drop
-    events.append(_event(
-        airport_code="KBWI", service_name="APDS_RVR", message_type="rvr_report",
-        event_time_utc=t, received_time_utc=t,
-        runway="10", rvr_touchdown=800, rvr_midpoint=900, rvr_rollout=1100,
-        latency_ms=350.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KBWI",
+            service_name="APDS_RVR",
+            message_type="rvr_report",
+            event_time_utc=t,
+            received_time_utc=t,
+            runway="10",
+            rvr_touchdown=800,
+            rvr_midpoint=900,
+            rvr_rollout=1100,
+            latency_ms=350.0,
+        )
+    )
     # Concurrent latency spike — same airport, different service
-    events.append(_event(
-        airport_code="KBWI", service_name="SMES", message_type="surface_event",
-        event_time_utc=t + timedelta(seconds=30),
-        received_time_utc=t + timedelta(seconds=30),
-        aircraft_id="WN204", surface_event_type="MOVEMENT",
-        latency_ms=34000.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KBWI",
+            service_name="SMES",
+            message_type="surface_event",
+            event_time_utc=t + timedelta(seconds=30),
+            received_time_utc=t + timedelta(seconds=30),
+            aircraft_id="WN204",
+            surface_event_type="MOVEMENT",
+            latency_ms=34000.0,
+        )
+    )
     return events
 
 
@@ -120,19 +152,28 @@ def _gen_high_latency_transient() -> list[NASEvent]:
     t_spike = _now_minus(12)
     t_recover = _now_minus(10)
     events = []
-    events.append(_event(
-        airport_code="KDCA", service_name="TERMINAL_AUTO", message_type="update",
-        event_time_utc=t_spike, received_time_utc=t_spike,
-        latency_ms=38000.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KDCA",
+            service_name="TERMINAL_AUTO",
+            message_type="update",
+            event_time_utc=t_spike,
+            received_time_utc=t_spike,
+            latency_ms=38000.0,
+        )
+    )
     # Recovery events at normal latency
     for i in range(4):
-        events.append(_event(
-            airport_code="KDCA", service_name="TERMINAL_AUTO", message_type="update",
-            event_time_utc=t_recover + timedelta(seconds=i * 30),
-            received_time_utc=t_recover + timedelta(seconds=i * 30),
-            latency_ms=210.0,
-        ))
+        events.append(
+            _event(
+                airport_code="KDCA",
+                service_name="TERMINAL_AUTO",
+                message_type="update",
+                event_time_utc=t_recover + timedelta(seconds=i * 30),
+                received_time_utc=t_recover + timedelta(seconds=i * 30),
+                latency_ms=210.0,
+            )
+        )
     return events
 
 
@@ -142,7 +183,9 @@ def _gen_validation_failures() -> list[NASEvent]:
     events = []
     for i in range(5):
         e = _event(
-            airport_code="KADW", service_name="APDS_RVR", message_type="rvr_report",
+            airport_code="KADW",
+            service_name="APDS_RVR",
+            message_type="rvr_report",
             event_time_utc=t + timedelta(seconds=i * 10),
             received_time_utc=t + timedelta(seconds=i * 10),
             latency_ms=220.0,
@@ -159,21 +202,36 @@ def _gen_clean_state() -> list[NASEvent]:
     t = _now_minus(2)  # 2 min ago — safely within the 5-min stale window
     events = []
     for ap in ("KDCA", "KIAD", "KBWI", "KADW"):
-        events.append(_event(
-            airport_code=ap, service_name="ISMC", message_type="link_status",
-            event_time_utc=t, received_time_utc=t,
-            feed_status="operational", latency_ms=185.0,
-        ))
-        events.append(_event(
-            airport_code=ap, service_name="APDS_RVR", message_type="rvr_report",
-            event_time_utc=t, received_time_utc=t,
-            runway="01", rvr_touchdown=5000, rvr_midpoint=5500, rvr_rollout=6000,
-            latency_ms=190.0,
-        ))
+        events.append(
+            _event(
+                airport_code=ap,
+                service_name="ISMC",
+                message_type="link_status",
+                event_time_utc=t,
+                received_time_utc=t,
+                feed_status="operational",
+                latency_ms=185.0,
+            )
+        )
+        events.append(
+            _event(
+                airport_code=ap,
+                service_name="APDS_RVR",
+                message_type="rvr_report",
+                event_time_utc=t,
+                received_time_utc=t,
+                runway="01",
+                rvr_touchdown=5000,
+                rvr_midpoint=5500,
+                rvr_rollout=6000,
+                latency_ms=190.0,
+            )
+        )
     return events
 
 
 # ── Guardrail test inputs (deterministic) ────────────────────────────────────
+
 
 @dataclass
 class GuardrailCase:
@@ -312,6 +370,7 @@ GOLDEN_SCENARIOS: list[EvalScenario] = [
 
 # ── Evaluator ─────────────────────────────────────────────────────────────────
 
+
 class AgentEvaluator:
     """
     Runs deterministic and optional LLM-based evaluations against the golden
@@ -370,7 +429,9 @@ class AgentEvaluator:
             passed=passed,
             score=score,
             checks=checks,
-            notes="" if passed else (
+            notes=""
+            if passed
+            else (
                 f"expected compliant={gc.expect_compliant} violation={gc.expect_violation_type}, "
                 f"got compliant={gr.is_compliant} violation={gr.violation_type}"
             ),
@@ -407,7 +468,9 @@ class AgentEvaluator:
 
     def _check_alerts(self, scenario: EvalScenario, alerts: list) -> EvalResult:
         found_types = {a.alert_type for a in alerts}
-        missing_types = [t for t in scenario.expected_alert_types if t not in found_types]
+        missing_types = [
+            t for t in scenario.expected_alert_types if t not in found_types
+        ]
         count_ok = len(alerts) >= scenario.expected_min_alerts
         types_ok = len(missing_types) == 0
 
@@ -435,7 +498,9 @@ class AgentEvaluator:
         from src.models import PlannerResult as PR
 
         # Build a minimal PlannerResult to feed the gate
-        distinct_critical_types = len({a.alert_type for a in alerts if a.severity == "CRITICAL"})
+        distinct_critical_types = len(
+            {a.alert_type for a in alerts if a.severity == "CRITICAL"}
+        )
         has_warnings = any(a.severity == "WARNING" for a in alerts)
         mock_plan = PR(
             question="eval",
@@ -449,6 +514,7 @@ class AgentEvaluator:
         critic_result = None
         if critic_rows:
             from src.models import CriticResult as CR
+
             r = critic_rows[0]
             critic_result = CR(
                 alert_id=r["alert_id"],
@@ -485,7 +551,9 @@ class AgentEvaluator:
                 "hitl_ok": hitl_ok,
                 "ticket_id": decision.ticket_id,
             },
-            notes="" if passed else (
+            notes=""
+            if passed
+            else (
                 f"tier: got {decision.risk_tier} expected {scenario.expected_gate_tier}; "
                 f"hitl: got {decision.hitl_required} expected {scenario.expected_hitl}"
             ),
@@ -520,7 +588,10 @@ class AgentEvaluator:
             notes_parts.append(f"output_guardrail: {guard_check.detail}")
 
         # Confidence calibration
-        if scenario.expected_min_confidence is not None and result.confidence is not None:
+        if (
+            scenario.expected_min_confidence is not None
+            and result.confidence is not None
+        ):
             conf_ok = result.confidence >= scenario.expected_min_confidence
             checks["confidence_ok"] = conf_ok
             checks["expected_min_confidence"] = scenario.expected_min_confidence
@@ -532,9 +603,22 @@ class AgentEvaluator:
 
         # Escalation accuracy
         if scenario.expected_escalation is not None:
-            esc_actions = [a for a in result.recommended_actions if any(
-                kw in a.lower() for kw in ("escalat", "notify", "contact", "call", "supervisor", "manager", "hitl")
-            )]
+            esc_actions = [
+                a
+                for a in result.recommended_actions
+                if any(
+                    kw in a.lower()
+                    for kw in (
+                        "escalat",
+                        "notify",
+                        "contact",
+                        "call",
+                        "supervisor",
+                        "manager",
+                        "hitl",
+                    )
+                )
+            ]
             esc_detected = len(esc_actions) > 0
             checks["escalation_signaled"] = esc_detected
             checks["expected_escalation"] = scenario.expected_escalation
@@ -544,8 +628,14 @@ class AgentEvaluator:
                     f"escalation_signaled={esc_detected} expected={scenario.expected_escalation}"
                 )
 
-        score = 1.0 if passed else (
-            0.5 if checks.get("output_compliant") and checks.get("confidence_ok", True) else 0.0
+        score = (
+            1.0
+            if passed
+            else (
+                0.5
+                if checks.get("output_compliant") and checks.get("confidence_ok", True)
+                else 0.0
+            )
         )
 
         return EvalResult(
@@ -560,14 +650,19 @@ class AgentEvaluator:
 
 # ── Report printer ────────────────────────────────────────────────────────────
 
+
 def print_eval_report(report: EvalReport) -> None:
     sep = "=" * 64
     thin = "-" * 64
     print()
     print(sep)
     print("  NAS FeedOps Sentinel — Agent Evaluation Report")
-    print(f"  Run ID: {report.run_id}  |  {report.evaluated_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"  LLM evals: {'ENABLED' if report.llm_enabled else 'DISABLED (set ANTHROPIC_API_KEY)'}")
+    print(
+        f"  Run ID: {report.run_id}  |  {report.evaluated_at.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    )
+    print(
+        f"  LLM evals: {'ENABLED' if report.llm_enabled else 'DISABLED (set ANTHROPIC_API_KEY)'}"
+    )
     print(sep)
 
     category: dict[str, list[EvalResult]] = {}
@@ -589,8 +684,10 @@ def print_eval_report(report: EvalReport) -> None:
 
     print()
     print(sep)
-    print(f"  Total: {report.total_cases} cases  |  "
-          f"Passed: {report.passed}  |  Failed: {report.failed}  |  "
-          f"Score: {report.score_pct:.1f}%")
+    print(
+        f"  Total: {report.total_cases} cases  |  "
+        f"Passed: {report.passed}  |  Failed: {report.failed}  |  "
+        f"Score: {report.score_pct:.1f}%"
+    )
     print(sep)
     print()

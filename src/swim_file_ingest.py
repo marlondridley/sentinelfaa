@@ -23,6 +23,7 @@ Supported raw file formats:
 Already-processed files are tracked via ingest_log.jsonl, so repeated
 scans of the same folder are idempotent.
 """
+
 from __future__ import annotations
 
 import json
@@ -68,6 +69,7 @@ def request_shutdown() -> None:
 def shutdown_requested() -> bool:
     return _shutdown_requested.is_set()
 
+
 # PCT TRACON primary airports — used to filter TAIS records to in-scope traffic.
 _PCT_PRIMARY_AIRPORTS: set[str] = {"KDCA", "KIAD", "KBWI", "KADW"}
 
@@ -96,6 +98,7 @@ _XML_FIELD_MAP: dict[str, str] = {
 
 # ── Ingest log helpers ────────────────────────────────────────────────────────
 
+
 def _load_processed_filenames() -> set[str]:
     """Return the set of file names already recorded in ingest_log.jsonl."""
     if not INGEST_LOG.exists():
@@ -117,6 +120,7 @@ def _append_log_entry(entry: dict) -> None:
 
 
 # ── File parsers ──────────────────────────────────────────────────────────────
+
 
 def _parse_json_file(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -160,7 +164,8 @@ def _parse_xml_file(path: Path) -> list[dict]:
     message_roots: list[ET.Element] = []
     for container_tag in ("message", "event", "record", "item"):
         hits = [
-            child for child in root.iter()
+            child
+            for child in root.iter()
             if (child.tag.split("}")[-1] if "}" in child.tag else child.tag).lower()
             == container_tag
         ]
@@ -186,7 +191,9 @@ def _parse_xml_file(path: Path) -> list[dict]:
 
 # ── FAA Jumpstart Kit MessageFileOutput parser (JMS headers + JSON body) ────
 
-_JMS_PROPERTY_RE = re.compile(r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$")
+_JMS_PROPERTY_RE = re.compile(
+    r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$"
+)
 
 
 def _parse_jms_message_file(path: Path) -> list[dict]:
@@ -379,24 +386,33 @@ def _extract_records(headers: dict[str, str], body: dict, path: Path) -> list[di
             destination=dst_airport,
         )
 
-        out.append({
-            "airport_code": airport,
-            "tracon": tracon,
-            "service_name": service_name,
-            "message_type": f"TAIS_{msg_type}",
-            "event_time_utc": event_ts,
-            "aircraft_id": fp.get("acid") or track.get("acAddress"),
-            "track_id": str(track.get("trackNum")) if track.get("trackNum") is not None else None,
-            "runway": (fp.get("runway") or "").upper() or None,
-            "lat": float(lat) if lat is not None else None,
-            "lon": float(lon) if lon is not None else None,
-            "altitude_ft": int(altitude_ft) if altitude_ft is not None else None,
-            "ground_speed_kt": ground_speed_kt,
-            "vertical_speed_fpm": int(v_vert) if v_vert is not None else None,
-            "flight_phase": flight_phase,
-            "flight_rules": fp.get("flightRules"),
-            "beacon_code": str(fp.get("assignedBeaconCode") or track.get("reportedBeaconCode") or "") or None,
-        })
+        out.append(
+            {
+                "airport_code": airport,
+                "tracon": tracon,
+                "service_name": service_name,
+                "message_type": f"TAIS_{msg_type}",
+                "event_time_utc": event_ts,
+                "aircraft_id": fp.get("acid") or track.get("acAddress"),
+                "track_id": str(track.get("trackNum"))
+                if track.get("trackNum") is not None
+                else None,
+                "runway": (fp.get("runway") or "").upper() or None,
+                "lat": float(lat) if lat is not None else None,
+                "lon": float(lon) if lon is not None else None,
+                "altitude_ft": int(altitude_ft) if altitude_ft is not None else None,
+                "ground_speed_kt": ground_speed_kt,
+                "vertical_speed_fpm": int(v_vert) if v_vert is not None else None,
+                "flight_phase": flight_phase,
+                "flight_rules": fp.get("flightRules"),
+                "beacon_code": str(
+                    fp.get("assignedBeaconCode")
+                    or track.get("reportedBeaconCode")
+                    or ""
+                )
+                or None,
+            }
+        )
 
     # If no records fall within PCT primary scope, return empty list rather
     # than emitting a noisy "PCT" placeholder that would fail ICAO validation.
@@ -424,7 +440,10 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
 
 # ── Record normaliser ─────────────────────────────────────────────────────────
 
-def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str | None]:
+
+def _normalise_record(
+    raw: dict, source_file: str
+) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
     Injects received_time_utc = now so every live-ingested event has a receipt stamp.
@@ -479,8 +498,10 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
 class IngestStats:
     """Mutable stats object accumulated during a scan pass."""
+
     def __init__(self):
         self.files_detected: int = 0
         self.files_processed: int = 0
@@ -497,7 +518,9 @@ class IngestStats:
             "files_processed": self.files_processed,
             "files_failed": self.files_failed,
             "events_parsed": self.events_parsed,
-            "latest_file_time": self.latest_file_time.isoformat() if self.latest_file_time else None,
+            "latest_file_time": self.latest_file_time.isoformat()
+            if self.latest_file_time
+            else None,
             "latest_service": self.latest_service,
         }
 
@@ -523,14 +546,17 @@ def scan_swim_folder(
     all_events: list[NASEvent] = []
 
     all_candidates = [
-        f for f in sorted(source_dir.iterdir())
+        f
+        for f in sorted(source_dir.iterdir())
         if f.is_file() and f.suffix.lower() in SCAN_EXTENSIONS
     ]
     stats.files_detected = len(all_candidates)
 
     # Cap files per scan so a backlog doesn't pin the pipeline for minutes.
     # Newest-first so live demos see the freshest data even when backlogged.
-    candidate_files = sorted(all_candidates, key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    candidate_files = sorted(
+        all_candidates, key=lambda p: p.stat().st_mtime, reverse=True
+    )[:max_files]
     if len(all_candidates) > max_files:
         _log.warning(
             "swim_ingest_backlog",
@@ -547,7 +573,9 @@ def scan_swim_folder(
                 "swim_ingest_shutdown_drain",
                 extra={
                     "files_processed": stats.files_processed,
-                    "files_remaining": len(candidate_files) - stats.files_processed - stats.files_failed,
+                    "files_remaining": len(candidate_files)
+                    - stats.files_processed
+                    - stats.files_failed,
                 },
             )
             break
@@ -560,12 +588,14 @@ def scan_swim_folder(
 
         if parse_error and not raw_records:
             _move_to_failed(path, parse_error)
-            _append_log_entry({
-                "file": path.name,
-                "status": "failed",
-                "error": parse_error,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            _append_log_entry(
+                {
+                    "file": path.name,
+                    "status": "failed",
+                    "error": parse_error,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             stats.files_failed += 1
             continue
 
@@ -582,12 +612,14 @@ def scan_swim_folder(
 
         if not events and errors:
             _move_to_failed(path, "; ".join(errors))
-            _append_log_entry({
-                "file": path.name,
-                "status": "failed",
-                "error": "; ".join(errors[:3]),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            _append_log_entry(
+                {
+                    "file": path.name,
+                    "status": "failed",
+                    "error": "; ".join(errors[:3]),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             stats.files_failed += 1
             continue
 
@@ -595,18 +627,23 @@ def scan_swim_folder(
         dest = PROCESSED_DIR / path.name
         # Avoid overwrite if file already exists in processed
         if dest.exists():
-            dest = PROCESSED_DIR / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
+            dest = (
+                PROCESSED_DIR
+                / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
+            )
         shutil.move(str(path), str(dest))
 
         services = list({e.service_name for e in events if e.service_name})
-        _append_log_entry({
-            "file": path.name,
-            "status": "processed",
-            "event_count": len(events),
-            "services": services,
-            "parse_errors": len(errors),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        _append_log_entry(
+            {
+                "file": path.name,
+                "status": "processed",
+                "event_count": len(events),
+                "services": services,
+                "parse_errors": len(errors),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
 
         stats.files_processed += 1
         stats.events_parsed += len(events)
@@ -758,7 +795,10 @@ def _move_to_failed(path: Path, reason: str) -> None:
     FAILED_DIR.mkdir(parents=True, exist_ok=True)
     dest = FAILED_DIR / path.name
     if dest.exists():
-        dest = FAILED_DIR / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
+        dest = (
+            FAILED_DIR
+            / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
+        )
     try:
         shutil.move(str(path), str(dest))
         _log.warning(

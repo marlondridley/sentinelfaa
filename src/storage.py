@@ -4,6 +4,7 @@ SQLite persistence layer for NAS FeedOps Sentinel.
 Uses a single module-level connection (suitable for single-process use).
 Call reset_db() in tests to start with a clean slate.
 """
+
 from __future__ import annotations
 
 import json
@@ -274,6 +275,7 @@ def save_alerts(alerts: list[AlertEvent]) -> None:
 
 # ── Read operations ───────────────────────────────────────────────────────────
 
+
 def get_recent_events(limit: int = 500) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
@@ -341,7 +343,9 @@ def get_events_for_critic(
 ) -> list[dict]:
     """Return a lightweight event summary for the critic context window."""
     conn = _get_conn()
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
     if airport_code:
         rows = conn.execute(
             """SELECT event_id, airport_code, service_name, latency_ms, feed_status,
@@ -372,7 +376,9 @@ def get_alerts_for_critic(
 ) -> list[dict]:
     """Return recent alerts for the critic/planner context window."""
     conn = _get_conn()
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
     if airport_code:
         rows = conn.execute(
             """SELECT alert_id, alert_type, severity, airport_code, service_name,
@@ -404,6 +410,7 @@ def get_recent_critic_results(limit: int = 50) -> list[dict]:
 
 def save_planner_result(result: PlannerResult) -> None:
     import uuid
+
     conn = _get_conn()
     conn.execute(
         """INSERT OR REPLACE INTO planner_results VALUES (
@@ -452,7 +459,9 @@ def save_critic_result(result: CriticResult) -> None:
 def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> list[dict]:
     """Latest position per aircraft seen in the last N minutes (for airspace map)."""
     conn = _get_conn()
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
     rows = conn.execute(
         """
         SELECT e.*
@@ -478,7 +487,9 @@ def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> list[dict]
 def get_flight_phase_counts(window_minutes: int = 15) -> dict:
     """Count distinct aircraft by flight_phase within window (per airport)."""
     conn = _get_conn()
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
     rows = conn.execute(
         """
         SELECT airport_code,
@@ -501,7 +512,9 @@ def get_flight_phase_counts(window_minutes: int = 15) -> dict:
 def get_altitude_distribution(window_minutes: int = 15) -> list[dict]:
     """Altitudes for current aircraft (for histogram)."""
     conn = _get_conn()
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
     rows = conn.execute(
         """
         SELECT airport_code, altitude_ft, ground_speed_kt
@@ -530,6 +543,7 @@ def get_latency_stats() -> dict:
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
 
+
 def reset_db() -> None:
     """Drop and recreate all tables. Use only in tests."""
     global _CONN
@@ -551,6 +565,7 @@ def reset_db() -> None:
 
 # ── HITL Staged Action persistence ────────────────────────────────────────────
 
+
 def _row_to_staged_action(row) -> StagedAction:
     d = dict(row)
     return StagedAction(
@@ -567,8 +582,12 @@ def _row_to_staged_action(row) -> StagedAction:
         critic_pattern=d.get("critic_pattern"),
         status=d.get("status", "PENDING"),
         idempotency_key=d.get("idempotency_key") or "",
-        created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(timezone.utc),
-        decided_at=datetime.fromisoformat(d["decided_at"]) if d.get("decided_at") else None,
+        created_at=datetime.fromisoformat(d["created_at"])
+        if d.get("created_at")
+        else datetime.now(timezone.utc),
+        decided_at=datetime.fromisoformat(d["decided_at"])
+        if d.get("decided_at")
+        else None,
         decided_by=d.get("decided_by"),
         decision_note=d.get("decision_note"),
     )
@@ -612,14 +631,20 @@ def create_staged_action(action: StagedAction) -> StagedAction:
             "decided_at": action.decided_at.isoformat() if action.decided_at else None,
         },
     )
-    _write_audit(action.action_id, previous_status="(new)", new_status=action.status,
-                 actor="system", note="staged from CRITICAL alert")
+    _write_audit(
+        action.action_id,
+        previous_status="(new)",
+        new_status=action.status,
+        actor="system",
+        note="staged from CRITICAL alert",
+    )
     conn.commit()
     return action
 
 
-def _write_audit(action_id: str, previous_status: str, new_status: str,
-                 actor: str, note: str = "") -> None:
+def _write_audit(
+    action_id: str, previous_status: str, new_status: str, actor: str, note: str = ""
+) -> None:
     """Internal: append a row to action_audit_log. Single source of truth for state transitions."""
     entry = ActionAuditEntry(
         action_id=action_id,
@@ -688,8 +713,13 @@ def _decide_staged_action(
            WHERE action_id = ?""",
         (new_status, now, actor, note, action_id),
     )
-    _write_audit(action_id, previous_status=current_status, new_status=new_status,
-                 actor=actor, note=note)
+    _write_audit(
+        action_id,
+        previous_status=current_status,
+        new_status=new_status,
+        actor=actor,
+        note=note,
+    )
     conn.commit()
 
     updated = conn.execute(
@@ -698,29 +728,36 @@ def _decide_staged_action(
     return _row_to_staged_action(updated) if updated else None
 
 
-def approve_staged_action(action_id: str, actor: str = "dashboard_operator",
-                          note: str = "") -> StagedAction | None:
+def approve_staged_action(
+    action_id: str, actor: str = "dashboard_operator", note: str = ""
+) -> StagedAction | None:
     return _decide_staged_action(action_id, "APPROVED", actor, note)
 
 
-def reject_staged_action(action_id: str, actor: str = "dashboard_operator",
-                         note: str = "") -> StagedAction | None:
+def reject_staged_action(
+    action_id: str, actor: str = "dashboard_operator", note: str = ""
+) -> StagedAction | None:
     return _decide_staged_action(action_id, "REJECTED", actor, note)
 
 
 # ── Watch Officer Brief persistence ──────────────────────────────────────────
 
+
 def _row_to_brief(row) -> WatchOfficerBrief:
     d = dict(row)
     return WatchOfficerBrief(
         brief_id=d["brief_id"],
-        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.now(timezone.utc),
+        generated_at=datetime.fromisoformat(d["generated_at"])
+        if d.get("generated_at")
+        else datetime.now(timezone.utc),
         posture=d.get("posture", "UNKNOWN"),
         trust_assessment=d.get("trust_assessment", "UNKNOWN"),
         headline=d.get("headline") or "",
         what_changed=json.loads(d.get("what_changed_json") or "[]"),
         why_it_matters=json.loads(d.get("why_it_matters_json") or "[]"),
-        recommended_human_review=json.loads(d.get("recommended_human_review_json") or "[]"),
+        recommended_human_review=json.loads(
+            d.get("recommended_human_review_json") or "[]"
+        ),
         evidence=json.loads(d.get("evidence_json") or "[]"),
         affected_airports=json.loads(d.get("affected_airports_json") or "[]"),
         pending_actions_count=d.get("pending_actions_count") or 0,
@@ -790,6 +827,7 @@ def get_recent_watch_officer_briefs(limit: int = 10) -> list[WatchOfficerBrief]:
 
 # ── Operational Ticket persistence ────────────────────────────────────────────
 
+
 def _row_to_ticket(row) -> OperationalTicket:
     d = dict(row)
     return OperationalTicket(
@@ -797,7 +835,9 @@ def _row_to_ticket(row) -> OperationalTicket:
         action_id=d.get("action_id"),
         alert_id=d.get("alert_id"),
         brief_id=d.get("brief_id"),
-        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.now(timezone.utc),
+        generated_at=datetime.fromisoformat(d["generated_at"])
+        if d.get("generated_at")
+        else datetime.now(timezone.utc),
         title=d.get("title") or "",
         severity=d.get("severity") or "CRITICAL",
         affected_airport=d.get("affected_airport"),
@@ -813,7 +853,9 @@ def _row_to_ticket(row) -> OperationalTicket:
         status=d.get("status") or "DRAFT",
         created_by_agent=d.get("created_by_agent") or "watch_officer",
         decided_by=d.get("decided_by"),
-        decided_at=datetime.fromisoformat(d["decided_at"]) if d.get("decided_at") else None,
+        decided_at=datetime.fromisoformat(d["decided_at"])
+        if d.get("decided_at")
+        else None,
         decision_note=d.get("decision_note"),
         idempotency_key=d.get("idempotency_key") or "",
     )

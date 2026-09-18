@@ -18,6 +18,7 @@ Scenario timeline (all within the last 20 minutes):
 This makes the Critic score CASCADE_FAILURE with high confidence and
 the Planner identify multi-service, multi-factor KDCA degradation.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -40,7 +41,9 @@ def _event(**kwargs) -> NASEvent:
     if "latency_ms" not in base:
         base["latency_ms"] = 220.0
     if "received_time_utc" not in base:
-        base["received_time_utc"] = base.get("event_time_utc", datetime.now(timezone.utc))
+        base["received_time_utc"] = base.get(
+            "event_time_utc", datetime.now(timezone.utc)
+        )
     return NASEvent(**base)
 
 
@@ -51,97 +54,162 @@ def generate_cascade_failure_scenario() -> list[NASEvent]:
     # T-20m: ISMC DEGRADED at KDCA
     t = _now_minus(20)
     for _ in range(3):
-        events.append(_event(
-            airport_code="KDCA", service_name="ISMC", message_type="link_status",
-            event_time_utc=t, received_time_utc=t,
-            feed_status="degraded", latency_ms=280.0,
-        ))
+        events.append(
+            _event(
+                airport_code="KDCA",
+                service_name="ISMC",
+                message_type="link_status",
+                event_time_utc=t,
+                received_time_utc=t,
+                feed_status="degraded",
+                latency_ms=280.0,
+            )
+        )
 
     # T-18m: RVR 900 ft on runway 01 at KDCA
     t = _now_minus(18)
-    events.append(_event(
-        airport_code="KDCA", service_name="APDS_RVR", message_type="rvr_report",
-        event_time_utc=t, received_time_utc=t,
-        runway="01", rvr_touchdown=900, rvr_midpoint=1100, rvr_rollout=1400,
-        latency_ms=310.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KDCA",
+            service_name="APDS_RVR",
+            message_type="rvr_report",
+            event_time_utc=t,
+            received_time_utc=t,
+            runway="01",
+            rvr_touchdown=900,
+            rvr_midpoint=1100,
+            rvr_rollout=1400,
+            latency_ms=310.0,
+        )
+    )
 
     # T-15m: ISMC UNAVAILABLE at KDCA
     t = _now_minus(15)
     for _ in range(2):
-        events.append(_event(
-            airport_code="KDCA", service_name="ISMC", message_type="link_status",
-            event_time_utc=t, received_time_utc=t,
-            feed_status="unavailable", latency_ms=420.0,
-        ))
+        events.append(
+            _event(
+                airport_code="KDCA",
+                service_name="ISMC",
+                message_type="link_status",
+                event_time_utc=t,
+                received_time_utc=t,
+                feed_status="unavailable",
+                latency_ms=420.0,
+            )
+        )
 
     # T-30s: SMES spike — 14 rapid surface events at KDCA (within 60-second detection window)
     t = _now_minus(0.5)
     for i in range(14):
-        events.append(_event(
-            airport_code="KDCA", service_name="SMES", message_type="surface_event",
-            event_time_utc=t + timedelta(seconds=i * 2),
-            received_time_utc=t + timedelta(seconds=i * 2),
-            aircraft_id=f"AAL{100 + i}", surface_event_type="MOVEMENT",
-            latency_ms=195.0,
-        ))
+        events.append(
+            _event(
+                airport_code="KDCA",
+                service_name="SMES",
+                message_type="surface_event",
+                event_time_utc=t + timedelta(seconds=i * 2),
+                received_time_utc=t + timedelta(seconds=i * 2),
+                aircraft_id=f"AAL{100 + i}",
+                surface_event_type="MOVEMENT",
+                latency_ms=195.0,
+            )
+        )
 
     # T-10m: RVR drops to 600 ft — well below minimum
     t = _now_minus(10)
-    events.append(_event(
-        airport_code="KDCA", service_name="APDS_RVR", message_type="rvr_report",
-        event_time_utc=t, received_time_utc=t,
-        runway="01", rvr_touchdown=600, rvr_midpoint=700, rvr_rollout=900,
-        latency_ms=390.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KDCA",
+            service_name="APDS_RVR",
+            message_type="rvr_report",
+            event_time_utc=t,
+            received_time_utc=t,
+            runway="01",
+            rvr_touchdown=600,
+            rvr_midpoint=700,
+            rvr_rollout=900,
+            latency_ms=390.0,
+        )
+    )
 
     # T-8m: ISMC DISCONNECTED at KDCA
     t = _now_minus(8)
-    events.append(_event(
-        airport_code="KDCA", service_name="ISMC", message_type="link_status",
-        event_time_utc=t, received_time_utc=t,
-        feed_status="disconnected", latency_ms=510.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KDCA",
+            service_name="ISMC",
+            message_type="link_status",
+            event_time_utc=t,
+            received_time_utc=t,
+            feed_status="disconnected",
+            latency_ms=510.0,
+        )
+    )
 
     # T-6m: High latency across APDS_RVR and SMES
     t = _now_minus(6)
     for svc in ("APDS_RVR", "SMES"):
-        events.append(_event(
-            airport_code="KDCA", service_name=svc, message_type="heartbeat",
-            event_time_utc=t, received_time_utc=t,
-            latency_ms=38000.0,
-            aircraft_id="SWA501" if svc == "SMES" else None,
-            surface_event_type="MOVEMENT" if svc == "SMES" else None,
-            runway="01" if svc == "APDS_RVR" else None,
-            rvr_touchdown=650 if svc == "APDS_RVR" else None,
-        ))
+        events.append(
+            _event(
+                airport_code="KDCA",
+                service_name=svc,
+                message_type="heartbeat",
+                event_time_utc=t,
+                received_time_utc=t,
+                latency_ms=38000.0,
+                aircraft_id="SWA501" if svc == "SMES" else None,
+                surface_event_type="MOVEMENT" if svc == "SMES" else None,
+                runway="01" if svc == "APDS_RVR" else None,
+                rvr_touchdown=650 if svc == "APDS_RVR" else None,
+            )
+        )
 
     # T-5m: Second runway affected — RVR 800 ft on runway 19
     t = _now_minus(5)
-    events.append(_event(
-        airport_code="KDCA", service_name="APDS_RVR", message_type="rvr_report",
-        event_time_utc=t, received_time_utc=t,
-        runway="19", rvr_touchdown=800, rvr_midpoint=950, rvr_rollout=1100,
-        latency_ms=405.0,
-    ))
+    events.append(
+        _event(
+            airport_code="KDCA",
+            service_name="APDS_RVR",
+            message_type="rvr_report",
+            event_time_utc=t,
+            received_time_utc=t,
+            runway="19",
+            rvr_touchdown=800,
+            rvr_midpoint=950,
+            rvr_rollout=1100,
+            latency_ms=405.0,
+        )
+    )
 
     # T-2m: Healthy baseline at KIAD, KBWI, KADW (creates contrast)
     t = _now_minus(2)
     for ap in ("KIAD", "KBWI", "KADW"):
         for svc in ("ISMC", "SMES"):
-            events.append(_event(
-                airport_code=ap, service_name=svc, message_type="heartbeat",
-                event_time_utc=t, received_time_utc=t,
-                feed_status="operational" if svc == "ISMC" else None,
-                aircraft_id="UAL200" if svc == "SMES" else None,
-                surface_event_type="MOVEMENT" if svc == "SMES" else None,
-                latency_ms=180.0,
-            ))
-        events.append(_event(
-            airport_code=ap, service_name="APDS_RVR", message_type="rvr_report",
-            event_time_utc=t, received_time_utc=t,
-            runway="01", rvr_touchdown=4500, rvr_midpoint=5000, rvr_rollout=5500,
-            latency_ms=175.0,
-        ))
+            events.append(
+                _event(
+                    airport_code=ap,
+                    service_name=svc,
+                    message_type="heartbeat",
+                    event_time_utc=t,
+                    received_time_utc=t,
+                    feed_status="operational" if svc == "ISMC" else None,
+                    aircraft_id="UAL200" if svc == "SMES" else None,
+                    surface_event_type="MOVEMENT" if svc == "SMES" else None,
+                    latency_ms=180.0,
+                )
+            )
+        events.append(
+            _event(
+                airport_code=ap,
+                service_name="APDS_RVR",
+                message_type="rvr_report",
+                event_time_utc=t,
+                received_time_utc=t,
+                runway="01",
+                rvr_touchdown=4500,
+                rvr_midpoint=5000,
+                rvr_rollout=5500,
+                latency_ms=175.0,
+            )
+        )
 
     return events
