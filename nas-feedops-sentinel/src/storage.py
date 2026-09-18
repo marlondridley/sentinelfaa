@@ -2,6 +2,7 @@
 PostgreSQL async persistence layer for NAS FeedOps Sentinel via asyncpg.
 Configured for compatibility with PgBouncer connection pooling.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,6 +27,7 @@ from src.models import (
 
 _POOL: asyncpg.Pool | None = None
 
+
 async def create_asyncpg_pool() -> asyncpg.Pool:
     """Create an asyncpg connection pool compatible with PgBouncer transaction pooling."""
     return await asyncpg.create_pool(
@@ -34,7 +36,6 @@ async def create_asyncpg_pool() -> asyncpg.Pool:
         min_size=5,
         max_size=20,
     )
-
 
 
 async def get_db_pool() -> asyncpg.Pool:
@@ -74,7 +75,9 @@ async def close_db_pool() -> None:
 # this list to real migration files at that point.
 
 _MIGRATIONS: list[tuple[str, str]] = [
-    ("2026_09_postgres_referential_integrity_fks", """
+    (
+        "2026_09_postgres_referential_integrity_fks",
+        """
         -- Step 1: Nullify dangling foreign key references across existing tables
         UPDATE alert_events
         SET event_id = NULL
@@ -154,7 +157,8 @@ _MIGRATIONS: list[tuple[str, str]] = [
                 FOREIGN KEY (brief_id) REFERENCES watch_officer_briefs(brief_id) ON DELETE SET NULL;
             END IF;
         END $$;
-    """),
+    """,
+    ),
 ]
 
 
@@ -166,7 +170,9 @@ async def _run_migrations(pool: asyncpg.Pool) -> None:
                 applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
-        applied = {r["id"] for r in await conn.fetch("SELECT id FROM schema_migrations")}
+        applied = {
+            r["id"] for r in await conn.fetch("SELECT id FROM schema_migrations")
+        }
 
         for migration_id, sql in _MIGRATIONS:
             if migration_id in applied:
@@ -337,6 +343,7 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
 
 # ── Write operations ──────────────────────────────────────────────────────────
 
+
 async def save_event(event: NASEvent) -> None:
     pool = await get_db_pool()
     query = """
@@ -383,13 +390,34 @@ async def save_event(event: NASEvent) -> None:
     """
     await pool.execute(
         query,
-        event.event_id, event.airport_code, event.tracon, event.service_name, event.message_type,
-        event.event_time_utc, event.received_time_utc, event.latency_ms, event.runway,
-        event.rvr_touchdown, event.rvr_midpoint, event.rvr_rollout, event.track_id,
-        event.aircraft_id, event.vehicle_id, event.surface_event_type,
-        event.lat, event.lon, event.altitude_ft, event.ground_speed_kt, event.vertical_speed_fpm,
-        event.flight_phase, event.flight_rules, event.beacon_code,
-        event.feed_status, event.validation_status, json.dumps(event.validation_errors), event.raw_message_path
+        event.event_id,
+        event.airport_code,
+        event.tracon,
+        event.service_name,
+        event.message_type,
+        event.event_time_utc,
+        event.received_time_utc,
+        event.latency_ms,
+        event.runway,
+        event.rvr_touchdown,
+        event.rvr_midpoint,
+        event.rvr_rollout,
+        event.track_id,
+        event.aircraft_id,
+        event.vehicle_id,
+        event.surface_event_type,
+        event.lat,
+        event.lon,
+        event.altitude_ft,
+        event.ground_speed_kt,
+        event.vertical_speed_fpm,
+        event.flight_phase,
+        event.flight_rules,
+        event.beacon_code,
+        event.feed_status,
+        event.validation_status,
+        json.dumps(event.validation_errors),
+        event.raw_message_path,
     )
 
 
@@ -411,8 +439,14 @@ async def save_alert(alert: AlertEvent) -> None:
     """
     await pool.execute(
         query,
-        alert.alert_id, alert.alert_type, alert.severity, alert.airport_code,
-        alert.service_name, alert.description, alert.triggered_at, alert.event_id
+        alert.alert_id,
+        alert.alert_type,
+        alert.severity,
+        alert.airport_code,
+        alert.service_name,
+        alert.description,
+        alert.triggered_at,
+        alert.event_id,
     )
 
 
@@ -427,6 +461,7 @@ async def save_alerts(alerts: list[AlertEvent]) -> None:
 
 
 # ── Read operations ───────────────────────────────────────────────────────────
+
 
 async def get_recent_events(limit: int = 500) -> list[dict]:
     # NOTE: column list mirrors the full nas_events schema (see _init_schema) so the
@@ -522,7 +557,9 @@ async def get_events_for_critic(
                FROM nas_events
                WHERE airport_code = $1 AND received_time_utc >= $2
                ORDER BY received_time_utc DESC LIMIT $3""",
-            airport_code, cutoff, limit
+            airport_code,
+            cutoff,
+            limit,
         )
     else:
         rows = await pool.fetch(
@@ -532,7 +569,8 @@ async def get_events_for_critic(
                FROM nas_events
                WHERE received_time_utc >= $1
                ORDER BY received_time_utc DESC LIMIT $2""",
-            cutoff, limit
+            cutoff,
+            limit,
         )
     return [dict(r) for r in rows]
 
@@ -551,7 +589,9 @@ async def get_alerts_for_critic(
                FROM alert_events
                WHERE airport_code = $1 AND triggered_at >= $2
                ORDER BY triggered_at DESC LIMIT $3""",
-            airport_code, cutoff, limit
+            airport_code,
+            cutoff,
+            limit,
         )
     else:
         rows = await pool.fetch(
@@ -560,7 +600,8 @@ async def get_alerts_for_critic(
                FROM alert_events
                WHERE triggered_at >= $1
                ORDER BY triggered_at DESC LIMIT $2""",
-            cutoff, limit
+            cutoff,
+            limit,
         )
     return [dict(r) for r in rows]
 
@@ -595,15 +636,22 @@ async def save_planner_result(result: PlannerResult) -> None:
     """
     await pool.execute(
         query,
-        str(uuid.uuid4()), result.question, result.answer, json.dumps(result.sub_queries),
-        result.confidence, json.dumps(result.citations), json.dumps(result.recommended_actions),
-        result.evaluated_at
+        str(uuid.uuid4()),
+        result.question,
+        result.answer,
+        json.dumps(result.sub_queries),
+        result.confidence,
+        json.dumps(result.citations),
+        json.dumps(result.recommended_actions),
+        result.evaluated_at,
     )
 
 
 async def get_recent_planner_results(limit: int = 10) -> list[dict]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM planner_results ORDER BY evaluated_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        "SELECT * FROM planner_results ORDER BY evaluated_at DESC LIMIT $1", limit
+    )
     return [dict(r) for r in rows]
 
 
@@ -623,8 +671,13 @@ async def save_critic_result(result: CriticResult) -> None:
     """
     await pool.execute(
         query,
-        result.alert_id, result.confidence, result.reasoning, json.dumps(result.citations),
-        result.pattern, bool(result.escalate), result.evaluated_at
+        result.alert_id,
+        result.confidence,
+        result.reasoning,
+        json.dumps(result.citations),
+        result.pattern,
+        bool(result.escalate),
+        result.evaluated_at,
     )
 
 
@@ -701,6 +754,7 @@ async def get_latency_stats() -> dict:
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
 
+
 async def reset_db() -> None:
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -735,6 +789,7 @@ def override_db_path(path: str = ":memory:") -> None:
 
 
 # ── HITL Staged Action persistence ────────────────────────────────────────────
+
 
 def _row_to_staged_action(row) -> StagedAction:
     d = dict(row)
@@ -781,18 +836,37 @@ async def create_staged_action(action: StagedAction) -> StagedAction:
     """
     await pool.execute(
         query,
-        action.action_id, action.alert_id, action.event_id, action.airport_code, action.service_name,
-        action.severity, action.alert_type, action.recommended_action, action.rationale,
-        action.critic_confidence, action.critic_pattern, action.status, action.idempotency_key,
-        action.created_at, action.decided_at, action.decided_by, action.decision_note
+        action.action_id,
+        action.alert_id,
+        action.event_id,
+        action.airport_code,
+        action.service_name,
+        action.severity,
+        action.alert_type,
+        action.recommended_action,
+        action.rationale,
+        action.critic_confidence,
+        action.critic_pattern,
+        action.status,
+        action.idempotency_key,
+        action.created_at,
+        action.decided_at,
+        action.decided_by,
+        action.decision_note,
     )
-    await _write_audit(action.action_id, previous_status="(new)", new_status=action.status,
-                       actor="system", note="staged from CRITICAL alert")
+    await _write_audit(
+        action.action_id,
+        previous_status="(new)",
+        new_status=action.status,
+        actor="system",
+        note="staged from CRITICAL alert",
+    )
     return action
 
 
-async def _write_audit(action_id: str, previous_status: str, new_status: str,
-                       actor: str, note: str = "") -> None:
+async def _write_audit(
+    action_id: str, previous_status: str, new_status: str, actor: str, note: str = ""
+) -> None:
     entry = ActionAuditEntry(
         action_id=action_id,
         previous_status=previous_status,
@@ -808,8 +882,13 @@ async def _write_audit(action_id: str, previous_status: str, new_status: str,
     """
     await pool.execute(
         query,
-        entry.audit_id, entry.action_id, entry.previous_status, entry.new_status,
-        entry.actor, entry.note, entry.created_at
+        entry.audit_id,
+        entry.action_id,
+        entry.previous_status,
+        entry.new_status,
+        entry.actor,
+        entry.note,
+        entry.created_at,
     )
 
 
@@ -852,7 +931,9 @@ async def _decide_staged_action(
         raise ValueError(f"new_status must be APPROVED or REJECTED, got {new_status}")
 
     pool = await get_db_pool()
-    row = await pool.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1", action_id)
+    row = await pool.fetchrow(
+        "SELECT * FROM staged_actions WHERE action_id = $1", action_id
+    )
     if row is None:
         return None
 
@@ -865,39 +946,58 @@ async def _decide_staged_action(
         """UPDATE staged_actions
            SET status = $1, decided_at = $2, decided_by = $3, decision_note = $4
            WHERE action_id = $5""",
-        new_status, now, actor, note, action_id
+        new_status,
+        now,
+        actor,
+        note,
+        action_id,
     )
-    await _write_audit(action_id, previous_status=current_status, new_status=new_status,
-                       actor=actor, note=note)
+    await _write_audit(
+        action_id,
+        previous_status=current_status,
+        new_status=new_status,
+        actor=actor,
+        note=note,
+    )
 
-    updated = await pool.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1", action_id)
+    updated = await pool.fetchrow(
+        "SELECT * FROM staged_actions WHERE action_id = $1", action_id
+    )
     return _row_to_staged_action(updated) if updated else None
 
 
-async def approve_staged_action(action_id: str, actor: str = "dashboard_operator",
-                                note: str = "") -> StagedAction | None:
+async def approve_staged_action(
+    action_id: str, actor: str = "dashboard_operator", note: str = ""
+) -> StagedAction | None:
     return await _decide_staged_action(action_id, "APPROVED", actor, note)
 
 
-async def reject_staged_action(action_id: str, actor: str = "dashboard_operator",
-                               note: str = "") -> StagedAction | None:
+async def reject_staged_action(
+    action_id: str, actor: str = "dashboard_operator", note: str = ""
+) -> StagedAction | None:
     return await _decide_staged_action(action_id, "REJECTED", actor, note)
 
 
-async def get_action_audit_log(action_id: str | None = None, limit: int = 50) -> list[dict]:
+async def get_action_audit_log(
+    action_id: str | None = None, limit: int = 50
+) -> list[dict]:
     pool = await get_db_pool()
     if action_id:
         rows = await pool.fetch(
             """SELECT * FROM action_audit_log WHERE action_id = $1
                ORDER BY created_at DESC LIMIT $2""",
-            action_id, limit
+            action_id,
+            limit,
         )
     else:
-        rows = await pool.fetch("SELECT * FROM action_audit_log ORDER BY created_at DESC LIMIT $1", limit)
+        rows = await pool.fetch(
+            "SELECT * FROM action_audit_log ORDER BY created_at DESC LIMIT $1", limit
+        )
     return [dict(r) for r in rows]
 
 
 # ── Watch Officer Brief persistence ──────────────────────────────────────────
+
 
 def _row_to_brief(row) -> WatchOfficerBrief:
     d = dict(row)
@@ -907,16 +1007,30 @@ def _row_to_brief(row) -> WatchOfficerBrief:
         posture=d.get("posture", "UNKNOWN"),
         trust_assessment=d.get("trust_assessment", "UNKNOWN"),
         headline=d.get("headline") or "",
-        what_changed=json.loads(d.get("what_changed_json") or "[]") if isinstance(d.get("what_changed_json"), str) else d.get("what_changed_json", []),
-        why_it_matters=json.loads(d.get("why_it_matters_json") or "[]") if isinstance(d.get("why_it_matters_json"), str) else d.get("why_it_matters_json", []),
-        recommended_human_review=json.loads(d.get("recommended_human_review_json") or "[]") if isinstance(d.get("recommended_human_review_json"), str) else d.get("recommended_human_review_json", []),
-        evidence=json.loads(d.get("evidence_json") or "[]") if isinstance(d.get("evidence_json"), str) else d.get("evidence_json", []),
-        affected_airports=json.loads(d.get("affected_airports_json") or "[]") if isinstance(d.get("affected_airports_json"), str) else d.get("affected_airports_json", []),
+        what_changed=json.loads(d.get("what_changed_json") or "[]")
+        if isinstance(d.get("what_changed_json"), str)
+        else d.get("what_changed_json", []),
+        why_it_matters=json.loads(d.get("why_it_matters_json") or "[]")
+        if isinstance(d.get("why_it_matters_json"), str)
+        else d.get("why_it_matters_json", []),
+        recommended_human_review=json.loads(
+            d.get("recommended_human_review_json") or "[]"
+        )
+        if isinstance(d.get("recommended_human_review_json"), str)
+        else d.get("recommended_human_review_json", []),
+        evidence=json.loads(d.get("evidence_json") or "[]")
+        if isinstance(d.get("evidence_json"), str)
+        else d.get("evidence_json", []),
+        affected_airports=json.loads(d.get("affected_airports_json") or "[]")
+        if isinstance(d.get("affected_airports_json"), str)
+        else d.get("affected_airports_json", []),
         pending_actions_count=d.get("pending_actions_count") or 0,
         critical_alert_count=d.get("critical_alert_count") or 0,
         confidence=d.get("confidence") or 0.5,
         llm_used=bool(d.get("llm_used")),
-        limitations=json.loads(d.get("limitations_json") or "[]") if isinstance(d.get("limitations_json"), str) else d.get("limitations_json", []),
+        limitations=json.loads(d.get("limitations_json") or "[]")
+        if isinstance(d.get("limitations_json"), str)
+        else d.get("limitations_json", []),
     )
 
 
@@ -948,27 +1062,43 @@ async def save_watch_officer_brief(brief: WatchOfficerBrief) -> WatchOfficerBrie
     """
     await pool.execute(
         query,
-        brief.brief_id, brief.generated_at, brief.posture, brief.trust_assessment, brief.headline,
-        json.dumps(brief.what_changed), json.dumps(brief.why_it_matters), json.dumps(brief.recommended_human_review),
-        json.dumps(brief.evidence), json.dumps(brief.affected_airports), brief.pending_actions_count,
-        brief.critical_alert_count, brief.confidence, bool(brief.llm_used), json.dumps(brief.limitations)
+        brief.brief_id,
+        brief.generated_at,
+        brief.posture,
+        brief.trust_assessment,
+        brief.headline,
+        json.dumps(brief.what_changed),
+        json.dumps(brief.why_it_matters),
+        json.dumps(brief.recommended_human_review),
+        json.dumps(brief.evidence),
+        json.dumps(brief.affected_airports),
+        brief.pending_actions_count,
+        brief.critical_alert_count,
+        brief.confidence,
+        bool(brief.llm_used),
+        json.dumps(brief.limitations),
     )
     return brief
 
 
 async def get_latest_watch_officer_brief() -> WatchOfficerBrief | None:
     pool = await get_db_pool()
-    row = await pool.fetchrow("SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT 1")
+    row = await pool.fetchrow(
+        "SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT 1"
+    )
     return _row_to_brief(row) if row else None
 
 
 async def get_recent_watch_officer_briefs(limit: int = 10) -> list[WatchOfficerBrief]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        "SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT $1", limit
+    )
     return [_row_to_brief(r) for r in rows]
 
 
 # ── Operational Ticket persistence ────────────────────────────────────────────
+
 
 def _row_to_ticket(row) -> OperationalTicket:
     d = dict(row)
@@ -985,10 +1115,18 @@ def _row_to_ticket(row) -> OperationalTicket:
         posture=d.get("posture") or "ACTION",
         trust_assessment=d.get("trust_assessment") or "DEGRADED",
         summary=d.get("summary") or "",
-        what_changed=json.loads(d.get("what_changed_json") or "[]") if isinstance(d.get("what_changed_json"), str) else d.get("what_changed_json", []),
-        why_it_matters=json.loads(d.get("why_it_matters_json") or "[]") if isinstance(d.get("why_it_matters_json"), str) else d.get("why_it_matters_json", []),
-        evidence=json.loads(d.get("evidence_json") or "[]") if isinstance(d.get("evidence_json"), str) else d.get("evidence_json", []),
-        recommended_review=json.loads(d.get("recommended_review_json") or "[]") if isinstance(d.get("recommended_review_json"), str) else d.get("recommended_review_json", []),
+        what_changed=json.loads(d.get("what_changed_json") or "[]")
+        if isinstance(d.get("what_changed_json"), str)
+        else d.get("what_changed_json", []),
+        why_it_matters=json.loads(d.get("why_it_matters_json") or "[]")
+        if isinstance(d.get("why_it_matters_json"), str)
+        else d.get("why_it_matters_json", []),
+        evidence=json.loads(d.get("evidence_json") or "[]")
+        if isinstance(d.get("evidence_json"), str)
+        else d.get("evidence_json", []),
+        recommended_review=json.loads(d.get("recommended_review_json") or "[]")
+        if isinstance(d.get("recommended_review_json"), str)
+        else d.get("recommended_review_json", []),
         critic_rationale=d.get("critic_rationale"),
         status=d.get("status") or "DRAFT",
         created_by_agent=d.get("created_by_agent") or "watch_officer",
@@ -1024,14 +1162,32 @@ async def create_operational_ticket(ticket: OperationalTicket) -> OperationalTic
     """
     await pool.execute(
         query,
-        ticket.ticket_id, ticket.action_id, ticket.alert_id, ticket.brief_id, ticket.generated_at,
-        ticket.title, ticket.severity, ticket.affected_airport, ticket.affected_service,
-        ticket.posture, ticket.trust_assessment, ticket.summary, json.dumps(ticket.what_changed),
-        json.dumps(ticket.why_it_matters), json.dumps(ticket.evidence), json.dumps(ticket.recommended_review),
-        ticket.critic_rationale, ticket.status, ticket.created_by_agent, ticket.decided_by,
-        ticket.decided_at, ticket.decision_note, ticket.idempotency_key
+        ticket.ticket_id,
+        ticket.action_id,
+        ticket.alert_id,
+        ticket.brief_id,
+        ticket.generated_at,
+        ticket.title,
+        ticket.severity,
+        ticket.affected_airport,
+        ticket.affected_service,
+        ticket.posture,
+        ticket.trust_assessment,
+        ticket.summary,
+        json.dumps(ticket.what_changed),
+        json.dumps(ticket.why_it_matters),
+        json.dumps(ticket.evidence),
+        json.dumps(ticket.recommended_review),
+        ticket.critic_rationale,
+        ticket.status,
+        ticket.created_by_agent,
+        ticket.decided_by,
+        ticket.decided_at,
+        ticket.decision_note,
+        ticket.idempotency_key,
     )
     return ticket
+
 
 async def save_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
     pool = await get_db_pool()
@@ -1103,16 +1259,21 @@ async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTic
         limit,
     )
     return [_row_to_ticket(r) for r in rows]
-    
+
+
 async def get_draft_operational_tickets() -> list[OperationalTicket]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC")
+    rows = await pool.fetch(
+        "SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC"
+    )
     return [_row_to_ticket(r) for r in rows]
 
 
 async def get_ticket_by_id(ticket_id: str) -> OperationalTicket | None:
     pool = await get_db_pool()
-    row = await pool.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
+    row = await pool.fetchrow(
+        "SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id
+    )
     return _row_to_ticket(row) if row else None
 
 
@@ -1120,7 +1281,7 @@ async def get_ticket_by_action_id(action_id: str) -> OperationalTicket | None:
     pool = await get_db_pool()
     row = await pool.fetchrow(
         "SELECT * FROM operational_tickets WHERE action_id = $1 ORDER BY generated_at DESC LIMIT 1",
-        action_id
+        action_id,
     )
     return _row_to_ticket(row) if row else None
 
@@ -1132,7 +1293,9 @@ async def _transition_ticket(
         raise ValueError(f"new_status {new_status} not permitted")
 
     pool = await get_db_pool()
-    row = await pool.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
+    row = await pool.fetchrow(
+        "SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id
+    )
     if row is None:
         return None
 
@@ -1145,7 +1308,11 @@ async def _transition_ticket(
         """UPDATE operational_tickets
            SET status = $1, decided_at = $2, decided_by = $3, decision_note = $4
            WHERE ticket_id = $5""",
-        new_status, now, actor, note, ticket_id
+        new_status,
+        now,
+        actor,
+        note,
+        ticket_id,
     )
     await _write_audit(
         action_id=f"ticket:{ticket_id}",
@@ -1154,7 +1321,9 @@ async def _transition_ticket(
         actor=actor,
         note=note,
     )
-    updated = await pool.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
+    updated = await pool.fetchrow(
+        "SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id
+    )
     return _row_to_ticket(updated) if updated else None
 
 
