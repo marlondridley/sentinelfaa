@@ -10,7 +10,7 @@ Messages reflect actual PCT TRACON operational parameters:
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from src import config
@@ -54,7 +54,7 @@ FEED_STATUS_WEIGHTS: list[float] = [0.75, 0.12, 0.08, 0.05]
 
 def _event_time() -> datetime:
     """Recent event time with slight random jitter (simulates real-time stream)."""
-    return datetime.utcnow() - timedelta(milliseconds=random.randint(50, 5_000))
+    return datetime.now(timezone.utc) - timedelta(milliseconds=random.randint(50, 5_000))
 
 
 def _received_time(event_time: datetime) -> datetime:

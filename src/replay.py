@@ -10,12 +10,15 @@ Timestamps must be ISO-8601 strings; latency_ms is recalculated on load.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
 from src import config
+from src.logging_config import get_logger
 from src.models import NASEvent
+
+_log = get_logger(__name__)
 
 
 def load_raw_messages(source_dir: Path | None = None) -> List[dict]:
@@ -34,9 +37,15 @@ def load_raw_messages(source_dir: Path | None = None) -> List[dict]:
                 data["_source_file"] = str(json_file)
                 messages.append(data)
             else:
-                print(f"[REPLAY] Skipping {json_file.name}: unexpected root type.")
+                _log.warning(
+                    "replay_skip_unexpected_root_type",
+                    extra={"file": json_file.name, "root_type": type(data).__name__},
+                )
         except (json.JSONDecodeError, OSError) as exc:
-            print(f"[REPLAY] Skipping {json_file.name}: {exc}")
+            _log.warning(
+                "replay_skip_file_error",
+                extra={"file": json_file.name, "error": str(exc)},
+            )
 
     return messages
 
@@ -76,7 +85,10 @@ def replay_from_directory(
     source_dir = source_dir or config.RAW_DIR
     raw_messages = load_raw_messages(source_dir)
 
-    print(f"[REPLAY] {len(raw_messages)} raw messages found in {source_dir}")
+    _log.info(
+        "replay_messages_found",
+        extra={"raw_message_count": len(raw_messages), "source_dir": str(source_dir)},
+    )
 
     events: List[NASEvent] = []
     errors: List[str] = []
@@ -87,7 +99,10 @@ def replay_from_directory(
         else:
             errors.append(error or "Unknown parse error")
 
-    print(f"[REPLAY] Parsed: {len(events)} events | Errors: {len(errors)}")
+    _log.info(
+        "replay_parse_complete",
+        extra={"event_count": len(events), "parse_error_count": len(errors)},
+    )
     return events, errors
 
 
@@ -101,7 +116,7 @@ def write_sample_replay_file(
     """
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
     if output_path is None:
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_path = config.RAW_DIR / f"sample_{timestamp}.json"
 
     payload = []
@@ -112,5 +127,8 @@ def write_sample_replay_file(
         payload.append(d)
 
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"[REPLAY] Wrote {len(events)} events to {output_path}")
+    _log.info(
+        "replay_sample_file_written",
+        extra={"event_count": len(events), "output_path": str(output_path)},
+    )
     return output_path

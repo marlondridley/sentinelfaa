@@ -328,5 +328,5 @@ Your data pipeline is **ready for production use**. The Cassandra ↔ Kafka ↔ 
 ---
 
 **Documentation Location:** 
-- `C:\Users\marlo\source\peratonfaa\instraclustr\PIPELINE_GUIDE.md`
-- `C:\Users\marlo\source\peratonfaa\instraclustr\DEPLOYMENT_SUMMARY.md`
+- `C:\Users\marlo\source\sentinelfaa\instraclustr\PIPELINE_GUIDE.md`
+- `C:\Users\marlo\source\sentinelfaa\instraclustr\DEPLOYMENT_SUMMARY.md`

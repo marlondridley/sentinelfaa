@@ -16,7 +16,9 @@ from pathlib import Path
 
 from src import config
 from src.models import NASEvent
+from src.logging_config import get_logger
 
+_log = get_logger(__name__)
 
 def load_raw_messages(source_dir: Path | None = None) -> list[dict]:
     """Read all .json files in source_dir and return a flat list of raw dicts."""
@@ -34,9 +36,15 @@ def load_raw_messages(source_dir: Path | None = None) -> list[dict]:
                 data["_source_file"] = str(json_file)
                 messages.append(data)
             else:
-                print(f"[REPLAY] Skipping {json_file.name}: unexpected root type.")
+                _log.warning(
+                    "replay_skip_unexpected_type",
+                    extra={"file_name": json_file.name, "root_type": type(data).__name__},
+                )
         except (json.JSONDecodeError, OSError) as exc:
-            print(f"[REPLAY] Skipping {json_file.name}: {exc}")
+            _log.warning(
+                "replay_file_read_error",
+                extra={"file_name": json_file.name, "error": str(exc)},
+            )
 
     return messages
 
@@ -76,9 +84,10 @@ def replay_from_directory(
     """
     source_dir = source_dir or config.RAW_DIR
     raw_messages = load_raw_messages(source_dir)
-
-    print(f"[REPLAY] {len(raw_messages)} raw messages found in {source_dir}")
-
+    _log.info(
+        "replay_messages_found",
+        extra={"raw_message_count": len(raw_messages), "source_dir": str(source_dir)},
+    )
     events: list[NASEvent] = []
     errors: list[str] = []
     for raw in raw_messages:
@@ -87,8 +96,14 @@ def replay_from_directory(
             events.append(event)
         else:
             errors.append(error or "Unknown parse error")
-
-    print(f"[REPLAY] Parsed: {len(events)} events | Errors: {len(errors)}")
+    _log.info(
+    "replay_parse_complete",
+    extra={
+        "parsed_events_count": len(events),
+        "parse_error_count": len(errors),
+        "source_dir": str(source_dir),
+        },
+    )
     return events, errors
 
 
@@ -114,5 +129,8 @@ def write_sample_replay_file(
         payload.append(d)
 
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"[REPLAY] Wrote {len(events)} events to {output_path}")
+    _log.info(
+        "sample_replay_file_written",
+        extra={"event_count": len(events), "output_path": str(output_path)},
+    )
     return output_path

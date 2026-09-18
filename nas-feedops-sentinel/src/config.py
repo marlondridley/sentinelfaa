@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     DB_NAME: str | None = None
 
     # ── Paths ────────────────────────────────────────────────────────────────[cite: 4]
-    DB_PATH: Path = DATA_DIR / "sentinel.db"
     INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
 
@@ -96,7 +95,7 @@ class Settings(BaseSettings):
 
     # ── Agents / LLM ─────────────────────────────────────────────────────────[cite: 4]
     CRITIC_ENABLED: bool = True
-
+    AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
     # This is an APPLICATION-FACING LiteLLM alias[cite: 4].
     LLM_MODEL: str = "openai/primary-model"
 

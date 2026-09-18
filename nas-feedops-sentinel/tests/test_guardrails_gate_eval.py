@@ -18,7 +18,7 @@ from src.models import CriticResult, PlannerResult
 def isolated_db():
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 # ── InputGuardrail tests ──────────────────────────────────────────────────────

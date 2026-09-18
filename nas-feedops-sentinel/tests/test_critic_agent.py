@@ -29,7 +29,7 @@ def isolated_db():
     """Each test gets a fresh in-memory database."""
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 def _sample_alert(**kwargs) -> AlertEvent:

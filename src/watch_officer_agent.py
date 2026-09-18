@@ -21,7 +21,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from src import config, storage
@@ -43,9 +43,15 @@ def _rebuild_events(rows: List[dict]) -> List[NASEvent]:
         try:
             rr = dict(r)
             rr["event_time_utc"]    = datetime.fromisoformat(rr["event_time_utc"])
-            rr["received_time_utc"] = datetime.fromisoformat(rr["received_time_utc"])
-            if isinstance(rr.get("validation_errors"), str):
-                rr["validation_errors"] = json.loads(rr["validation_errors"])
+            val_errs = rr.get("validation_errors")
+            if isinstance(val_errs, str):
+                try:
+                    parsed_errs = json.loads(val_errs)
+                    rr["validation_errors"] = [str(x) for x in parsed_errs] if isinstance(parsed_errs, list) else []
+                except Exception:
+                    rr["validation_errors"] = []
+            elif isinstance(val_errs, list):
+                rr["validation_errors"] = [str(x) for x in val_errs]
             out.append(NASEvent(**rr))
         except Exception:
             pass
@@ -84,7 +90,7 @@ def build_watch_officer_context() -> dict[str, Any]:
     critical_alerts = [a for a in alerts_raw if a.get("severity") == "CRITICAL"]
 
     return {
-        "snapshot_time":       datetime.utcnow().isoformat(),
+        "snapshot_time":       datetime.now(timezone.utc).isoformat(),
         "per_airport":         per_airport,
         "airport_status":      airport_status,
         "phase_counts":        phase_counts,

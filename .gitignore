@@ -62,3 +62,6 @@ coverage.xml
 datarawswim_live/
 jumpstart-latest/
 *.zip
+
+# ── Local Claude Code settings (per-developer, never shared) ──────────────────
+.claude/settings.local.json

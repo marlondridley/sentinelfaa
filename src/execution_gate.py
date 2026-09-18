@@ -26,8 +26,6 @@ from __future__ import annotations
 import hashlib
 from typing import Optional
 
-from typing import Optional
-
 from src import storage
 from src.metrics import GATE_DECISIONS, HITL_QUEUE_DEPTH
 from src.models import (

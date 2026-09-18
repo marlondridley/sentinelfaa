@@ -37,7 +37,7 @@ def _format_planner_message(question: str, context: dict) -> str:
 def isolated_db():
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 def _mock_planner_response(

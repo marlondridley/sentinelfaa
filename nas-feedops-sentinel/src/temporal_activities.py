@@ -6,10 +6,10 @@ from typing import Any
 
 from temporalio import activity
 
-from src.config import settings
 from src.logging_config import bind_correlation_id, get_logger
 from src.models import NASEvent
 from src.pipeline import run_pipeline
+from src.swim_file_ingest import scan_swim_folder
 
 _log = get_logger(__name__)
 
@@ -21,10 +21,13 @@ async def ingest_folder_activity(
 ) -> dict[str, Any]:
     """Parse files from the ingest directory and run the pipeline."""
     cid = bind_correlation_id(correlation_id)
-    from src.ingest import scan_ingest_folder
 
-    source = Path(source_dir) if source_dir else settings.INGEST_DIR
-    events, stats = scan_ingest_folder(source)
+    # scan_swim_folder resolves None to config.DATA_DIR / "raw" / "swim_live"
+    # itself (see src/swim_file_ingest.py) -- the same default main.py's
+    # replay mode and the dashboard rely on -- so we don't duplicate that
+    # default here.
+    source = Path(source_dir) if source_dir else None
+    events, stats = scan_swim_folder(source)
     summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
     _log.info(
         "ingest_folder_complete",
