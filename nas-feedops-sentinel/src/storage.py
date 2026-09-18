@@ -819,10 +819,15 @@ _STAGED_ACTION_COLUMNS = """
     idempotency_key, created_at, decided_at, decided_by, decision_note
 """  # every column _row_to_staged_action() reads; kept as one constant so the two
 # queries below and the mapper stay in sync as an explicit contract instead of SELECT *.
+# This is a module-level literal (defined here, never derived from request/user input),
+# so the f-string interpolation below is a compile-time constant substitution, not
+# untrusted-data SQL injection. Query values (e.g. `limit`) are still passed as bound
+# `$n` parameters, never interpolated.
 
 
 async def get_pending_staged_actions() -> list[StagedAction]:
     pool = await get_db_pool()
+    # nosec: _STAGED_ACTION_COLUMNS is a hardcoded column-list constant, not user input.
     rows = await pool.fetch(
         f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC"
     )
@@ -831,6 +836,8 @@ async def get_pending_staged_actions() -> list[StagedAction]:
 
 async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     pool = await get_db_pool()
+    # nosec: _STAGED_ACTION_COLUMNS is a hardcoded column-list constant, not user input;
+    # `limit` is passed as a bound parameter ($1), not interpolated.
     rows = await pool.fetch(
         f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions ORDER BY created_at DESC LIMIT $1",
         limit,
