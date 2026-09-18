@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
 
 from src import config
 from src.logging_config import get_logger
@@ -21,10 +20,10 @@ from src.models import NASEvent
 _log = get_logger(__name__)
 
 
-def load_raw_messages(source_dir: Path | None = None) -> List[dict]:
+def load_raw_messages(source_dir: Path | None = None) -> list[dict]:
     """Read all .json files in source_dir and return a flat list of raw dicts."""
     directory = source_dir or config.RAW_DIR
-    messages: List[dict] = []
+    messages: list[dict] = []
 
     for json_file in sorted(directory.glob("*.json")):
         try:
@@ -50,7 +49,7 @@ def load_raw_messages(source_dir: Path | None = None) -> List[dict]:
     return messages
 
 
-def parse_raw_message(raw: dict) -> Tuple[NASEvent | None, str | None]:
+def parse_raw_message(raw: dict) -> tuple[NASEvent | None, str | None]:
     """
     Convert a raw dict into a NASEvent.
     Returns (event, None) on success or (None, error_string) on failure.
@@ -77,7 +76,7 @@ def parse_raw_message(raw: dict) -> Tuple[NASEvent | None, str | None]:
 
 def replay_from_directory(
     source_dir: Path | None = None,
-) -> Tuple[List[NASEvent], List[str]]:
+) -> tuple[list[NASEvent], list[str]]:
     """
     Load and parse all JSON messages from source_dir.
     Returns (valid_events, parse_error_strings).
@@ -90,8 +89,8 @@ def replay_from_directory(
         extra={"raw_message_count": len(raw_messages), "source_dir": str(source_dir)},
     )
 
-    events: List[NASEvent] = []
-    errors: List[str] = []
+    events: list[NASEvent] = []
+    errors: list[str] = []
     for raw in raw_messages:
         event, error = parse_raw_message(raw)
         if event:
@@ -107,7 +106,7 @@ def replay_from_directory(
 
 
 def write_sample_replay_file(
-    events: List[NASEvent],
+    events: list[NASEvent],
     output_path: Path | None = None,
 ) -> Path:
     """

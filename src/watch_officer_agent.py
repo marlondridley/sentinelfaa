@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional
+from typing import Any
 
 from src import config, storage
 from src.feed_health import compute_feed_health
@@ -36,9 +36,9 @@ _log = get_logger(__name__)
 
 # ── Context builder ───────────────────────────────────────────────────────────
 
-def _rebuild_events(rows: List[dict]) -> List[NASEvent]:
+def _rebuild_events(rows: list[dict]) -> list[NASEvent]:
     """Reconstitute NASEvent objects from DB rows for feed_health computation."""
-    out: List[NASEvent] = []
+    out: list[NASEvent] = []
     for r in rows:
         try:
             rr = dict(r)
@@ -197,7 +197,7 @@ def _derive_trust(signals: dict, context: dict) -> str:
 
 # ── Deterministic fallback brief ──────────────────────────────────────────────
 
-def _affected_airports(signals: dict, context: dict) -> List[str]:
+def _affected_airports(signals: dict, context: dict) -> list[str]:
     aps = set(signals["stale_airports"]) | set(signals["missing_airports"]) | set(signals["degraded_airports"])
     for a in context.get("critical_alerts", []):
         if a.get("airport_code"):
@@ -210,10 +210,10 @@ def _deterministic_brief(context: dict, signals: dict) -> WatchOfficerBrief:
     trust = _derive_trust(signals, context)
     aps = _affected_airports(signals, context)
 
-    what_changed: List[str] = []
-    why_it_matters: List[str] = []
-    recommended: List[str] = []
-    evidence: List[str] = []
+    what_changed: list[str] = []
+    why_it_matters: list[str] = []
+    recommended: list[str] = []
+    evidence: list[str] = []
 
     if signals["critical_alerts_exist"]:
         n = context["critical_alert_count"]
@@ -382,7 +382,7 @@ def _format_user_message(context: dict, signals: dict) -> str:
     )
 
 
-def _llm_brief(context: dict, signals: dict) -> Optional[WatchOfficerBrief]:
+def _llm_brief(context: dict, signals: dict) -> WatchOfficerBrief | None:
     """Try the LLM path. Returns None if anything goes wrong."""
     try:
         client = build_llm_client()
@@ -420,7 +420,7 @@ def _llm_brief(context: dict, signals: dict) -> Optional[WatchOfficerBrief]:
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def generate_watch_officer_brief(
-    context: Optional[dict] = None,
+    context: dict | None = None,
     use_llm: bool = True,
 ) -> WatchOfficerBrief:
     """

@@ -26,7 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable
 
 from src import storage
 from src.alert_engine import check_alerts
@@ -42,17 +42,17 @@ from src.validators import validate_event
 class EvalScenario:
     name: str
     description: str
-    generate_events: Callable[[], List[NASEvent]]
+    generate_events: Callable[[], list[NASEvent]]
     # Deterministic expectations
     expected_min_alerts: int
-    expected_alert_types: List[str]        # all must be present
+    expected_alert_types: list[str]        # all must be present
     expected_gate_tier: str                # CRITICAL | HIGH | MEDIUM | LOW
     expected_hitl: bool
     # LLM expectations (None = skip LLM check)
-    planner_question: Optional[str] = None
-    expected_planner_pattern: Optional[str] = None
-    expected_escalation: Optional[bool] = None
-    expected_min_confidence: Optional[float] = None
+    planner_question: str | None = None
+    expected_planner_pattern: str | None = None
+    expected_escalation: bool | None = None
+    expected_min_confidence: float | None = None
 
 
 def _now_minus(minutes: float) -> datetime:
@@ -67,13 +67,13 @@ def _event(**kwargs) -> NASEvent:
     return NASEvent(**base)
 
 
-def _gen_cascade_failure() -> List[NASEvent]:
+def _gen_cascade_failure() -> list[NASEvent]:
     """CASCADE_FAILURE: ISMC disconnected + low RVR + SMES spike at KDCA."""
     from src.demo_scenario import generate_cascade_failure_scenario
     return generate_cascade_failure_scenario()
 
 
-def _gen_isolated_ismc() -> List[NASEvent]:
+def _gen_isolated_ismc() -> list[NASEvent]:
     """ISOLATED_FAULT: single ISMC degradation at KIAD, all others healthy."""
     t = _now_minus(5)
     events = []
@@ -93,7 +93,7 @@ def _gen_isolated_ismc() -> List[NASEvent]:
     return events
 
 
-def _gen_low_rvr_weather() -> List[NASEvent]:
+def _gen_low_rvr_weather() -> list[NASEvent]:
     """WEATHER_CORRELATED: RVR below threshold with concurrent latency rise."""
     t = _now_minus(8)
     events = []
@@ -115,7 +115,7 @@ def _gen_low_rvr_weather() -> List[NASEvent]:
     return events
 
 
-def _gen_high_latency_transient() -> List[NASEvent]:
+def _gen_high_latency_transient() -> list[NASEvent]:
     """TRANSIENT: brief high-latency spike on TERMINAL_AUTO, quickly recovered."""
     t_spike = _now_minus(12)
     t_recover = _now_minus(10)
@@ -136,7 +136,7 @@ def _gen_high_latency_transient() -> List[NASEvent]:
     return events
 
 
-def _gen_validation_failures() -> List[NASEvent]:
+def _gen_validation_failures() -> list[NASEvent]:
     """DATA_ANOMALY: repeated schema validation failures from upstream."""
     t = _now_minus(3)
     events = []
@@ -154,7 +154,7 @@ def _gen_validation_failures() -> List[NASEvent]:
     return events
 
 
-def _gen_clean_state() -> List[NASEvent]:
+def _gen_clean_state() -> list[NASEvent]:
     """No alerts: all airports healthy with normal operations."""
     t = _now_minus(2)  # 2 min ago — safely within the 5-min stale window
     events = []
@@ -180,7 +180,7 @@ class GuardrailCase:
     name: str
     input_text: str
     expect_compliant: bool
-    expect_violation_type: Optional[str] = None
+    expect_violation_type: str | None = None
 
 
 _GUARDRAIL_CASES: list[GuardrailCase] = [

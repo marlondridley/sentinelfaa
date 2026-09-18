@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
+from typing import Callable
 
 from src import config
 from src.models import NASEvent
@@ -84,7 +84,7 @@ def _base_fields(airport: str, service: str, message_type: str) -> dict:
 
 # ── Individual service generators ─────────────────────────────────────────────
 
-def generate_smes_event(airport: Optional[str] = None) -> NASEvent:
+def generate_smes_event(airport: str | None = None) -> NASEvent:
     """Surface Movement Event Service — aircraft/vehicle position update."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "SMES", "SURFACE_MOVEMENT")
@@ -103,7 +103,7 @@ def generate_smes_event(airport: Optional[str] = None) -> NASEvent:
     return NASEvent(**fields)
 
 
-def generate_rvr_event(airport: Optional[str] = None) -> NASEvent:
+def generate_rvr_event(airport: str | None = None) -> NASEvent:
     """Airport Data / Runway Visual Range — sensor reading for a specific runway."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "APDS_RVR", "RVR_UPDATE")
@@ -124,7 +124,7 @@ def generate_rvr_event(airport: Optional[str] = None) -> NASEvent:
     return NASEvent(**fields)
 
 
-def generate_ismc_event(airport: Optional[str] = None) -> NASEvent:
+def generate_ismc_event(airport: str | None = None) -> NASEvent:
     """Infrastructure, System Monitoring and Control — link health report."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "ISMC", "LINK_STATUS")
@@ -132,7 +132,7 @@ def generate_ismc_event(airport: Optional[str] = None) -> NASEvent:
     return NASEvent(**fields)
 
 
-def generate_tower_departure_event(airport: Optional[str] = None) -> NASEvent:
+def generate_tower_departure_event(airport: str | None = None) -> NASEvent:
     """Tower Departure Event — aircraft released for takeoff."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "TOWER_DEPARTURE", "DEPARTURE_EVENT")
@@ -145,7 +145,7 @@ def generate_tower_departure_event(airport: Optional[str] = None) -> NASEvent:
     return NASEvent(**fields)
 
 
-def generate_terminal_auto_event(airport: Optional[str] = None) -> NASEvent:
+def generate_terminal_auto_event(airport: str | None = None) -> NASEvent:
     """Terminal Automation Information — STARS/ARTS system position update."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "TERMINAL_AUTO", "AUTOMATION_UPDATE")

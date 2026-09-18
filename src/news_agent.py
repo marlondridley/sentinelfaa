@@ -18,7 +18,6 @@ clicking the headline scroll-jumps to it.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List
 
 from src import config, storage
 
@@ -38,7 +37,7 @@ ANCHOR_TOP            = "page-top"
 ANCHOR_WATCH_OFFICER  = "watch-officer"
 
 
-def _hitl_items() -> List[dict]:
+def _hitl_items() -> list[dict]:
     """Surface the HITL pending queue depth (or its absence)."""
     pending = storage.get_pending_staged_actions()
     if pending:
@@ -54,9 +53,9 @@ def _hitl_items() -> List[dict]:
     }]
 
 
-def _airport_status_items(airport_status: dict[str, str]) -> List[dict]:
+def _airport_status_items(airport_status: dict[str, str]) -> list[dict]:
     """Per-airport feed health headlines."""
-    items: List[dict] = []
+    items: list[dict] = []
     for ap in sorted(config.SUPPORTED_AIRPORTS):
         st = airport_status.get(ap, "NO DATA")
         if st == "OK":
@@ -72,9 +71,9 @@ def _airport_status_items(airport_status: dict[str, str]) -> List[dict]:
     return items
 
 
-def _airspace_activity_items(phase_counts: dict, active_total: int) -> List[dict]:
+def _airspace_activity_items(phase_counts: dict, active_total: int) -> list[dict]:
     """Live airspace volume + per-airport flight phase headlines."""
-    items: List[dict] = []
+    items: list[dict] = []
     if active_total > 0:
         items.append({
             "text": f"{active_total} aircraft active in PCT sector",
@@ -101,9 +100,9 @@ def _airspace_activity_items(phase_counts: dict, active_total: int) -> List[dict
     return items
 
 
-def _alert_items(alerts: List[dict]) -> List[dict]:
+def _alert_items(alerts: list[dict]) -> list[dict]:
     """Operational alert headlines, deduped by alert_type per airport."""
-    items: List[dict] = []
+    items: list[dict] = []
     crit = [a for a in alerts if a.get("severity") == "CRITICAL"]
     warn = [a for a in alerts if a.get("severity") == "WARNING"]
 
@@ -130,9 +129,9 @@ def _alert_items(alerts: List[dict]) -> List[dict]:
     return items
 
 
-def _rvr_items(rvr_rows: List[dict]) -> List[dict]:
+def _rvr_items(rvr_rows: list[dict]) -> list[dict]:
     """RVR safety headlines — surface only sub-threshold readings."""
-    items: List[dict] = []
+    items: list[dict] = []
     for row in rvr_rows:
         td = row.get("rvr_touchdown")
         if td is not None and td < config.RVR_LOW_THRESHOLD_FT:
@@ -147,9 +146,9 @@ def _rvr_items(rvr_rows: List[dict]) -> List[dict]:
     return items
 
 
-def _critic_items() -> List[dict]:
+def _critic_items() -> list[dict]:
     """Surface Critic escalation recommendations (AI advisory)."""
-    items: List[dict] = []
+    items: list[dict] = []
     recent = storage.get_recent_critic_results(limit=10)
     escalations = [r for r in recent if r.get("escalate")]
     if not escalations:
@@ -165,7 +164,7 @@ def _critic_items() -> List[dict]:
     return items
 
 
-def _latency_item(avg_latency_ms: float | None) -> List[dict]:
+def _latency_item(avg_latency_ms: float | None) -> list[dict]:
     """Data freshness headline."""
     if avg_latency_ms is None:
         return []
@@ -190,9 +189,9 @@ def _latency_item(avg_latency_ms: float | None) -> List[dict]:
 
 def build_fast_signal_items(
     airport_status: dict[str, str],
-    alerts: List[dict],
-    rvr_rows: List[dict],
-) -> List[dict]:
+    alerts: list[dict],
+    rvr_rows: list[dict],
+) -> list[dict]:
     """
     The banner's NEW responsibility: answer "What needs attention right now?"
     Strict priority — show at most a handful of items, ordered most-urgent first.
@@ -204,7 +203,7 @@ def build_fast_signal_items(
       4. ATTENTION (yellow): CRITICAL alerts without staging (degraded mode)
       5. GOOD / NORMAL (green / grey): all clear
     """
-    items: List[dict] = []
+    items: list[dict] = []
 
     pending = storage.get_pending_staged_actions()
     drafts  = storage.get_draft_operational_tickets()
@@ -279,12 +278,12 @@ def build_fast_signal_items(
 
 def build_ticker_items(
     airport_status: dict[str, str],
-    alerts: List[dict],
-    rvr_rows: List[dict],
+    alerts: list[dict],
+    rvr_rows: list[dict],
     phase_counts: dict,
     active_aircraft_total: int,
     avg_latency_ms: float | None,
-) -> List[dict]:
+) -> list[dict]:
     """
     Assemble the full ticker, ordered by severity (most urgent first).
 
@@ -293,7 +292,7 @@ def build_ticker_items(
     # The banner is FAST SIGNAL only — it answers "What needs attention right now?"
     # We do NOT enumerate every metric here. Detailed explanation lives in the
     # Watch Officer Brief and the Operational Ticket package.
-    items: List[dict] = build_fast_signal_items(
+    items: list[dict] = build_fast_signal_items(
         airport_status=airport_status,
         alerts=alerts,
         rvr_rows=rvr_rows,

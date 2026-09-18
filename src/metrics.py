@@ -14,7 +14,6 @@ Metrics families:
 from __future__ import annotations
 
 from threading import Thread
-from typing import Optional
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
 from prometheus_client import (
@@ -120,7 +119,7 @@ def _metrics_app(environ, start_response):
     return [b"not found"]
 
 
-_server_thread: Optional[Thread] = None
+_server_thread: Thread | None = None
 
 
 def start_metrics_server(host: str = "0.0.0.0", port: int = 9108) -> None:

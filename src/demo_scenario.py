@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List
 
 from src.models import NASEvent
 
@@ -45,9 +44,9 @@ def _event(**kwargs) -> NASEvent:
     return NASEvent(**base)
 
 
-def generate_cascade_failure_scenario() -> List[NASEvent]:
+def generate_cascade_failure_scenario() -> list[NASEvent]:
     """Return the full CASCADE_FAILURE demo event sequence."""
-    events: List[NASEvent] = []
+    events: list[NASEvent] = []
 
     # T-20m: ISMC DEGRADED at KDCA
     t = _now_minus(20)

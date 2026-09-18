@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
 
 from src import config
 from src.models import (
@@ -23,7 +22,7 @@ from src.models import (
     WatchOfficerBrief,
 )
 
-_CONN: Optional[sqlite3.Connection] = None
+_CONN: sqlite3.Connection | None = None
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -255,7 +254,7 @@ def save_alert(alert: AlertEvent) -> None:
     conn.commit()
 
 
-def save_events(events: List[NASEvent]) -> None:
+def save_events(events: list[NASEvent]) -> None:
     if not events:
         return
     conn = _get_conn()
@@ -264,7 +263,7 @@ def save_events(events: List[NASEvent]) -> None:
     conn.commit()
 
 
-def save_alerts(alerts: List[AlertEvent]) -> None:
+def save_alerts(alerts: list[AlertEvent]) -> None:
     if not alerts:
         return
     conn = _get_conn()
@@ -275,7 +274,7 @@ def save_alerts(alerts: List[AlertEvent]) -> None:
 
 # ── Read operations ───────────────────────────────────────────────────────────
 
-def get_recent_events(limit: int = 500) -> List[dict]:
+def get_recent_events(limit: int = 500) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM nas_events ORDER BY received_time_utc DESC LIMIT ?", (limit,)
@@ -283,7 +282,7 @@ def get_recent_events(limit: int = 500) -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def get_recent_alerts(limit: int = 200) -> List[dict]:
+def get_recent_alerts(limit: int = 200) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT ?", (limit,)
@@ -291,7 +290,7 @@ def get_recent_alerts(limit: int = 200) -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def get_latest_rvr() -> List[dict]:
+def get_latest_rvr() -> list[dict]:
     """Latest RVR reading per airport+runway combination."""
     conn = _get_conn()
     rows = conn.execute("""
@@ -312,7 +311,7 @@ def get_latest_rvr() -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def get_event_counts_by_service() -> List[dict]:
+def get_event_counts_by_service() -> list[dict]:
     conn = _get_conn()
     rows = conn.execute("""
         SELECT service_name, airport_code, COUNT(*) AS count
@@ -336,10 +335,10 @@ def get_validation_summary() -> dict:
 
 
 def get_events_for_critic(
-    airport_code: Optional[str],
+    airport_code: str | None,
     window_minutes: int = 30,
     limit: int = 50,
-) -> List[dict]:
+) -> list[dict]:
     """Return a lightweight event summary for the critic context window."""
     conn = _get_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
@@ -367,10 +366,10 @@ def get_events_for_critic(
 
 
 def get_alerts_for_critic(
-    airport_code: Optional[str],
+    airport_code: str | None,
     window_minutes: int = 60,
     limit: int = 10,
-) -> List[dict]:
+) -> list[dict]:
     """Return recent alerts for the critic/planner context window."""
     conn = _get_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
@@ -395,7 +394,7 @@ def get_alerts_for_critic(
     return [dict(r) for r in rows]
 
 
-def get_recent_critic_results(limit: int = 50) -> List[dict]:
+def get_recent_critic_results(limit: int = 50) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM critic_results ORDER BY evaluated_at DESC LIMIT ?", (limit,)
@@ -425,7 +424,7 @@ def save_planner_result(result: PlannerResult) -> None:
     conn.commit()
 
 
-def get_recent_planner_results(limit: int = 10) -> List[dict]:
+def get_recent_planner_results(limit: int = 10) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM planner_results ORDER BY evaluated_at DESC LIMIT ?", (limit,)
@@ -450,7 +449,7 @@ def save_critic_result(result: CriticResult) -> None:
     conn.commit()
 
 
-def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> List[dict]:
+def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> list[dict]:
     """Latest position per aircraft seen in the last N minutes (for airspace map)."""
     conn = _get_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
@@ -499,7 +498,7 @@ def get_flight_phase_counts(window_minutes: int = 15) -> dict:
     return out
 
 
-def get_altitude_distribution(window_minutes: int = 15) -> List[dict]:
+def get_altitude_distribution(window_minutes: int = 15) -> list[dict]:
     """Altitudes for current aircraft (for histogram)."""
     conn = _get_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
@@ -642,7 +641,7 @@ def _write_audit(action_id: str, previous_status: str, new_status: str,
     )
 
 
-def get_pending_staged_actions() -> List[StagedAction]:
+def get_pending_staged_actions() -> list[StagedAction]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC"
@@ -650,7 +649,7 @@ def get_pending_staged_actions() -> List[StagedAction]:
     return [_row_to_staged_action(r) for r in rows]
 
 
-def get_recent_staged_actions(limit: int = 25) -> List[StagedAction]:
+def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM staged_actions ORDER BY created_at DESC LIMIT ?",
@@ -661,7 +660,7 @@ def get_recent_staged_actions(limit: int = 25) -> List[StagedAction]:
 
 def _decide_staged_action(
     action_id: str, new_status: str, actor: str, note: str
-) -> Optional[StagedAction]:
+) -> StagedAction | None:
     """
     Transition a staged action to APPROVED or REJECTED.
     Idempotent: if the action is already in a terminal state, returns the
@@ -700,12 +699,12 @@ def _decide_staged_action(
 
 
 def approve_staged_action(action_id: str, actor: str = "dashboard_operator",
-                          note: str = "") -> Optional[StagedAction]:
+                          note: str = "") -> StagedAction | None:
     return _decide_staged_action(action_id, "APPROVED", actor, note)
 
 
 def reject_staged_action(action_id: str, actor: str = "dashboard_operator",
-                         note: str = "") -> Optional[StagedAction]:
+                         note: str = "") -> StagedAction | None:
     return _decide_staged_action(action_id, "REJECTED", actor, note)
 
 
@@ -772,7 +771,7 @@ def save_watch_officer_brief(brief: WatchOfficerBrief) -> WatchOfficerBrief:
     return brief
 
 
-def get_latest_watch_officer_brief() -> Optional[WatchOfficerBrief]:
+def get_latest_watch_officer_brief() -> WatchOfficerBrief | None:
     conn = _get_conn()
     row = conn.execute(
         "SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT 1"
@@ -780,7 +779,7 @@ def get_latest_watch_officer_brief() -> Optional[WatchOfficerBrief]:
     return _row_to_brief(row) if row else None
 
 
-def get_recent_watch_officer_briefs(limit: int = 10) -> List[WatchOfficerBrief]:
+def get_recent_watch_officer_briefs(limit: int = 10) -> list[WatchOfficerBrief]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT ?",
@@ -891,7 +890,7 @@ def create_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
     return ticket
 
 
-def get_draft_operational_tickets() -> List[OperationalTicket]:
+def get_draft_operational_tickets() -> list[OperationalTicket]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC"
@@ -899,7 +898,7 @@ def get_draft_operational_tickets() -> List[OperationalTicket]:
     return [_row_to_ticket(r) for r in rows]
 
 
-def get_recent_operational_tickets(limit: int = 25) -> List[OperationalTicket]:
+def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTicket]:
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM operational_tickets ORDER BY generated_at DESC LIMIT ?",
@@ -908,7 +907,7 @@ def get_recent_operational_tickets(limit: int = 25) -> List[OperationalTicket]:
     return [_row_to_ticket(r) for r in rows]
 
 
-def get_ticket_by_action_id(action_id: str) -> Optional[OperationalTicket]:
+def get_ticket_by_action_id(action_id: str) -> OperationalTicket | None:
     conn = _get_conn()
     row = conn.execute(
         "SELECT * FROM operational_tickets WHERE action_id = ? ORDER BY generated_at DESC LIMIT 1",
@@ -919,7 +918,7 @@ def get_ticket_by_action_id(action_id: str) -> Optional[OperationalTicket]:
 
 def _transition_ticket(
     ticket_id: str, new_status: str, actor: str, note: str
-) -> Optional[OperationalTicket]:
+) -> OperationalTicket | None:
     if new_status not in ("APPROVED_FOR_ESCALATION", "REJECTED", "MONITORING"):
         raise ValueError(f"new_status {new_status} not permitted")
 
@@ -959,23 +958,23 @@ def _transition_ticket(
 
 def approve_operational_ticket(
     ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> Optional[OperationalTicket]:
+) -> OperationalTicket | None:
     return _transition_ticket(ticket_id, "APPROVED_FOR_ESCALATION", actor, note)
 
 
 def reject_operational_ticket(
     ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> Optional[OperationalTicket]:
+) -> OperationalTicket | None:
     return _transition_ticket(ticket_id, "REJECTED", actor, note)
 
 
 def mark_operational_ticket_monitoring(
     ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> Optional[OperationalTicket]:
+) -> OperationalTicket | None:
     return _transition_ticket(ticket_id, "MONITORING", actor, note)
 
 
-def get_action_audit_log(action_id: Optional[str] = None, limit: int = 50) -> List[dict]:
+def get_action_audit_log(action_id: str | None = None, limit: int = 50) -> list[dict]:
     conn = _get_conn()
     if action_id:
         rows = conn.execute(

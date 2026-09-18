@@ -9,7 +9,7 @@ Status priority (worst wins): OK < STALE < DEGRADED < UNAVAILABLE < DISCONNECTED
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 from src import config
 from src.models import NASEvent
@@ -28,7 +28,7 @@ def _worst(a: str, b: str) -> str:
     return a if _STATUS_RANK.get(a, 0) >= _STATUS_RANK.get(b, 0) else b
 
 
-def compute_feed_health(events: List[NASEvent]) -> Dict[str, Any]:
+def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
     """
     Derive an operational health snapshot from a batch of NASEvents.
 
@@ -44,7 +44,7 @@ def compute_feed_health(events: List[NASEvent]) -> Dict[str, Any]:
     stale_cutoff = now - timedelta(seconds=config.STALE_FEED_SECONDS)
 
     # Group events by (airport, service)
-    by_key: dict[tuple, List[NASEvent]] = {}
+    by_key: dict[tuple, list[NASEvent]] = {}
     for event in events:
         key = (event.airport_code, event.service_name)
         by_key.setdefault(key, []).append(event)

@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Tuple
 
 
 def purge_old_kit_files(
     log_path: Path,
     max_age_minutes: int = 5,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """
     Delete files in log_path whose mtime is older than now - max_age_minutes.
 

@@ -24,7 +24,6 @@ Public API:
 from __future__ import annotations
 
 import hashlib
-from typing import Optional
 
 from src import storage
 from src.metrics import GATE_DECISIONS, HITL_QUEUE_DEPTH
@@ -56,7 +55,7 @@ def _idempotency_key(alert: AlertEvent) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
 
-def _derive_recommended_action(alert: AlertEvent, critic: Optional[CriticResult]) -> str:
+def _derive_recommended_action(alert: AlertEvent, critic: CriticResult | None) -> str:
     """
     Compose the operator-facing recommended action. If the Critic recommended
     escalation, lead with its language; otherwise produce a deterministic
@@ -82,7 +81,7 @@ def _derive_recommended_action(alert: AlertEvent, critic: Optional[CriticResult]
     )
 
 
-def _derive_rationale(alert: AlertEvent, critic: Optional[CriticResult]) -> str:
+def _derive_rationale(alert: AlertEvent, critic: CriticResult | None) -> str:
     """Compose the rationale text — what evidence supports staging this action."""
     if critic and critic.reasoning:
         return critic.reasoning
@@ -94,8 +93,8 @@ def _derive_rationale(alert: AlertEvent, critic: Optional[CriticResult]) -> str:
 
 def stage_critical_alert(
     alert: AlertEvent,
-    critic_result: Optional[CriticResult] = None,
-) -> Optional[StagedAction]:
+    critic_result: CriticResult | None = None,
+) -> StagedAction | None:
     """
     Stage a CRITICAL alert as a PENDING action awaiting human approval.
 
@@ -151,8 +150,8 @@ def stage_critical_alert(
 def _build_escalation_package(
     staged: StagedAction,
     alert: AlertEvent,
-    critic_result: Optional[CriticResult],
-) -> Optional[OperationalTicket]:
+    critic_result: CriticResult | None,
+) -> OperationalTicket | None:
     """
     Generate (or retrieve) the OperationalTicket attached to this staged action.
     The Watch Officer Brief becomes the ticket narrative.
@@ -222,7 +221,7 @@ _PATTERN_BASE_TIER: dict[str, str] = {
 
 def _derive_tier(
     pattern: str,
-    confidence: Optional[float],
+    confidence: float | None,
     escalate: bool,
     critical_alert_count: int,
 ) -> tuple[str, list[str]]:
@@ -263,8 +262,8 @@ class ExecutionGate:
     def evaluate(
         self,
         planner_result: PlannerResult,
-        critic_result: Optional[CriticResult] = None,
-        idempotency_key: Optional[str] = None,
+        critic_result: CriticResult | None = None,
+        idempotency_key: str | None = None,
         critical_alert_count: int = 0,
         has_warning_alerts: bool = False,  # accepted but not used; kept for back-compat
     ) -> GateDecision:

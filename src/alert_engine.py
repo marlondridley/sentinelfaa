@@ -17,16 +17,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
 
 from src import config
 from src.models import AlertEvent, NASEvent
 
 
-def check_alerts(events: List[NASEvent]) -> List[AlertEvent]:
+def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
     """Evaluate all alert rules against the event list. Returns triggered alerts."""
     now = datetime.now(timezone.utc)
-    alerts: List[AlertEvent] = []
+    alerts: list[AlertEvent] = []
 
     for event in events:
         alerts.extend(_per_event_alerts(event))
@@ -39,8 +38,8 @@ def check_alerts(events: List[NASEvent]) -> List[AlertEvent]:
 
 # ── Per-event rules ───────────────────────────────────────────────────────────
 
-def _per_event_alerts(event: NASEvent) -> List[AlertEvent]:
-    alerts: List[AlertEvent] = []
+def _per_event_alerts(event: NASEvent) -> list[AlertEvent]:
+    alerts: list[AlertEvent] = []
 
     # ALERT_FEED_DISCONNECTED
     if event.feed_status == "disconnected":
@@ -86,7 +85,7 @@ def _per_event_alerts(event: NASEvent) -> List[AlertEvent]:
 
     # ALERT_LOW_RVR
     if event.service_name == "APDS_RVR":
-        rvr_positions: Dict[str, int | None] = {
+        rvr_positions: dict[str, int | None] = {
             "touchdown": event.rvr_touchdown,
             "midpoint": event.rvr_midpoint,
             "rollout": event.rvr_rollout,
@@ -124,7 +123,7 @@ def _per_event_alerts(event: NASEvent) -> List[AlertEvent]:
 
 # ── Batch-level rules ─────────────────────────────────────────────────────────
 
-def _stale_feed_alerts(events: List[NASEvent], now: datetime) -> List[AlertEvent]:
+def _stale_feed_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent]:
     """ALERT_FEED_STALE — no message received within STALE_FEED_SECONDS."""
     latest: dict[tuple, datetime] = {}
     for event in events:
@@ -134,7 +133,7 @@ def _stale_feed_alerts(events: List[NASEvent], now: datetime) -> List[AlertEvent
             latest[key] = ts
 
     stale_cutoff = now - timedelta(seconds=config.STALE_FEED_SECONDS)
-    alerts: List[AlertEvent] = []
+    alerts: list[AlertEvent] = []
     for (airport, service), last_seen in latest.items():
         if last_seen < stale_cutoff:
             age_s = (now - last_seen).total_seconds()
@@ -151,7 +150,7 @@ def _stale_feed_alerts(events: List[NASEvent], now: datetime) -> List[AlertEvent
     return alerts
 
 
-def _surface_spike_alerts(events: List[NASEvent], now: datetime) -> List[AlertEvent]:
+def _surface_spike_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent]:
     """ALERT_SURFACE_EVENT_SPIKE — unusual burst of SMES events per airport."""
     window_start = now - timedelta(seconds=config.SURFACE_SPIKE_WINDOW_SECONDS)
     counts: dict[str, int] = defaultdict(int)
@@ -159,7 +158,7 @@ def _surface_spike_alerts(events: List[NASEvent], now: datetime) -> List[AlertEv
         if event.service_name == "SMES" and event.received_time_utc >= window_start:
             counts[event.airport_code] += 1
 
-    alerts: List[AlertEvent] = []
+    alerts: list[AlertEvent] = []
     for airport, count in counts.items():
         if count >= config.SURFACE_SPIKE_COUNT:
             alerts.append(AlertEvent(

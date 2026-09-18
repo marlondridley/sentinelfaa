@@ -15,7 +15,6 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import List
 
 from src import config
 from src.agent_evaluator import AgentEvaluator, print_eval_report
@@ -48,7 +47,7 @@ _log = get_logger(__name__)
 
 # ── Shared pipeline ───────────────────────────────────────────────────────────
 
-def _run_pipeline(events: List[NASEvent], label: str = "PIPELINE") -> None:
+def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
     """Validate, persist, alert, and summarise a batch of NASEvents."""
     cid = new_correlation_id()
     _log.info("pipeline_start", extra={"label": label, "event_count": len(events)})

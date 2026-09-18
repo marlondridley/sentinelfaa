@@ -33,7 +33,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -118,7 +118,7 @@ def _append_log_entry(entry: dict) -> None:
 
 # ── File parsers ──────────────────────────────────────────────────────────────
 
-def _parse_json_file(path: Path) -> List[dict]:
+def _parse_json_file(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, list):
         return data
@@ -127,7 +127,7 @@ def _parse_json_file(path: Path) -> List[dict]:
     raise ValueError(f"Unexpected JSON root type: {type(data).__name__}")
 
 
-def _parse_txt_file(path: Path) -> List[dict]:
+def _parse_txt_file(path: Path) -> list[dict]:
     """Newline-delimited JSON (one object per line)."""
     records = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -137,7 +137,7 @@ def _parse_txt_file(path: Path) -> List[dict]:
     return records
 
 
-def _extract_text(elem: ET.Element, tag: str) -> Optional[str]:
+def _extract_text(elem: ET.Element, tag: str) -> str | None:
     """Find first child or descendant element by local tag name, return text."""
     for child in elem.iter():
         local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -146,7 +146,7 @@ def _extract_text(elem: ET.Element, tag: str) -> Optional[str]:
     return None
 
 
-def _parse_xml_file(path: Path) -> List[dict]:
+def _parse_xml_file(path: Path) -> list[dict]:
     """
     Best-effort extraction from FIXM/AIXM-style XML.
     Maps known tag names to NASEvent field names.
@@ -189,7 +189,7 @@ def _parse_xml_file(path: Path) -> List[dict]:
 _JMS_PROPERTY_RE = re.compile(r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$")
 
 
-def _parse_jms_message_file(path: Path) -> List[dict]:
+def _parse_jms_message_file(path: Path) -> list[dict]:
     """
     Parse one file written by the FAA Jumpstart Kit's MessageFileOutput.
 
@@ -262,8 +262,8 @@ def _service_from_mex(mex: str) -> str:
 
 
 def _derive_flight_phase(
-    altitude_ft: Optional[int],
-    v_vert: Optional[int],
+    altitude_ft: int | None,
+    v_vert: int | None,
     this_airport: str,
     departure: str,
     destination: str,
@@ -299,7 +299,7 @@ def _derive_flight_phase(
     return "ENROUTE"
 
 
-def _normalise_icao(code: Optional[str]) -> str:
+def _normalise_icao(code: str | None) -> str:
     """Ensure an airport identifier is a K-prefixed ICAO (US convention)."""
     if not code:
         return "PCT"
@@ -309,7 +309,7 @@ def _normalise_icao(code: Optional[str]) -> str:
     return c
 
 
-def _extract_records(headers: dict[str, str], body: dict, path: Path) -> List[dict]:
+def _extract_records(headers: dict[str, str], body: dict, path: Path) -> list[dict]:
     """
     Extract per-aircraft NASEvent dicts from a TAIS payload.
 
@@ -403,7 +403,7 @@ def _extract_records(headers: dict[str, str], body: dict, path: Path) -> List[di
     return out
 
 
-def _parse_file(path: Path) -> Tuple[List[dict], Optional[str]]:
+def _parse_file(path: Path) -> tuple[list[dict], str | None]:
     """Route to the right parser by extension. Returns (records, error)."""
     try:
         suffix = path.suffix.lower()
@@ -424,7 +424,7 @@ def _parse_file(path: Path) -> Tuple[List[dict], Optional[str]]:
 
 # ── Record normaliser ─────────────────────────────────────────────────────────
 
-def _normalise_record(raw: dict, source_file: str) -> Tuple[Optional[NASEvent], Optional[str]]:
+def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
     Injects received_time_utc = now so every live-ingested event has a receipt stamp.
@@ -486,8 +486,8 @@ class IngestStats:
         self.files_processed: int = 0
         self.files_failed: int = 0
         self.events_parsed: int = 0
-        self.latest_file_time: Optional[datetime] = None
-        self.latest_service: Optional[str] = None
+        self.latest_file_time: datetime | None = None
+        self.latest_service: str | None = None
         self.scan_time: datetime = datetime.now(timezone.utc)
 
     def as_dict(self) -> dict:
@@ -503,9 +503,9 @@ class IngestStats:
 
 
 def scan_swim_folder(
-    source_dir: Optional[Path] = None,
+    source_dir: Path | None = None,
     max_files: int = 500,
-) -> Tuple[List[NASEvent], IngestStats]:
+) -> tuple[list[NASEvent], IngestStats]:
     """
     Scan source_dir for new STDDS message files, parse them, and return
     NASEvents ready for the validation + alert pipeline.
@@ -520,7 +520,7 @@ def scan_swim_folder(
 
     already_processed = _load_processed_filenames()
     stats = IngestStats()
-    all_events: List[NASEvent] = []
+    all_events: list[NASEvent] = []
 
     all_candidates = [
         f for f in sorted(source_dir.iterdir())
@@ -569,8 +569,8 @@ def scan_swim_folder(
             stats.files_failed += 1
             continue
 
-        events: List[NASEvent] = []
-        errors: List[str] = []
+        events: list[NASEvent] = []
+        errors: list[str] = []
         for raw in raw_records:
             event, err = _normalise_record(raw, str(path))
             if event:
@@ -655,7 +655,7 @@ class _NewFileHandler(FileSystemEventHandler):
 
 
 def watch_swim_folder(
-    source_dir: Optional[Path] = None,
+    source_dir: Path | None = None,
     max_files: int = 500,
     reconcile_interval: float = 300.0,
     debounce_seconds: float = 2.0,
@@ -738,7 +738,7 @@ def watch_swim_folder(
         _log.info("swim_watch_stopped")
 
 
-def read_ingest_log(limit: int = 100) -> List[dict]:
+def read_ingest_log(limit: int = 100) -> list[dict]:
     """Return the most recent ingest log entries (newest first)."""
     if not INGEST_LOG.exists():
         return []
