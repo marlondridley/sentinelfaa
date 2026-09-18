@@ -1,7 +1,50 @@
-# NAS FeedOps Sentinel — full observability stack
-# Brings up the agent + LiteLLM Proxy + Prometheus + Grafana
-
+# NAS FeedOps Sentinel — full observability & worker stack
 services:
+  # 1. Temporal Worker Service (Long-polling background worker)
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nas-feedops-sentinel:latest
+    container_name: nas-temporal-worker
+    command: ["python", "-m", "src.temporal_worker"]
+    stop_grace_period: 30s # Ensures clean signal handling to drain in-flight activities
+    restart: unless-stopped
+    environment:
+      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
+      - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+      - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
+      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
+      - POSTGRES_PORT=6432
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATA_DIR=${DATA_DIR:-/app/data}
+      - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
+    volumes:
+      - sentinel-data:/app/data
+      - ./data:/app/data
+
+  # 2. Metrics API Service
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nas-feedops-sentinel:latest
+    container_name: nas-api
+    command: ["python", "-m", "src.metrics"]
+    restart: unless-stopped
+    ports:
+      - "9108:9108" # Metrics endpoint for Prometheus
+    volumes:
+      - sentinel-data:/app/data
+
+  # 3. Legacy/CLI Replay Runner (Optional standalone mode)
   sentinel:
     build:
       context: .
@@ -15,25 +58,22 @@ services:
       - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
-      - LLM_API_KEY=${LLM_API_KEY:-sk-1234}
-      - LITELLM_PROXY_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
-      - LITELLM_API_KEY=${LLM_API_KEY:-sk-1234}
+      - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
       - POSTGRES_PORT=6432
       - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sentinel_password}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
       - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATA_DIR=${DATA_DIR:-/app/data}
       - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
-    ports:
-      - "9108:9108"   # Prometheus /metrics
     volumes:
       - sentinel-data:/app/data
       - ./data:/app/data
-        
+
+  # 4. Streamlit Dashboard
   dashboard:
     build:
       context: .
@@ -47,19 +87,20 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
       - POSTGRES_PORT=6432
       - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sentinel_password}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DATABASE_URL=${DATABASE_URL}
       - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
       - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
     ports:
       - "8501:8501"
     volumes:
       - sentinel-data:/app/data
       - ./data:/app/data
     depends_on:
-      - sentinel
-      
+      - api
+
+  # 5. Monitoring Stack
   prometheus:
     image: prom/prometheus:latest
     container_name: nas-prometheus
@@ -73,7 +114,7 @@ services:
     ports:
       - "9090:9090"
     depends_on:
-      - sentinel
+      - api
 
   grafana:
     image: grafana/grafana:latest
@@ -91,11 +132,24 @@ services:
     depends_on:
       - prometheus
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: nas-keycloak
+    restart: unless-stopped
+    command: start-dev
+    ports:
+      - "8081:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+    networks:
+      - default
+
 volumes:
   sentinel-data:
   prometheus-data:
   grafana-data:
-  
+
 networks:
   default:
     name: nas-network

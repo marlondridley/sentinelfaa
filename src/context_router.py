@@ -11,7 +11,7 @@ Two entry points:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from src import config, storage
@@ -115,7 +115,7 @@ class ContextRouter:
         Full operational status snapshot for PlannerAgent queries.
         Covers all PCT TRACON airports with enriched alerts (critic results joined).
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         all_events = storage.get_events_for_critic(
             airport_code=None,

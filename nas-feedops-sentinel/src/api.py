@@ -1,12 +1,17 @@
-"""HTTP API with x-correlation-id middleware. Starts Temporal workflows."""
+"""HTTP API with x-correlation-id middleware, CORS, and auth gates. Starts Temporal workflows."""
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Security, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field, ValidationError
 
+from src import storage
 from src.config import settings
 from src.logging_config import (
     CORRELATION_HEADER,
@@ -15,18 +20,124 @@ from src.logging_config import (
     get_correlation_id,
     get_logger,
 )
+from src.models import NASEvent
 from src.temporal_worker import start_ingest_workflow, start_pipeline_workflow
 
 configure_logging()
 _log = get_logger(__name__)
 
+# `version` is the source of truth for the /v1 route prefix below: bump it, and the
+# OpenAPI metadata, alongside any breaking change to IngestRequest or the /ingest
+# response shape.
 app = FastAPI(title="nas-feedops-sentinel", version="1.0.0")
+
+# Routes live under /v1 so a future contract change can be served alongside the old
+# shape. /health is additionally mounted unprefixed for orchestrator probes that are
+# already pointed at it.
+router = APIRouter(prefix="/v1")
+
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+
+# ── CORS Middleware ───────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+bearer_auth = HTTPBearer(auto_error=False)
+
+
+async def verify_auth(
+    api_key: str | None = Security(api_key_header),
+    bearer: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+) -> None:
+    """
+    Enforce authentication for privileged control/ingestion endpoints.
+    Accepts X-API-Key header or Authorization: Bearer <key>.
+    """
+    expected_key = settings.API_KEY or settings.LITELLM_API_KEY
+    if not expected_key:
+        return
+
+    provided = api_key or (bearer.credentials if bearer else None)
+    if not provided or provided != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 class IngestRequest(BaseModel):
-    events: list[dict[str, Any]] = []
-    label: str = "API"
-    source_dir: str | None = None
+    events: list[dict[str, Any]] = Field(
+        default=[],
+        description=(
+            "Inline event payloads to ingest directly. If this list is non-empty, "
+            "it takes priority: a pipeline workflow is started from these events and "
+            "`source_dir` is ignored. Each entry is validated against the NASEvent "
+            "schema synchronously; malformed entries return 422 before any workflow starts."
+        ),
+    )
+    label: str = Field(
+        default="API",
+        description="Label attached to the pipeline workflow run, used for tracing/identification in Temporal.",
+    )
+    source_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory to ingest events from. Only used when `events` is empty; an ingest "
+            "workflow is started against this directory instead of a pipeline workflow."
+        ),
+    )
+
+
+def _validate_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Validate each raw event dict against NASEvent at the HTTP boundary.
+
+    Raises HTTPException(422) with per-item field errors so the caller learns about a
+    malformed payload in the response, rather than only in worker logs after a 200.
+    """
+    failures: list[dict[str, Any]] = []
+    for index, payload in enumerate(events):
+        try:
+            NASEvent.model_validate(payload)
+        except ValidationError as exc:
+            failures.append({"index": index, "errors": exc.errors()})
+
+    if failures:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "event_validation_failed",
+                "invalid_count": len(failures),
+                "total_count": len(events),
+                "failures": failures,
+            },
+        )
+    return events
+
+
+def _idempotency_key(supplied: str | None, events: list[dict[str, Any]]) -> str | None:
+    """
+    Resolve the key that seeds the Temporal workflow id.
+
+    An explicit Idempotency-Key header always wins. Absent one, an inline-events batch
+    falls back to a hash of the canonical payload, so a client retry after a timeout
+    attaches to the existing workflow instead of starting a second run over the same
+    batch. Returns None for the source_dir path with no explicit key, where repeated
+    scans of the same directory are legitimately distinct runs.
+    """
+    if supplied:
+        return supplied.strip()
+    if not events:
+        return None
+    canonical = json.dumps(events, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
 @app.middleware("http")
@@ -41,8 +152,14 @@ async def correlation_middleware(request: Request, call_next):
     return response
 
 
-@app.get("/health")
+@app.get("/health", summary="Health check", description="Liveness check for the API process.")
 async def health() -> dict[str, str]:
+    """
+    Liveness only: confirm the API process is up and serving.
+
+    Deliberately probes no dependencies — a dependency outage should not cause an
+    orchestrator to restart an otherwise healthy process. Use /v1/ready for that.
+    """
     return {
         "status": "ok",
         "task_queue": settings.TEMPORAL_TASK_QUEUE,
@@ -50,17 +167,107 @@ async def health() -> dict[str, str]:
     }
 
 
-@app.post("/ingest")
-async def ingest(body: IngestRequest) -> JSONResponse:
+@router.get("/health", summary="Health check", description="Liveness check for the API process.")
+async def health_v1() -> dict[str, str]:
+    """Versioned alias of /health. See health() for semantics."""
+    return await health()
+
+
+@router.get(
+    "/ready",
+    summary="Readiness check",
+    description=(
+        "Readiness probe: confirms the API can actually serve traffic by reading from "
+        "storage. Returns 503 with the failing dependency when a check fails."
+    ),
+)
+async def ready() -> JSONResponse:
+    """
+    Readiness: probe the dependencies /ingest needs before accepting traffic.
+
+    Currently checks SQLite storage with a lightweight read. Returns 503 and names the
+    failing dependency so an orchestrator pulls the instance out of rotation without
+    killing the process.
+    """
+    checks: dict[str, str] = {}
+    healthy = True
+
+    try:
+        await storage.get_recent_events(limit=1)
+        checks["storage"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        checks["storage"] = f"error: {exc}"
+        healthy = False
+        _log.warning("readiness_check_failed", extra={"dependency": "storage", "error": str(exc)})
+
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ready" if healthy else "not_ready",
+            "checks": checks,
+            "correlation_id": get_correlation_id(),
+        },
+    )
+
+
+@router.post(
+    "/ingest",
+    dependencies=[Depends(verify_auth)],
+    summary="Start an ingestion workflow",
+    description=(
+        "Starts a Temporal workflow to process NAS events. If `events` is provided, a "
+        "pipeline workflow runs directly on those events; otherwise an ingest workflow runs "
+        "against `source_dir`. Inline events are validated against the NASEvent schema before "
+        "the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header "
+        "to make retries attach to the existing workflow. Requires authentication via "
+        "`X-API-Key` or a Bearer token."
+    ),
+)
+async def ingest(
+    body: IngestRequest,
+    idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_HEADER),
+) -> JSONResponse:
+    """
+    Start a Temporal workflow to ingest and process NAS events.
+
+    Branching behavior: `body.events` takes priority over `body.source_dir` — if
+    `events` is non-empty, a pipeline workflow is started from those events and
+    `source_dir` is ignored; otherwise an ingest workflow is started against `source_dir`.
+
+    Inline events are validated against NASEvent synchronously, so a malformed batch is
+    rejected with 422 here rather than failing later inside process_events_activity where
+    the caller cannot see it.
+
+    Retries: the workflow id is seeded from the Idempotency-Key header, falling back to a
+    hash of the inline events payload, so a retried POST re-attaches to the in-flight
+    workflow instead of double-processing the batch.
+    """
     cid = get_correlation_id()
+
+    if body.events:
+        _validate_events(body.events)
+
+    workflow_key = _idempotency_key(idempotency_key, body.events) or cid
+    if workflow_key != cid:
+        # Keep the request cid discoverable in logs — the workflow is named after
+        # workflow_key, so this line is the join between the two.
+        _log.info(
+            "ingest_workflow_key_resolved",
+            extra={
+                "correlation_id": cid,
+                "workflow_key": workflow_key,
+                "explicit_key": bool(idempotency_key),
+            },
+        )
+
     try:
         if body.events:
             workflow_id = await start_pipeline_workflow(
-                body.events, label=body.label, correlation_id=cid
+                body.events, label=body.label, correlation_id=workflow_key
             )
         else:
             workflow_id = await start_ingest_workflow(
-                source_dir=body.source_dir, correlation_id=cid
+                source_dir=body.source_dir, correlation_id=workflow_key
             )
     except Exception as exc:  # noqa: BLE001
         _log.error("ingest_workflow_failed", extra={"error": str(exc)})
@@ -71,7 +278,11 @@ async def ingest(body: IngestRequest) -> JSONResponse:
     return JSONResponse(
         {
             "workflow_id": workflow_id,
+            "workflow_key": workflow_key,
             "correlation_id": cid,
             "task_queue": settings.TEMPORAL_TASK_QUEUE,
         }
     )
+
+
+app.include_router(router)

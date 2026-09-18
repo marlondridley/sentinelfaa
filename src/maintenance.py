@@ -9,7 +9,7 @@ PowerShell.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -29,7 +29,7 @@ def purge_old_kit_files(
     if not log_path.exists() or not log_path.is_dir():
         return (0, 0)
 
-    cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
     removed = 0
     remaining = 0
 
@@ -37,7 +37,7 @@ def purge_old_kit_files(
         if not entry.is_file():
             continue
         try:
-            mtime = datetime.utcfromtimestamp(entry.stat().st_mtime)
+            mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
         except (FileNotFoundError, OSError):
             continue
         if mtime < cutoff:

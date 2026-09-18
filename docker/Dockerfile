@@ -38,8 +38,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     LOG_LEVEL=INFO
 
-# Default: keep container alive running the swim-folder watcher with metrics exposed
-CMD ["python", "-m", "src.main", "--mode", "swim-folder", "--metrics"]
+# Default: keep container alive running the swim-folder watcher with metrics exposed.
+# --watch is what actually makes this long-running (fs-event driven + periodic
+# reconciliation scan); without it main.py scans once and exits.
+CMD ["python", "-m", "src.main", "--mode", "swim-folder", "--watch", "--metrics"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9108/health').read()" || exit 1

@@ -1,7 +1,7 @@
 """Tests for src/alert_engine.py — all seven alert rule types."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src import config
 from src.alert_engine import check_alerts
@@ -9,7 +9,7 @@ from src.models import NASEvent
 
 
 def _now():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _smes(airport="KDCA", latency_ms=1_000.0, feed_status=None,

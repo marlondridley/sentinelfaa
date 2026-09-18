@@ -7,11 +7,15 @@ received from the FAA SWIM feed (or generated/replayed locally).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-
-from pydantic import BaseModel, Field
 from datetime import datetime, timezone
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
+
+AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
+TraconCode = Literal["PCT"]
+ServiceName = Literal["SMES", "APDS_RVR", "ISMC", "TOWER_DEPARTURE", "TERMINAL_AUTO"]
+
 
 class WatchOfficerBrief(BaseModel):
     """
@@ -19,7 +23,7 @@ class WatchOfficerBrief(BaseModel):
     The brief is the NARRATIVE that becomes part of an OperationalTicket.
     """
     brief_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     posture: str = "UNKNOWN"           # GOOD | NORMAL | ATTENTION | ACTION | UNKNOWN
     trust_assessment: str = "UNKNOWN"  # TRUSTWORTHY | DEGRADED | INCOMPLETE | UNKNOWN
     headline: str = ""
@@ -45,7 +49,7 @@ class OperationalTicket(BaseModel):
     action_id: str | None = None
     alert_id: str | None = None
     brief_id: str | None = None
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     title: str = ""
     severity: str = "CRITICAL"
     affected_airport: str | None = None
@@ -87,7 +91,7 @@ class StagedAction(BaseModel):
     critic_pattern: str | None = None
     status: str = "PENDING"                # PENDING | APPROVED | REJECTED | EXPIRED
     idempotency_key: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     decided_at: datetime | None = None
     decided_by: str | None = None
     decision_note: str | None = None
@@ -101,7 +105,7 @@ class ActionAuditEntry(BaseModel):
     new_status: str
     actor: str
     note: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class NASEvent(BaseModel):
@@ -109,9 +113,9 @@ class NASEvent(BaseModel):
 
     # Core identity
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    airport_code: str                   # ICAO: KDCA, KIAD, KBWI, KADW
-    tracon: str                         # Always PCT for this scenario
-    service_name: str                   # SMES, APDS_RVR, ISMC, etc.
+    airport_code: AirportCode           # ICAO: KDCA, KIAD, KBWI, KADW
+    tracon: TraconCode                  # Always PCT for this scenario
+    service_name: ServiceName           # SMES, APDS_RVR, ISMC, etc.
     message_type: str                   # Subtype within the service
 
     # Timestamps
@@ -170,7 +174,7 @@ class AlertEvent(BaseModel):
     airport_code: str | None = None
     service_name: str | None = None
     description: str
-    triggered_at: datetime = Field(default_factory=datetime.utcnow)
+    triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     event_id: str | None = None           # Source event that caused the alert
 
 
@@ -200,7 +204,7 @@ class GateDecision(BaseModel):
     idempotency_key: str
     risk_factors: list[str] = Field(default_factory=list)
     ticket_id: str | None = None        # populated when hitl_required=True
-    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class EvalResult(BaseModel):
@@ -218,7 +222,7 @@ class EvalReport(BaseModel):
     """Aggregate evaluation report across all scenarios."""
 
     run_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     total_cases: int = 0
     passed: int = 0
     failed: int = 0
@@ -236,7 +240,7 @@ class PlannerResult(BaseModel):
     confidence: float | None = None
     citations: list[str] = Field(default_factory=list)
     recommended_actions: list[str] = Field(default_factory=list)
-    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CriticResult(BaseModel):
@@ -248,4 +252,4 @@ class CriticResult(BaseModel):
     citations: list[str] = Field(default_factory=list)
     pattern: str = "UNKNOWN"  # CASCADE_FAILURE | ISOLATED_FAULT | WEATHER_CORRELATED | DATA_ANOMALY | TRANSIENT | UNKNOWN
     escalate: bool = False
-    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

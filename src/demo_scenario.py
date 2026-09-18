@@ -21,14 +21,14 @@ the Planner identify multi-service, multi-factor KDCA degradation.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from src.models import NASEvent
 
 
 def _now_minus(minutes: float) -> datetime:
-    return datetime.utcnow() - timedelta(minutes=minutes)
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
 
 def _event(**kwargs) -> NASEvent:
@@ -41,7 +41,7 @@ def _event(**kwargs) -> NASEvent:
     if "latency_ms" not in base:
         base["latency_ms"] = 220.0
     if "received_time_utc" not in base:
-        base["received_time_utc"] = base.get("event_time_utc", datetime.utcnow())
+        base["received_time_utc"] = base.get("event_time_utc", datetime.now(timezone.utc))
     return NASEvent(**base)
 
 

@@ -201,14 +201,14 @@ curl -X POST http://localhost:8083/connectors/elasticsearch-confluent-sink/resta
 
 ## CI/CD Pipeline & Automation
 
-The repository includes a GitHub Actions CI/CD workflow located at [`.github/workflows/pipeline-ci.yml`](file:///c:/Users/marlo/source/peratonfaa/.github/workflows/pipeline-ci.yml).
+The repository includes a GitHub Actions CI/CD workflow located at [`.github/workflows/pipeline-ci.yml`](file:///c:/Users/marlo/source/sentinelfaa/.github/workflows/pipeline-ci.yml).
 
 ### Workflow Stages:
 1. **JSON Schema & Syntax Validation**: Validates all connector configurations with `jq`.
 2. **Container Build**: Builds the custom Kafka Connect Docker image with required plugins.
 3. **Health Check & Service Readiness**: Boots the complete pipeline and waits for container readiness.
 4. **Automated Connector Deployment**: Registers the connectors via Kafka Connect REST API.
-5. **End-to-End Ingestion Testing**: Runs [`test-pipeline.sh`](file:///c:/Users/marlo/source/peratonfaa/instraclustr/test-pipeline.sh) / [`test-pipeline.ps1`](file:///c:/Users/marlo/source/peratonfaa/instraclustr/test-pipeline.ps1) to verify live data indexing in Elasticsearch.
+5. **End-to-End Ingestion Testing**: Runs [`test-pipeline.sh`](file:///c:/Users/marlo/source/sentinelfaa/instraclustr/test-pipeline.sh) / [`test-pipeline.ps1`](file:///c:/Users/marlo/source/sentinelfaa/instraclustr/test-pipeline.ps1) to verify live data indexing in Elasticsearch.
 
 ### Running Tests Locally:
 

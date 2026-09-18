@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
-import psycopg
+from src.async_bridge import run_async
 from src.config import settings
 
 from src.models import (
@@ -35,13 +35,6 @@ async def create_asyncpg_pool() -> asyncpg.Pool:
         max_size=20,
     )
 
-async def create_psycopg_connection() -> psycopg.AsyncConnection:
-    """Create a psycopg3 connection with disabled statement preparation."""
-    return await psycopg.AsyncConnection.connect(
-        conninfo=settings.DATABASE_URL,
-        prepare_threshold=None,  # Prevents prepared statement conflicts
-    )
-
 
 
 async def get_db_pool() -> asyncpg.Pool:
@@ -55,6 +48,7 @@ async def get_db_pool() -> asyncpg.Pool:
             statement_cache_size=0,  # Required for PgBouncer transaction pooling
         )
         await _init_schema(_POOL)
+        await _run_migrations(_POOL)
     return _POOL
 
 
@@ -64,6 +58,124 @@ async def close_db_pool() -> None:
     if _POOL is not None:
         await _POOL.close()
         _POOL = None
+
+
+# ── Schema migrations ─────────────────────────────────────────────────────────
+#
+# _init_schema below is CREATE TABLE IF NOT EXISTS: it establishes the schema for a
+# brand-new database but is a no-op for every column added later against a database
+# that already has the table. This registry is the forward-only path for those later
+# changes on an existing deployment. Each entry is (id, sql), applied at most once and
+# recorded in schema_migrations. IDs are permanent once shipped — never edit or reorder
+# a migration that has run anywhere; add a new one instead.
+#
+# Kept deliberately dependency-free (no Alembic) since this backend has no ORM layer to
+# hang it from; if the schema grows enough migrations to need branching/rollback, promote
+# this list to real migration files at that point.
+
+_MIGRATIONS: list[tuple[str, str]] = [
+    ("2026_09_postgres_referential_integrity_fks", """
+        -- Step 1: Nullify dangling foreign key references across existing tables
+        UPDATE alert_events
+        SET event_id = NULL
+        WHERE event_id IS NOT NULL
+          AND event_id NOT IN (SELECT event_id FROM nas_events);
+
+        DELETE FROM critic_results
+        WHERE alert_id NOT IN (SELECT alert_id FROM alert_events);
+
+        UPDATE staged_actions
+        SET alert_id = NULL
+        WHERE alert_id IS NOT NULL
+          AND alert_id NOT IN (SELECT alert_id FROM alert_events);
+
+        UPDATE staged_actions
+        SET event_id = NULL
+        WHERE event_id IS NOT NULL
+          AND event_id NOT IN (SELECT event_id FROM nas_events);
+
+        UPDATE operational_tickets
+        SET action_id = NULL
+        WHERE action_id IS NOT NULL
+          AND action_id NOT IN (SELECT action_id FROM staged_actions);
+
+        UPDATE operational_tickets
+        SET alert_id = NULL
+        WHERE alert_id IS NOT NULL
+          AND alert_id NOT IN (SELECT alert_id FROM alert_events);
+
+        UPDATE operational_tickets
+        SET brief_id = NULL
+        WHERE brief_id IS NOT NULL
+          AND brief_id NOT IN (SELECT brief_id FROM watch_officer_briefs);
+
+        -- Step 2: Apply constraints to enforce referential integrity moving forward
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_alert_events_event') THEN
+                ALTER TABLE alert_events
+                ADD CONSTRAINT fk_alert_events_event
+                FOREIGN KEY (event_id) REFERENCES nas_events(event_id) ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_critic_results_alert') THEN
+                ALTER TABLE critic_results
+                ADD CONSTRAINT fk_critic_results_alert
+                FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE CASCADE;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_staged_actions_alert') THEN
+                ALTER TABLE staged_actions
+                ADD CONSTRAINT fk_staged_actions_alert
+                FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_staged_actions_event') THEN
+                ALTER TABLE staged_actions
+                ADD CONSTRAINT fk_staged_actions_event
+                FOREIGN KEY (event_id) REFERENCES nas_events(event_id) ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_action') THEN
+                ALTER TABLE operational_tickets
+                ADD CONSTRAINT fk_operational_tickets_action
+                FOREIGN KEY (action_id) REFERENCES staged_actions(action_id) ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_alert') THEN
+                ALTER TABLE operational_tickets
+                ADD CONSTRAINT fk_operational_tickets_alert
+                FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_brief') THEN
+                ALTER TABLE operational_tickets
+                ADD CONSTRAINT fk_operational_tickets_brief
+                FOREIGN KEY (brief_id) REFERENCES watch_officer_briefs(brief_id) ON DELETE SET NULL;
+            END IF;
+        END $$;
+    """),
+]
+
+
+async def _run_migrations(pool: asyncpg.Pool) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                id          TEXT PRIMARY KEY,
+                applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        applied = {r["id"] for r in await conn.fetch("SELECT id FROM schema_migrations")}
+
+        for migration_id, sql in _MIGRATIONS:
+            if migration_id in applied:
+                continue
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (id) VALUES ($1)", migration_id
+                )
 
 
 async def _init_schema(pool: asyncpg.Pool) -> None:
@@ -108,11 +220,11 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
                 service_name TEXT,
                 description  TEXT,
                 triggered_at TIMESTAMPTZ,
-                event_id     TEXT
+                event_id     TEXT REFERENCES nas_events(event_id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS critic_results (
-                alert_id     TEXT PRIMARY KEY,
+                alert_id     TEXT PRIMARY KEY REFERENCES alert_events(alert_id) ON DELETE CASCADE,
                 confidence   DOUBLE PRECISION,
                 reasoning    TEXT,
                 citations    JSONB,
@@ -126,16 +238,16 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
                 question            TEXT,
                 answer              TEXT,
                 sub_queries         JSONB,
-                confidence         DOUBLE PRECISION,
-                citations          JSONB,
+                confidence          DOUBLE PRECISION,
+                citations           JSONB,
                 recommended_actions JSONB,
-                evaluated_at       TIMESTAMPTZ
+                evaluated_at        TIMESTAMPTZ
             );
 
             CREATE TABLE IF NOT EXISTS staged_actions (
                 action_id           TEXT PRIMARY KEY,
-                alert_id            TEXT,
-                event_id            TEXT,
+                alert_id            TEXT REFERENCES alert_events(alert_id) ON DELETE SET NULL,
+                event_id            TEXT REFERENCES nas_events(event_id) ON DELETE SET NULL,
                 airport_code        TEXT,
                 service_name        TEXT,
                 severity            TEXT,
@@ -154,7 +266,7 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
 
             CREATE TABLE IF NOT EXISTS action_audit_log (
                 audit_id        TEXT PRIMARY KEY,
-                action_id       TEXT,
+                action_id       TEXT,  -- Unconstrained to support composite keys like 'ticket:{id}'
                 previous_status TEXT,
                 new_status      TEXT,
                 actor           TEXT,
@@ -182,9 +294,9 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
 
             CREATE TABLE IF NOT EXISTS operational_tickets (
                 ticket_id               TEXT PRIMARY KEY,
-                action_id               TEXT,
-                alert_id                TEXT,
-                brief_id                TEXT,
+                action_id               TEXT REFERENCES staged_actions(action_id) ON DELETE SET NULL,
+                alert_id                TEXT REFERENCES alert_events(alert_id) ON DELETE SET NULL,
+                brief_id                TEXT REFERENCES watch_officer_briefs(brief_id) ON DELETE SET NULL,
                 generated_at            TIMESTAMPTZ,
                 title                   TEXT,
                 severity                TEXT,
@@ -205,6 +317,21 @@ async def _init_schema(pool: asyncpg.Pool) -> None:
                 decision_note           TEXT,
                 idempotency_key         TEXT UNIQUE
             );
+
+            -- Indexes to optimize analytical reads and FK constraint checks
+            CREATE INDEX IF NOT EXISTS idx_nas_events_airport_time ON nas_events (airport_code, received_time_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_nas_events_service_time ON nas_events (service_name, received_time_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_nas_events_aircraft_time ON nas_events (aircraft_id, received_time_utc DESC) WHERE aircraft_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_alert_events_airport_time ON alert_events (airport_code, triggered_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_alert_events_event_id ON alert_events (event_id);
+            CREATE INDEX IF NOT EXISTS idx_staged_actions_status ON staged_actions (status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_staged_actions_alert_id ON staged_actions (alert_id);
+            CREATE INDEX IF NOT EXISTS idx_staged_actions_event_id ON staged_actions (event_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_action_id ON operational_tickets (action_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_alert_id ON operational_tickets (alert_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_brief_id ON operational_tickets (brief_id);
+            CREATE INDEX IF NOT EXISTS idx_operational_tickets_status ON operational_tickets (status, generated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_action_audit_action_id ON action_audit_log (action_id, created_at DESC);
         """)
 
 
@@ -302,14 +429,35 @@ async def save_alerts(alerts: list[AlertEvent]) -> None:
 # ── Read operations ───────────────────────────────────────────────────────────
 
 async def get_recent_events(limit: int = 500) -> list[dict]:
+    # NOTE: column list mirrors the full nas_events schema (see _init_schema) so the
+    # query is an explicit contract rather than SELECT *. If dashboard/metrics callers
+    # are confirmed not to need validation_errors (JSONB) or raw_message_path, drop them
+    # here to cut bytes-over-wire on this hot path.
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM nas_events ORDER BY received_time_utc DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT event_id, airport_code, tracon, service_name, message_type,
+                  event_time_utc, received_time_utc, latency_ms, runway,
+                  rvr_touchdown, rvr_midpoint, rvr_rollout, track_id,
+                  aircraft_id, vehicle_id, surface_event_type,
+                  lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
+                  flight_phase, flight_rules, beacon_code,
+                  feed_status, validation_status, validation_errors, raw_message_path
+           FROM nas_events ORDER BY received_time_utc DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
 async def get_recent_alerts(limit: int = 200) -> list[dict]:
+    # NOTE: column list mirrors the full alert_events schema; no JSON blobs on this table,
+    # so this is purely about making the read an explicit contract rather than SELECT *.
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT alert_id, alert_type, severity, airport_code, service_name,
+                  description, triggered_at, event_id
+           FROM alert_events ORDER BY triggered_at DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
@@ -418,8 +566,14 @@ async def get_alerts_for_critic(
 
 
 async def get_recent_critic_results(limit: int = 50) -> list[dict]:
+    # NOTE: column list mirrors the full critic_results schema, including the citations
+    # JSONB blob (dropping it here requires confirming the dashboard doesn't render it).
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM critic_results ORDER BY evaluated_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        """SELECT alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at
+           FROM critic_results ORDER BY evaluated_at DESC LIMIT $1""",
+        limit,
+    )
     return [dict(r) for r in rows]
 
 
@@ -557,6 +711,29 @@ async def reset_db() -> None:
         """)
 
 
+def override_db_path(path: str = ":memory:") -> None:
+    """
+    Synchronous test-isolation entry point, kept under this name for backward
+    compatibility with test fixtures written for the earlier SQLite-backed
+    storage module.
+
+    This backend is asyncpg/PostgreSQL, so there is no real file "path" to
+    swap in the way SQLite's ':memory:' convention implies -- ``path`` is
+    accepted (and ignored) purely so existing ``storage.override_db_path(":memory:")``
+    call sites keep working unmodified. What this actually does is bridge onto
+    the live database configured via DATABASE_URL / the POSTGRES_* settings
+    (src/config.py) and TRUNCATE every table through reset_db(), giving the
+    caller a clean slate synchronously -- suitable for a pytest
+    ``@pytest.fixture(autouse=True)`` that isn't itself async.
+
+    Requires a reachable Postgres instance. Point DATABASE_URL (or the
+    POSTGRES_HOST/PORT/USER/PASSWORD/DB settings) at a disposable test
+    database before running the suite -- this truncates real tables on
+    whatever database it connects to, so never point it at production.
+    """
+    run_async(reset_db())
+
+
 # ── HITL Staged Action persistence ────────────────────────────────────────────
 
 def _row_to_staged_action(row) -> StagedAction:
@@ -636,15 +813,28 @@ async def _write_audit(action_id: str, previous_status: str, new_status: str,
     )
 
 
+_STAGED_ACTION_COLUMNS = """
+    action_id, alert_id, event_id, airport_code, service_name, severity, alert_type,
+    recommended_action, rationale, critic_confidence, critic_pattern, status,
+    idempotency_key, created_at, decided_at, decided_by, decision_note
+"""  # every column _row_to_staged_action() reads; kept as one constant so the two
+# queries below and the mapper stay in sync as an explicit contract instead of SELECT *.
+
+
 async def get_pending_staged_actions() -> list[StagedAction]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC")
+    rows = await pool.fetch(
+        f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE status = 'PENDING' ORDER BY created_at DESC"
+    )
     return [_row_to_staged_action(r) for r in rows]
 
 
 async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM staged_actions ORDER BY created_at DESC LIMIT $1", limit)
+    rows = await pool.fetch(
+        f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions ORDER BY created_at DESC LIMIT $1",
+        limit,
+    )
     return [_row_to_staged_action(r) for r in rows]
 
 
@@ -910,12 +1100,6 @@ async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTic
 async def get_draft_operational_tickets() -> list[OperationalTicket]:
     pool = await get_db_pool()
     rows = await pool.fetch("SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC")
-    return [_row_to_ticket(r) for r in rows]
-
-
-async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTicket]:
-    pool = await get_db_pool()
-    rows = await pool.fetch("SELECT * FROM operational_tickets ORDER BY generated_at DESC LIMIT $1", limit)
     return [_row_to_ticket(r) for r in rows]
 
 

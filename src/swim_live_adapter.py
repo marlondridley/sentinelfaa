@@ -19,10 +19,20 @@ Implementation roadmap:
 from __future__ import annotations
 
 from src import config
+from src.logging_config import get_logger
+
+_log = get_logger(__name__)
 
 
 def connect_and_consume() -> None:
     """Entry point for live mode. Currently a descriptive placeholder."""
+    _log.warning(
+        "swim_live_mode_placeholder_invoked",
+        extra={
+            "broker_url_configured": bool(config.SWIM_BROKER_URL),
+            "queue_name_configured": bool(config.SWIM_QUEUE_NAME),
+        },
+    )
     _banner("NAS FeedOps Sentinel — LIVE MODE (Placeholder)")
     print("  Live SWIM adapter is not yet connected.")
     print()

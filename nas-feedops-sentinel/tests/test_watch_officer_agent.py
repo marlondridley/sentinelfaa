@@ -7,11 +7,11 @@ Verifies:
   - ACTION posture when staged actions or draft tickets exist
   - Deterministic fallback is used when no LLM is configured
   - The generated brief validates as a WatchOfficerBrief
-  - The brief round-trips through SQLite via save / get helpers
+  - The brief round-trips through storage via save / get helpers
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -34,13 +34,13 @@ def isolated_db(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _now_minus(minutes: float) -> datetime:
-    return datetime.utcnow() - timedelta(minutes=minutes)
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
 
 def _fresh_event(airport: str = "KDCA") -> NASEvent:
@@ -131,7 +131,7 @@ class TestWatchOfficer:
         round_trip = WatchOfficerBrief(**brief.model_dump())
         assert round_trip.posture == brief.posture
 
-    def test_brief_round_trips_through_sqlite(self):
+    def test_brief_round_trips_through_storage(self):
         brief = generate_watch_officer_brief(use_llm=False)
         storage.save_watch_officer_brief(brief)
         latest = storage.get_latest_watch_officer_brief()

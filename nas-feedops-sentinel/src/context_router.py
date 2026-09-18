@@ -10,6 +10,7 @@ from typing import Any
 from src import config, storage
 from src.execution_gate import _strict_bool
 
+
 def _summarise_events(events: list[dict]) -> dict[str, dict[str, Any]]:
     by_service: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -61,8 +62,97 @@ def _service_status_from_feed_statuses(feed_statuses: list[str]) -> str:
     return "OK"
 
 
-class ContextRouter:
+def _index_rvr_by_airport(rvr_rows: list[dict]) -> dict[str, dict[str, Any]]:
+    rvr_by_airport: dict[str, dict[str, Any]] = {}
+    for row in rvr_rows:
+        ap = row["airport_code"]
+        rwy = row.get("runway") or "unknown"
+        rvr_by_airport.setdefault(ap, {})[rwy] = {
+            "touchdown_ft": row.get("rvr_touchdown"),
+            "midpoint_ft": row.get("rvr_midpoint"),
+            "rollout_ft": row.get("rvr_rollout"),
+            "time_utc": row.get("event_time_utc"),
+        }
+    return rvr_by_airport
 
+
+def _build_airport_snapshot(
+    ap: str,
+    ap_events: list[dict],
+    phase_counts: dict,
+    ap_aircraft: list[dict],
+    ap_rvr: dict
+) -> dict[str, Any]:
+    svc_summary = _summarise_events(ap_events)
+
+    svc_statuses: dict[str, str] = {}
+    for svc, s in svc_summary.items():
+        svc_statuses[svc] = _service_status_from_feed_statuses(
+            s.get("feed_statuses", [])
+        )
+
+    overall = _worst_status(list(svc_statuses.values())) if svc_statuses else "NO DATA"
+
+    sample_flights = []
+    for ac in ap_aircraft[:8]:
+        callsign = ac.get("aircraft_id") or "UNKNOWN"
+        phase = ac.get("flight_phase") or "?"
+        alt = ac.get("altitude_ft")
+        rwy = ac.get("runway") or "-"
+        sample_flights.append(f"{callsign} ({phase}, alt={alt}ft, rwy={rwy})")
+
+    return {
+        "overall_status": overall,
+        "event_count_30m": len(ap_events),
+        "services": {
+            svc: {
+                "status": svc_statuses.get(svc, "OK"),
+                **{k: v for k, v in s.items() if k != "sample_event_ids"},
+                "sample_event_ids": s.get("sample_event_ids", []),
+            }
+            for svc, s in svc_summary.items()
+        },
+        "rvr": ap_rvr,
+        "active_aircraft_count": len(ap_aircraft),
+        "flight_phases": {
+            "DEPARTURE": phase_counts.get("DEPARTURE", 0),
+            "ARRIVAL": phase_counts.get("ARRIVAL", 0),
+            "ENROUTE": phase_counts.get("ENROUTE", 0),
+            "GROUND": phase_counts.get("GROUND", 0),
+            "UNKNOWN": phase_counts.get("UNKNOWN", 0),
+        },
+        "sample_flights": sample_flights,
+    }
+
+
+def _enrich_alerts_with_critic(
+    active_alerts: list[dict], 
+    critic_by_alert: dict[str, dict]
+) -> list[dict]:
+    enriched_alerts = []
+    for a in active_alerts:
+        entry: dict[str, Any] = {
+            "alert_id": a["alert_id"],
+            "alert_type": a["alert_type"],
+            "severity": a["severity"],
+            "airport_code": a["airport_code"],
+            "service_name": a["service_name"],
+            "description": a["description"],
+            "triggered_at": a["triggered_at"],
+        }
+        cr = critic_by_alert.get(a["alert_id"])
+        if cr:
+            entry["critic"] = {
+                "confidence": cr["confidence"],
+                "pattern": cr["pattern"],
+                "escalate": _strict_bool(cr.get("escalate")),
+                "reasoning": cr["reasoning"],
+            }
+        enriched_alerts.append(entry)
+    return enriched_alerts
+
+
+class ContextRouter:
     async def build_alert_context(
         self,
         airport_code: str | None,
@@ -97,113 +187,42 @@ class ContextRouter:
     async def build_status_context(self) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
 
-        all_events = await storage.get_events_for_critic(
-            airport_code=None,
-            window_minutes=30,
-            limit=500,
-        )
-        active_alerts = await storage.get_alerts_for_critic(
-            airport_code=None,
-            window_minutes=120,
-            limit=50,
-        )
+        # 1. Orchestrate Data Fetching
+        all_events = await storage.get_events_for_critic(airport_code=None, window_minutes=30, limit=500)
+        active_alerts = await storage.get_alerts_for_critic(airport_code=None, window_minutes=120, limit=50)
         critic_rows = await storage.get_recent_critic_results(limit=30)
-        critic_by_alert = {r["alert_id"]: r for r in critic_rows}
-
         rvr_rows = await storage.get_latest_rvr()
-        rvr_by_airport: dict[str, dict[str, Any]] = {}
-        for row in rvr_rows:
-            ap = row["airport_code"]
-            rwy = row.get("runway") or "unknown"
-            rvr_by_airport.setdefault(ap, {})[rwy] = {
-                "touchdown_ft": row.get("rvr_touchdown"),
-                "midpoint_ft": row.get("rvr_midpoint"),
-                "rollout_ft": row.get("rvr_rollout"),
-                "time_utc": row.get("event_time_utc"),
-            }
-
-        airports: dict[str, Any] = {}
         flight_phase_counts = await storage.get_flight_phase_counts(window_minutes=15)
         active_aircraft = await storage.get_active_aircraft(window_minutes=5, limit=300)
+
+        # 2. Pre-process and Index Global State
+        critic_by_alert = {r["alert_id"]: r for r in critic_rows}
+        rvr_by_airport = _index_rvr_by_airport(rvr_rows)
+        
         aircraft_by_airport: dict[str, list[dict]] = {}
         for ac in active_aircraft:
-            ap = ac.get("airport_code")
-            if ap:
+            if ap := ac.get("airport_code"):
                 aircraft_by_airport.setdefault(ap, []).append(ac)
 
+        # 3. Build Airport Contexts
+        airports: dict[str, Any] = {}
         for ap in sorted(config.SUPPORTED_AIRPORTS):
             ap_events = [e for e in all_events if e.get("airport_code") == ap]
-            svc_summary = _summarise_events(ap_events)
+            airports[ap] = _build_airport_snapshot(
+                ap=ap,
+                ap_events=ap_events,
+                phase_counts=flight_phase_counts.get(ap, {}),
+                ap_aircraft=aircraft_by_airport.get(ap, []),
+                ap_rvr=rvr_by_airport.get(ap, {})
+            )
 
-            svc_statuses: dict[str, str] = {}
-            for svc, s in svc_summary.items():
-                svc_statuses[svc] = _service_status_from_feed_statuses(
-                    s.get("feed_statuses", [])
-                )
+        # 4. Enrich Alerts
+        enriched_alerts = _enrich_alerts_with_critic(active_alerts, critic_by_alert)
 
-            overall = _worst_status(list(svc_statuses.values())) if svc_statuses else "NO DATA"
-
-            phase_counts = flight_phase_counts.get(ap, {})
-            ap_aircraft = aircraft_by_airport.get(ap, [])
-            sample_flights = []
-            for ac in ap_aircraft[:8]:
-                callsign = ac.get("aircraft_id") or "UNKNOWN"
-                phase = ac.get("flight_phase") or "?"
-                alt = ac.get("altitude_ft")
-                rwy = ac.get("runway") or "-"
-                sample_flights.append(
-                    f"{callsign} ({phase}, alt={alt}ft, rwy={rwy})"
-                )
-
-            airports[ap] = {
-                "overall_status": overall,
-                "event_count_30m": len(ap_events),
-                "services": {
-                    svc: {
-                        "status": svc_statuses.get(svc, "OK"),
-                        **{k: v for k, v in s.items() if k != "sample_event_ids"},
-                        "sample_event_ids": s.get("sample_event_ids", []),
-                    }
-                    for svc, s in svc_summary.items()
-                },
-                "rvr": rvr_by_airport.get(ap, {}),
-                "active_aircraft_count": len(ap_aircraft),
-                "flight_phases": {
-                    "DEPARTURE": phase_counts.get("DEPARTURE", 0),
-                    "ARRIVAL":   phase_counts.get("ARRIVAL", 0),
-                    "ENROUTE":   phase_counts.get("ENROUTE", 0),
-                    "GROUND":    phase_counts.get("GROUND", 0),
-                    "UNKNOWN":   phase_counts.get("UNKNOWN", 0),
-                },
-                "sample_flights": sample_flights,
-            }
-
-        enriched_alerts = []
-        for a in active_alerts:
-            entry: dict[str, Any] = {
-                "alert_id": a["alert_id"],
-                "alert_type": a["alert_type"],
-                "severity": a["severity"],
-                "airport_code": a["airport_code"],
-                "service_name": a["service_name"],
-                "description": a["description"],
-                "triggered_at": a["triggered_at"],
-            }
-            cr = critic_by_alert.get(a["alert_id"])
-            if cr:
-                entry["critic"] = {
-                    "confidence": cr["confidence"],
-                    "pattern": cr["pattern"],
-                    "escalate": _strict_bool(cr.get("escalate")),
-                    "reasoning": cr["reasoning"],
-                }
-            enriched_alerts.append(entry)
-
+        # 5. Aggregate Summaries & Return
         critical_count = sum(1 for a in active_alerts if a["severity"] == "CRITICAL")
         warning_count = sum(1 for a in active_alerts if a["severity"] == "WARNING")
-        escalation_needed = any(
-            bool(r.get("escalate")) for r in critic_rows
-        )
+        escalation_needed = any(bool(r.get("escalate")) for r in critic_rows)
 
         return {
             "snapshot_time": now.isoformat(),

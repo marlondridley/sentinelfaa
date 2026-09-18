@@ -160,7 +160,7 @@ Kibana:         Ready for visualization at http://localhost:5601
 
 ### Start All Services
 ```bash
-cd C:\Users\marlo\source\peratonfaa\instraclustr
+cd C:\Users\marlo\source\sentinelfaa\instraclustr
 docker compose up -d
 ```
 
