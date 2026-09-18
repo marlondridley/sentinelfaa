@@ -6,10 +6,23 @@ from pydantic import SecretStr
 
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
+from src.logging_config import get_logger
+
 try:
     import hvac
 except ImportError:
     hvac = None
+
+_log = get_logger(__name__)
+
+# Secrets that must be present after the Vault call or the app should refuse
+# to start rather than run with a missing/empty credential.
+_REQUIRED_AFTER_VAULT = ("LITELLM_API_KEY",)
+
+
+class VaultConfigError(RuntimeError):
+    """Raised when a strictly required secret could not be loaded from Vault."""
+
 
 class VaultSettingsSource(PydanticBaseSettingsSource):
     """Custom Pydantic source interceptor to pull secrets from HashiCorp Vault[cite: 5]."""
@@ -19,12 +32,23 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         if hvac is None:
+            _log.warning(
+                "vault_disabled_missing_dependency",
+                extra={"reason": "hvac package not installed"},
+            )
             return {}
 
         vault_url = os.getenv("VAULT_ADDR")
         vault_token = os.getenv("VAULT_TOKEN")
 
         if not vault_url or not vault_token:
+            _log.warning(
+                "vault_disabled_missing_config",
+                extra={
+                    "vault_addr_set": bool(vault_url),
+                    "vault_token_set": bool(vault_token),
+                },
+            )
             return {}
 
         secrets_dict: dict[str, Any] = {}
@@ -40,8 +64,16 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                     secrets_dict["POSTGRES_USER"] = pg_data.get("username")
                     secrets_dict["POSTGRES_PASSWORD"] = pg_data.get("password")
                     secrets_dict["POSTGRES_DB"] = pg_data.get("database")
-            except Exception:
-                pass
+                else:
+                    _log.warning(
+                        "vault_secret_empty",
+                        extra={"path": "postgres/credentials"},
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "vault_secret_fetch_failed",
+                    extra={"path": "postgres/credentials", "error": str(exc)},
+                )
 
             # 2. Fetch Global LLM Provider Keys
             try:
@@ -51,8 +83,16 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                     secrets_dict["DEEPSEEK_API_KEY"] = llm_data.get("DEEPSEEK_API_KEY")
                     secrets_dict["GEMINI_API_KEY"] = llm_data.get("GEMINI_API_KEY")
                     secrets_dict["LITELLM_MASTER_KEY"] = llm_data.get("LITELLM_MASTER_KEY")
-            except Exception:
-                pass
+                else:
+                    _log.warning(
+                        "vault_secret_empty",
+                        extra={"path": "litellm"},
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "vault_secret_fetch_failed",
+                    extra={"path": "litellm", "error": str(exc)},
+                )
 
             # 3. Fetch Sentinel Application Proxy Key
             try:
@@ -60,11 +100,37 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                 sentinel_data = sentinel_resp.get("data", {}).get("data", {})
                 if sentinel_data:
                     secrets_dict["LITELLM_API_KEY"] = sentinel_data.get("LITELLM_API_KEY")
-            except Exception:
-                pass
+                else:
+                    _log.warning(
+                        "vault_secret_empty",
+                        extra={"path": "sentinel/config"},
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "vault_secret_fetch_failed",
+                    extra={"path": "sentinel/config", "error": str(exc)},
+                )
 
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.error(
+                "vault_client_init_failed",
+                extra={"vault_addr": vault_url, "error": str(exc)},
+            )
+            # Fall through with whatever (possibly empty) secrets_dict we have;
+            # the required-secret check below decides whether that's fatal.
+
+        missing_required = [
+            name for name in _REQUIRED_AFTER_VAULT if not secrets_dict.get(name)
+        ]
+        if missing_required:
+            _log.error(
+                "vault_required_secret_missing",
+                extra={"missing": missing_required},
+            )
+            raise VaultConfigError(
+                f"Required secret(s) missing after Vault fetch: {missing_required}. "
+                "Refusing to start with an unset credential rather than falling back silently."
+            )
 
         return secrets_dict
 

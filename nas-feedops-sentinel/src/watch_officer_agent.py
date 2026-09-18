@@ -19,6 +19,11 @@ from src.models import NASEvent, WatchOfficerBrief
 
 _log = get_logger(__name__)
 
+_REDACT_FIELDS = frozenset({
+    "aircraft_id", "beacon_code", "squawk", "track_id", "callsign",
+    "latitude", "longitude", "lat", "lon", "altitude", "raw_payload",
+})
+
 EVENT_LIMIT = 200
 
 
@@ -32,7 +37,7 @@ def get_watch_officer_agent(llm: Any = None, tools: list | None = None) -> Agent
             "approve or stage operational actions directly."
         ),
         tools=tools or [],
-        verbose=True,
+        verbose=settings.AGENT_VERBOSE,
         allow_delegation=False,
         llm=llm or get_configured_llm(),
     )
@@ -433,7 +438,19 @@ class OutputGuardrail:
             limitations=list(raw_narrative.limitations),
         )
 
+# watch_officer_agent.py
 
+
+
+def _redact(obj: Any) -> Any:
+    """Drop high-cardinality identifying fields before prompt serialization."""
+    if isinstance(obj, dict):
+        return {k: _redact(v) for k, v in obj.items() if k not in _REDACT_FIELDS}
+    if isinstance(obj, list):
+        return [_redact(item) for item in obj]
+    return obj
+    
+    
 def generate_watch_officer_brief(
     context: dict[str, Any] | None = None,
     use_llm: bool = True,
@@ -447,15 +464,18 @@ def generate_watch_officer_brief(
     if use_llm:
         try:
             agent = get_watch_officer_agent(llm=get_configured_llm(), tools=mcp_tools)
-            
+            payload = _redact({"context": context, "signals": signals})
             task = Task(
-                description=f"Synthesize operational watch summary for context: {json.dumps({'context': context, 'signals': signals}, default=str)}",
+                description=(
+                    "Synthesize operational watch summary for context: "
+                    + json.dumps(payload, default=str)
+                ),
                 expected_output="A valid JSON object adhering to the RawLLMNarrative schema.",
                 agent=agent,
                 output_json=RawLLMNarrative,
             )
             
-            crew = Crew(agents=[agent], tasks=[task], verbose=True, memory=False)
+            crew = Crew(agents=[agent], tasks=[task], verbose=settings.AGENT_VERBOSE, memory=False)
             result = crew.kickoff()
             
             narrative = result.pydantic if hasattr(result, "pydantic") and result.pydantic else RawLLMNarrative.model_validate_json(result.raw)

@@ -223,6 +223,10 @@ When the ticket is approved, rejected, or marked MONITORING, the decision is app
 
 ## System Architecture
 
+The repository supports two co-existing deployment tiers:
+- **Standalone Prototype (`src/`)**: A single-process SQLite environment for fast local demonstration, unit testing, and simulation without external dependencies.
+- **Enterprise Distributed Stack (`nas-feedops-sentinel/`)**: An asynchronous microservices architecture utilizing PostgreSQL (`asyncpg`), Temporal workflows, FastAPI with CORS and auth gates, and OpenTelemetry.
+
 ```
 FAA SWIM / STDDS TAIS subscription
         │

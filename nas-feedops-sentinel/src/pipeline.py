@@ -57,7 +57,14 @@ async def run_pipeline(
         to_evaluate = critical_alerts[: settings.MAX_CRITIC_PER_PASS]
         skipped = len(critical_alerts) - len(to_evaluate)
         suffix = f" (skipped {skipped})" if skipped > 0 else ""
-        print(f"  [CRITIC] Evaluating {len(to_evaluate)} CRITICAL alert(s){suffix} ...")
+        _log.info(
+        "critic_evaluation_start",
+        extra={
+            "evaluating_count": len(to_evaluate),
+            "skipped_count": skipped,
+            "total_critical": len(critical_alerts),
+            },
+        )
         for alert in to_evaluate:
             result = await critic.critique(alert)
             await save_critic_result(result)
@@ -70,7 +77,10 @@ async def run_pipeline(
         if action is not None:
             staged_count += 1
     if staged_count:
-        print(f"  [HITL] Staged {staged_count} CRITICAL action(s) for human review.")
+        _log.info(
+        "hitl_actions_staged",
+        extra={"staged_count": staged_count},
+        )
 
     health = compute_feed_health(events)
     for airport, status in health["airport_status"].items():
@@ -80,14 +90,19 @@ async def run_pipeline(
     failed = len(events) - passed
 
     sep = "-" * 50
-    print()
-    print(f"[{label}] {sep}")
-    print(f"  Events processed : {len(events)}")
-    print(f"  Validation passed: {passed}")
-    print(f"  Validation failed: {failed}")
-    print(f"  Alerts triggered : {len(alerts)}")
-    print(f"  Airport status   : {health['airport_status']}")
-    print(f"  SMES counts      : {health['smes_counts']}")
+    _log.info(
+    "pipeline_execution_summary",
+    extra={
+        "label": label,
+        "events_processed": len(events),
+        "passed": passed,
+        "failed": failed,
+        "alert_count": len(alerts),
+        "staged_count": staged_count,
+        "airport_status": health["airport_status"],
+        "smes_counts": health["smes_counts"],
+    },
+)
 
     if alerts:
         print(f"\n  Top alerts (showing up to 10 of {len(alerts)}):")

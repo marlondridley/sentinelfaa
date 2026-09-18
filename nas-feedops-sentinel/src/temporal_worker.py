@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import signal
+from datetime import timedelta
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -58,7 +60,7 @@ async def start_ingest_workflow(
     return handle.id
 
 
-async def run_worker() -> None:
+async def run_worker(interrupt_event: asyncio.Event) -> None:
     configure_logging()
     new_correlation_id()
     client = await connect_client()
@@ -67,16 +69,42 @@ async def run_worker() -> None:
         task_queue=settings.TEMPORAL_TASK_QUEUE,
         workflows=[SentinelPipelineWorkflow, IngestFolderWorkflow],
         activities=[process_events_activity, ingest_folder_activity],
+        # On shutdown, give in-flight activities (e.g. a file scan or pipeline
+        # run already underway) this long to finish naturally before Temporal
+        # sends them a cancellation. Keep this comfortably inside whatever
+        # grace period the orchestrator gives the container on SIGTERM
+        # (Docker/ECS/K8s default 30s) so the process still exits on time.
+        graceful_shutdown_timeout=timedelta(seconds=20),
     )
     _log.info(
         "temporal_worker_started",
         extra={"task_queue": settings.TEMPORAL_TASK_QUEUE, "host": settings.TEMPORAL_HOST},
     )
-    await worker.run()
+    # `async with worker:` starts polling on enter and, on exit, calls
+    # worker.shutdown() -- which is what actually drains in-flight activities
+    # within graceful_shutdown_timeout instead of dropping them. Waiting on
+    # interrupt_event (set by the SIGTERM/SIGINT handlers below) is what lets
+    # us reach that exit deliberately rather than via an abrupt process kill.
+    async with worker:
+        _log.info("temporal_worker_polling")
+        await interrupt_event.wait()
+        _log.info("temporal_worker_shutdown_initiated")
 
 
 def main() -> None:
-    asyncio.run(run_worker())
+    interrupt_event = asyncio.Event()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, interrupt_event.set)
+
+    try:
+        loop.run_until_complete(run_worker(interrupt_event))
+    finally:
+        _log.info("temporal_worker_stopped")
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ Status priority (worst wins): OK < STALE < DEGRADED < UNAVAILABLE < DISCONNECTED
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from src import config
@@ -40,7 +40,7 @@ def compute_feed_health(events: List[NASEvent]) -> Dict[str, Any]:
       smes_counts      — {airport: int}
       total_events     — int
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(seconds=config.STALE_FEED_SECONDS)
 
     # Group events by (airport, service)

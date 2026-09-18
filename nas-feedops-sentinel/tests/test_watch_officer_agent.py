@@ -34,7 +34,7 @@ def isolated_db(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

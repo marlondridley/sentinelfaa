@@ -16,7 +16,7 @@ Alert types and their operational meaning:
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 from src import config
@@ -25,7 +25,7 @@ from src.models import AlertEvent, NASEvent
 
 def check_alerts(events: List[NASEvent]) -> List[AlertEvent]:
     """Evaluate all alert rules against the event list. Returns triggered alerts."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     alerts: List[AlertEvent] = []
 
     for event in events:

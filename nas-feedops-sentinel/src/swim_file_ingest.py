@@ -28,17 +28,38 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from pathlib import Path
 from typing import Any
 
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
 from src import config
 from src.models import NASEvent
 from dataclasses import dataclass
+from src.logging_config import get_logger
 
-# â”€â”€ Ingest paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_log = get_logger(__name__)
+
+# Set by the entrypoint's SIGTERM/SIGINT handler (see main.py) so a scan already
+# in progress can stop starting new files and let the caller exit cleanly instead
+# of being killed mid-write when the orchestrator's grace period runs out.
+_shutdown_requested = threading.Event()
+
+
+def request_shutdown() -> None:
+    """Ask any in-progress scan_swim_folder() call to stop after the current file."""
+    _shutdown_requested.set()
+
+
+def shutdown_requested() -> bool:
+    return _shutdown_requested.is_set()
+
 
 PROCESSED_DIR: Path = config.PROCESSED_DIR
 FAILED_DIR: Path = config.DATA_DIR / "failed"
@@ -74,7 +95,7 @@ _XML_FIELD_MAP: dict[str, str] = {
 }
 
 
-# â”€â”€ Ingest log helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Ingest log helpers   
 
 def _load_processed_filenames() -> set[str]:
     """Return the set of file names already recorded in ingest_log.jsonl."""
@@ -96,7 +117,7 @@ def _append_log_entry(entry: dict) -> None:
         fh.write(json.dumps(entry) + "\n")
 
 
-# â”€â”€ File parsers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#   File parsers  
 
 def _parse_json_file(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -164,7 +185,7 @@ def _parse_xml_file(path: Path) -> list[dict]:
     return records if records else [{}]
 
 
-# â”€â”€ FAA Jumpstart Kit MessageFileOutput parser (JMS headers + JSON body) â”€â”€â”€â”€
+#  FAA Jumpstart Kit MessageFileOutput parser (JMS headers + JSON body) 
 
 _JMS_PROPERTY_RE = re.compile(r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$")
 
@@ -402,7 +423,7 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
         return [], str(exc)
 
 
-# â”€â”€ Record normaliser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Record normaliser 
 
 def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str | None]:
     """
@@ -424,6 +445,14 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
                     parsed = datetime(*parsed[:6])
                 raw[ts_field] = parsed
             except ValueError:
+                # event_time_utc is load-bearing: latency_ms is derived from it and
+                # drives ALERT_HIGH_LATENCY. Dropping it here would hand the record to
+                # the `now` fallback below, fabricating latency_ms == 0 and making a
+                # stale message look perfectly fresh. Fail the record instead.
+                if ts_field == "event_time_utc":
+                    return None, f"invalid event_time_utc: {raw[ts_field]!r}"
+                # received_time_utc is overwritten with `now` on the live-ingest path,
+                # so a malformed inbound value is safe to discard.
                 raw.pop(ts_field, None)
 
     # Live-ingest always stamps the received time
@@ -522,11 +551,27 @@ def scan_swim_folder(
     stats.files_skipped += excess_backlog
 
     if excess_backlog > 0:
-        print(f"[SWIM-INGEST] Backlog of {len(unprocessed)} new files; "
-              f"processing newest {max_files} this pass ({excess_backlog} deferred).")
+        _log.warning(
+            "swim_ingest_backlog_cap_exceeded",
+            extra={
+                "unprocessed_count": len(unprocessed),
+                "max_files": max_files,
+                "deferred_count": excess_backlog,
+            },
+        )
 
     for path in candidate_files:
-        print(f"[SWIM-INGEST] Processing: {path.name}")
+        if _shutdown_requested.is_set():
+            _log.warning(
+                "swim_ingest_shutdown_drain",
+                extra={
+                    "files_processed": stats.files_processed,
+                    "files_remaining": len(candidate_files) - stats.files_processed - stats.files_failed,
+                },
+            )
+            break
+
+        _log.info("swim_ingest_processing_file", extra={"file_name": path.name})
         raw_records, parse_error = _parse_file(path)
 
         if parse_error and not raw_records:
@@ -582,20 +627,129 @@ def scan_swim_folder(
         stats.events_parsed += len(events)
         stats.latest_file_time = datetime.now(timezone.utc).replace(tzinfo=None)
         all_events.extend(events)
-        print(f"[SWIM-INGEST]   OK: {len(events)} event(s) from {path.name}")
-
-    if stats.files_detected == 0:
-        print(f"[SWIM-INGEST] No new files in {source_dir}")
-    else:
-        print(
-            f"[SWIM-INGEST] Scan complete: "
-            f"{stats.files_processed} processed, "
-            f"{stats.files_failed} failed, "
-            f"{stats.files_skipped} skipped, "
-            f"{stats.events_parsed} events"
+        _log.info(
+        "swim_ingest_file_success",
+        extra={
+            "file_name": path.name,
+            "event_count": len(events),
+            "parse_errors": len(errors),
+            },
         )
+        if stats.files_detected == 0:
+            _log.info("swim_ingest_no_new_files", extra={"source_dir": str(source_dir)})
+        else:
+            _log.info(
+                "swim_ingest_scan_complete",
+                extra=stats.as_dict(),
+            )
 
     return all_events, stats
+
+
+class _NewFileHandler(FileSystemEventHandler):
+    """Sets a threading.Event on any file arriving in the watched folder.
+
+    Deliberately dumb: it doesn't care what the file is or try to parse it
+    inline (the watcher thread firing this callback shouldn't be blocked doing
+    file I/O). It just flags "something changed" and lets the watch loop
+    debounce and hand off to the existing scan_swim_folder() pass, which
+    already knows how to parse/validate/move/log a file correctly.
+    """
+
+    def __init__(self, trigger: threading.Event) -> None:
+        self._trigger = trigger
+
+    def on_created(self, event) -> None:
+        if not event.is_directory:
+            self._trigger.set()
+
+    def on_moved(self, event) -> None:
+        if not event.is_directory:
+            self._trigger.set()
+
+
+def watch_swim_folder(
+    source_dir: Path | None = None,
+    max_files: int = 500,
+    reconcile_interval: float = 300.0,
+    debounce_seconds: float = 2.0,
+    on_events=None,
+) -> None:
+    """
+    Long-running watcher for source_dir: reacts to new files as they land
+    (fast path, via filesystem events) and re-scans on a fixed interval
+    regardless (slow safety-net path) to catch anything the fast path missed
+    -- events dropped by the OS, a network-mounted folder where inotify-style
+    watching isn't reliable, or a backlog that existed before this process
+    started.
+
+    on_events, if given, is called as on_events(events, stats) after every
+    scan pass that ingested at least one event -- this is how the caller
+    hooks the downstream validate/alert/critic/HITL pipeline in without this
+    module needing to import main.py (scan_swim_folder() only parses, moves,
+    and logs files; it doesn't run that pipeline itself).
+
+    Runs until request_shutdown() is called (installed as the SIGTERM/SIGINT
+    handler in main.py) or the process is interrupted. A single in-process
+    lock keeps the fast-path and safety-net scans from ever overlapping --
+    scan_swim_folder() moves files and appends to a shared audit log, so two
+    concurrent passes over the same folder would race each other.
+    """
+    source_dir = source_dir or (config.DATA_DIR / "raw" / "swim_live")
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    scan_lock = threading.Lock()
+    trigger = threading.Event()
+
+    def _run_scan(reason: str) -> None:
+        if not scan_lock.acquire(blocking=False):
+            # A scan is already in flight; whatever prompted this call will
+            # be picked up by that scan (or the next reconciliation pass) --
+            # safe to skip rather than queue up overlapping scans.
+            return
+        try:
+            _log.info("swim_watch_scan_triggered", extra={"reason": reason})
+            events, stats = scan_swim_folder(source_dir, max_files=max_files)
+            if events and on_events is not None:
+                on_events(events, stats)
+        finally:
+            scan_lock.release()
+
+    observer = Observer()
+    observer.schedule(_NewFileHandler(trigger), str(source_dir), recursive=False)
+    observer.start()
+    _log.info(
+        "swim_watch_started",
+        extra={"source_dir": str(source_dir), "reconcile_interval": reconcile_interval},
+    )
+
+    # Catch up immediately on anything already sitting in the folder (or that
+    # arrived in the gap before the observer thread was ready) rather than
+    # waiting for the first event or the first reconcile tick.
+    _run_scan("startup")
+    last_reconcile = time.monotonic()
+
+    try:
+        while not _shutdown_requested.is_set():
+            fired = trigger.wait(timeout=1.0)
+            if _shutdown_requested.is_set():
+                break
+            if fired:
+                trigger.clear()
+                # Coalesce a burst of near-simultaneous events (a batch of
+                # files landing together) into a single scan instead of one
+                # per file.
+                time.sleep(debounce_seconds)
+                trigger.clear()
+                _run_scan("fs_event")
+                last_reconcile = time.monotonic()
+            elif time.monotonic() - last_reconcile >= reconcile_interval:
+                _run_scan("reconcile")
+                last_reconcile = time.monotonic()
+    finally:
+        observer.stop()
+        observer.join(timeout=5.0)
+        _log.info("swim_watch_stopped")
 
 
 def read_ingest_log(limit: int = 100) -> list[dict]:
@@ -621,6 +775,12 @@ def _move_to_failed(path: Path, reason: str) -> None:
         dest = FAILED_DIR / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
     try:
         shutil.move(str(path), str(dest))
-        print(f"[SWIM-INGEST]   FAILED: {path.name} -> {reason[:80]}")
+        _log.warning(
+            "swim_ingest_file_failed",
+            extra={"file_name": path.name, "reason": reason},
+        )
     except OSError as exc:
-        print(f"[SWIM-INGEST]   Could not move {path.name}: {exc}")
+        _log.error(
+            "swim_ingest_move_failed",
+            extra={"file_name": path.name, "error": str(exc)},
+        )

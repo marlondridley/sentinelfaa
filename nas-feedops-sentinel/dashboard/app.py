@@ -15,6 +15,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Allow imports from the repository root when running dashboard/app.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +29,17 @@ import streamlit as st
 from src import config, storage
 from src.alert_engine import check_alerts
 from src.async_bridge import run_async as _run
+from src.execution_gate import (
+    approve_staged_action as gate_approve,
+)
+from src.execution_gate import (
+    get_action_audit_log,
+    get_pending_staged_actions,
+    get_recent_staged_actions,
+)
+from src.execution_gate import (
+    reject_staged_action as gate_reject,
+)
 from src.feed_health import compute_feed_health
 from src.logging_config import get_logger
 from src.maintenance import purge_old_kit_files
@@ -36,7 +48,16 @@ from src.news_agent import build_ticker_items
 from src.planner_agent import PlannerAgent
 from src.replay import replay_from_directory
 from src.sample_data import generate_sample_batch
-from src.storage import save_alerts, save_events, save_planner_result
+from src.storage import (
+    approve_operational_ticket,
+    get_ticket_by_action_id,
+    mark_operational_ticket_monitoring,
+    reject_operational_ticket,
+    save_alerts,
+    save_events,
+    save_planner_result,
+)
+from src.swim_file_ingest import read_ingest_log, scan_swim_folder
 from src.validators import validate_event
 from src.watch_officer_agent import (
     build_watch_officer_context,
@@ -79,15 +100,35 @@ def _parse_json_str_list(raw: Any, field_name: str = "json_field") -> list[str]:
     )
     return []
 
-# ── Async bridge ────────────────────────────────────────────────────────────
-# storage.py is fully async (asyncpg), and so is anything built directly on
-# top of it (news_agent.build_ticker_items, planner_agent.PlannerAgent.query,
-# watch_officer_agent.build_watch_officer_context). Streamlit scripts execute
-# synchronously top-to-bottom, so every one of those calls below returns an
-# un-awaited coroutine unless it's run through `_run()` (src/async_bridge.py),
-# which keeps one persistent event loop alive for the process instead of
-# spinning up a new one per call — see that module's docstring for why
-# asyncio.run() breaks storage.py's cached asyncpg pool on the second call.
+
+def _reconstruct_nas_events(raw_rows: list[dict]) -> list[NASEvent]:
+    """Reconstruct NASEvent instances from raw storage dictionaries with structured error logging."""
+    events: list[NASEvent] = []
+    for row in raw_rows:
+        try:
+            r = dict(row)
+            if isinstance(r.get("event_time_utc"), str):
+                r["event_time_utc"] = datetime.fromisoformat(r["event_time_utc"])
+            if isinstance(r.get("received_time_utc"), str):
+                r["received_time_utc"] = datetime.fromisoformat(r["received_time_utc"])
+
+            if isinstance(r.get("validation_errors"), (str, list)):
+                r["validation_errors"] = _parse_json_str_list(
+                    r.get("validation_errors"), "validation_errors"
+                )
+
+            events.append(NASEvent(**r))
+        except Exception as exc:
+            _log.warning(
+                "nas_event_reconstruct_failed",
+                extra={
+                    "event_id": row.get("event_id", "unknown") if isinstance(row, dict) else "unknown",
+                    "error": str(exc),
+                    "raw_sample": str(row)[:150],
+                },
+            )
+    return events
+
 
 # Kit log folder path (resolved via the data/raw/swim_live junction)
 KIT_LOG_PATH = config.SWIM_RAW_FOLDER
@@ -183,29 +224,19 @@ def _status_label(status: str) -> str:
     return f"{STATUS_EMOJI.get(status, '⚪')} {status}"
 
 
-# ── Breaking News Ticker (top-of-page, CNN-style) ─────────────────────────────
-# Pre-compute the data the ticker needs (done before main "Load persisted data"
-# block so it can render at the very top of the page).
-_news_events_raw = _run(storage.get_recent_events(limit=500))
+# ── Single Consolidated Ingest & Breaking News Ticker ─────────────────────────
+events_raw       = _run(storage.get_recent_events(limit=1000))
 _news_alerts_raw = _run(storage.get_recent_alerts(limit=200))
 _news_rvr_rows   = _run(storage.get_latest_rvr())
 _news_phase      = _run(storage.get_flight_phase_counts(window_minutes=15))
 _news_active     = _run(storage.get_active_aircraft(window_minutes=5, limit=300))
 _news_lat        = _run(storage.get_latency_stats())
 
-# Build NASEvent list for feed-health computation (worst-wins per airport)
-_news_live: list[NASEvent] = []
-for _row in _news_events_raw[:300]:
-    try:
-        _r = dict(_row)
-        _r["event_time_utc"] = datetime.fromisoformat(_r["event_time_utc"])
-        _r["received_time_utc"] = datetime.fromisoformat(_r["received_time_utc"])
-        if isinstance(_r.get("validation_errors"), (str, list)):
-            _r["validation_errors"] = _parse_json_str_list(_r.get("validation_errors"), "validation_errors")
-        _news_live.append(NASEvent(**_r))
-    except Exception as _reconstruct_exc:
-        _log.warning("news_event_reconstruct_failed", extra={"error": str(_reconstruct_exc)})
+# Reconstruct NASEvent list once for downstream components
+live_events: list[NASEvent] = _reconstruct_nas_events(events_raw)
 
+# Slice reconstructed domain objects directly for ticker and feed health
+_news_live = live_events[:300]
 _news_health = compute_feed_health(_news_live) if _news_live else {"airport_status": {}}
 
 ticker_items = _run(build_ticker_items(
@@ -224,7 +255,6 @@ _SEV_CLASS = {
     "ATTENTION": "tk-yellow",
     "ACTION":    "tk-red",
 }
-# Build the inline-HTML ticker string with clearer separator and severity prefix
 _SEV_GLYPH = {"GOOD": "●", "NORMAL": "●", "ATTENTION": "▲", "ACTION": "■"}
 _ticker_html_items = "".join(
     f'<a class="tk-item {_SEV_CLASS.get(it["severity"], "tk-grey")}" '
@@ -234,10 +264,7 @@ _ticker_html_items = "".join(
     f'</a>'
     for it in ticker_items
 )
-# Duplicate the items so the marquee scrolls seamlessly
 _ticker_payload = f"{_ticker_html_items}{_ticker_html_items}"
-
-# Tuned: ~9 seconds per item, minimum 90s so a short list still scrolls smoothly
 _scroll_seconds = max(90, len(ticker_items) * 9)
 
 st.markdown(
@@ -277,7 +304,6 @@ st.markdown(
         padding-left: 100%;
         animation: ticker-scroll {_scroll_seconds}s linear infinite;
     }}
-    /* Pause on hover (desktop) AND when actively touched/clicked (touch + desktop tap-hold) */
     .ticker-wrap:hover .ticker,
     .ticker-wrap:active .ticker,
     .ticker-wrap:focus-within .ticker {{
@@ -312,7 +338,6 @@ st.markdown(
     .tk-grey   {{ color: #e5e7eb; }}
     .tk-yellow {{ color: #fbbf24; font-weight: 800; }}
     .tk-red    {{ color: #ff5252; font-weight: 900; }}
-    /* scroll-margin so anchored sections don't get hidden under Streamlit's header */
     [id^="anchor-"], #airport-health, #airspace-ops, #alert-log,
     #rvr-section, #critic-intel, #latency-section {{
         scroll-margin-top: 80px;
@@ -326,12 +351,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Mission Questions Answered (table of contents for the operator) ─────────
+
 def _render_mission_panel() -> None:
-    """
-    7-row decision support table that doubles as a nav index — every row's
-    "Dashboard evidence" cell deep-links to the section that answers it.
-    """
+    """7-row decision support table that doubles as a nav index."""
     st.markdown(
         """
         <style>
@@ -494,7 +516,6 @@ with st.expander("🤖 AI Planner — *What should the operator investigate or e
             with st.expander(f"Evidence citations ({len(pr.citations)})"):
                 st.code(", ".join(pr.citations))
 
-    # Recent planner history
     recent_briefs = _run(storage.get_recent_planner_results(limit=5))
     if recent_briefs:
         with st.expander("Recent planner briefs"):
@@ -522,13 +543,11 @@ st.caption(
 
 _wo_latest = _run(storage.get_latest_watch_officer_brief())
 
-# If no brief exists yet, generate one on first dashboard load
 if _wo_latest is None:
     _wo_ctx = _run(build_watch_officer_context())
     _wo_latest = generate_watch_officer_brief(_wo_ctx, use_llm=True)
     _run(storage.save_watch_officer_brief(_wo_latest))
 
-# Buttons
 _wo_b1, _wo_b2, _wo_b3 = st.columns([1, 1, 4])
 if _wo_b1.button("🔄 Refresh Brief", use_container_width=True):
     _new_ctx = _run(build_watch_officer_context())
@@ -542,7 +561,6 @@ if _wo_b2.button("⚙ Deterministic Only", use_container_width=True,
     _run(storage.save_watch_officer_brief(_wo_latest))
     st.rerun()
 
-# Posture + trust badges
 _POSTURE_COLOR = {"ACTION": "red", "ATTENTION": "orange", "NORMAL": "blue",
                   "GOOD": "green", "UNKNOWN": "grey"}
 _TRUST_COLOR   = {"TRUSTWORTHY": "green", "DEGRADED": "orange",
@@ -585,8 +603,7 @@ with st.container(border=True):
 
 st.divider()
 
-# ── Load persisted data (used by airspace + downstream panels) ────────────────
-events_raw = _run(storage.get_recent_events(limit=1000))
+# ── Main Panel Computations (Reuse Parsed live_events) ───────────────────────
 alerts_raw = _run(storage.get_recent_alerts(limit=500))
 val_summary = _run(storage.get_validation_summary())
 lat_stats = _run(storage.get_latency_stats())
@@ -595,20 +612,8 @@ rvr_rows = _run(storage.get_latest_rvr())
 events_df = pd.DataFrame(events_raw) if events_raw else pd.DataFrame()
 alerts_df = pd.DataFrame(alerts_raw) if alerts_raw else pd.DataFrame()
 
-# Rebuild NASEvent objects for feed_health computation
-_live_events: list[NASEvent] = []
-for row in events_raw[:500]:
-    try:
-        r = dict(row)
-        r["event_time_utc"] = datetime.fromisoformat(r["event_time_utc"])
-        r["received_time_utc"] = datetime.fromisoformat(r["received_time_utc"])
-        if isinstance(r.get("validation_errors"), (str, list)):
-            r["validation_errors"] = _parse_json_str_list(r.get("validation_errors"), "validation_errors")
-        _live_events.append(NASEvent(**r))
-    except Exception as _reconstruct_exc:
-        _log.warning("event_reconstruct_failed", extra={"error": str(_reconstruct_exc)})
-
-health = compute_feed_health(_live_events) if _live_events else {
+# Reuse pre-parsed live_events instead of re-fetching and re-parsing
+health = compute_feed_health(live_events[:500]) if live_events else {
     "airport_status": {}, "service_status": {}, "latency_stats": {}, "smes_counts": {}
 }
 
@@ -626,7 +631,6 @@ active_aircraft = _run(storage.get_active_aircraft(window_minutes=5, limit=500))
 phase_counts = _run(storage.get_flight_phase_counts(window_minutes=15))
 altitude_dist = _run(storage.get_altitude_distribution(window_minutes=15))
 
-# Top-row airspace KPIs — each label is the operational question it answers
 ap1, ap2, ap3, ap4, ap5 = st.columns(5)
 total_active = len(active_aircraft)
 total_dep = sum(c.get("DEPARTURE", 0) for c in phase_counts.values())
@@ -639,43 +643,33 @@ ap1.metric(
     value=total_active,
     delta="active in last 5 min" if total_active else "no live positions",
     delta_color="off" if total_active else "inverse",
-    help="Distinct aircraft for which TAIS sent a position in the last 5 minutes. "
-         "Zero = TAIS feed has stopped delivering tracks; investigate the Kit + broker.",
+    help="Distinct aircraft for which TAIS sent a position in the last 5 minutes.",
 )
 ap2.metric(
     label="🛫 How many departure records were observed?",
     value=total_dep,
     delta="climbing out of PCT airports" if total_dep else "no departures detected",
     delta_color="off",
-    help="Aircraft classified as DEPARTURE phase (climbing AND originating at a PCT primary airport) "
-         "in the last 15 minutes.",
 )
 ap3.metric(
     label="🛬 How much arrival traffic is flowing through PCT?",
     value=total_arr,
     delta="descending into PCT airports" if total_arr else "no arrivals detected",
     delta_color="off",
-    help="Aircraft classified as ARRIVAL phase (descending AND destination is a PCT primary airport) "
-         "in the last 15 minutes.",
 )
 ap4.metric(
     label="✈ How much transition / overflight traffic is active?",
     value=total_enr,
     delta="level flight through sector" if total_enr else "no enroute traffic",
     delta_color="off",
-    help="Aircraft classified as ENROUTE (level flight at cruise or transiting PCT) in the last 15 minutes. "
-         "Includes overflights that neither depart nor land in PCT primaries.",
 )
 ap5.metric(
     label="🅿 Are surface / ground records present?",
     value=total_gnd,
     delta="on taxi/ramp/runway" if total_gnd else "no ground records",
     delta_color="off",
-    help="Aircraft below 500 ft (surface, taxi, ramp, runway ground movement). Sourced from TAIS "
-         "low-altitude tracks; for richer ground state, subscribe to SMES.",
 )
 
-# Airspace map — Palantir-style overlay of airports + live aircraft
 PCT_AIRPORTS = {
     "KDCA": {"name": "Reagan National",       "lat": 38.8521, "lon": -77.0377},
     "KIAD": {"name": "Dulles International",  "lat": 38.9531, "lon": -77.4565},
@@ -776,7 +770,7 @@ with map_col:
             bearing=0,
         )
         st.pydeck_chart(pdk.Deck(
-            map_style=None,  # Use default Carto basemap (no Mapbox token needed)
+            map_style=None,
             initial_view_state=view_state,
             layers=layers,
             tooltip={
@@ -810,7 +804,6 @@ with ops_col:
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-    # Flight matrix — most-recent flights with status
     if active_aircraft:
         st.markdown("**Live Flight Matrix** (most recent)")
         fm_rows = []
@@ -826,7 +819,6 @@ with ops_col:
             })
         st.dataframe(pd.DataFrame(fm_rows), hide_index=True, use_container_width=True, height=300)
 
-# Altitude + ground-speed distribution histograms
 if altitude_dist:
     dist_df = pd.DataFrame(altitude_dist)
     alt_col, gs_col = st.columns(2)
@@ -857,7 +849,7 @@ if altitude_dist:
 
 st.divider()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar Controls ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙ Controls")
 
@@ -878,7 +870,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Replay section
     st.subheader("Replay")
     replay_files = list(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
     st.caption(f"{len(replay_files)} file(s) in data/raw/")
@@ -925,7 +916,6 @@ st.caption(
     "safe, real-time operational decisions for KDCA, KIAD, KBWI, and KADW?*"
 )
 
-# Raw values
 total = val_summary.get("total", 0)
 passed = val_summary.get("passed", 0) or 0
 failed = val_summary.get("failed", 0) or 0
@@ -934,7 +924,7 @@ avg_lat = lat_stats.get("avg_ms")
 critical_alerts = sum(1 for a in alerts_raw if a.get("severity") == "CRITICAL")
 warning_alerts = sum(1 for a in alerts_raw if a.get("severity") == "WARNING")
 
-# Helper — color a metric label with status emoji + target context
+
 def _readiness_label(value, good_if, warn_if, bad_if, lower_is_better=False):
     """Return (emoji, status_text) based on thresholds."""
     if value is None:
@@ -949,21 +939,16 @@ def _readiness_label(value, good_if, warn_if, bad_if, lower_is_better=False):
     if value >= bad_if:  return ("🟠", "degraded")
     return ("🔴", "critical")
 
+
 k1, k2, k3, k4 = st.columns(4)
 
-# 1. Sector activity — how much SWIM data is flowing
 k1.metric(
     label="📡 SWIM Messages Ingested",
     value=f"{total:,}",
     delta="total events in DB",
     delta_color="off",
-    help="Total NAS events processed since pipeline start. PCT-wide normal "
-         "rate is roughly 1,000–20,000 messages per active operational hour. "
-         "Zero or near-zero = SWIM broker connectivity is broken; investigate "
-         "the Jumpstart Kit and broker auth.",
 )
 
-# 2. Data quality — schema conformance
 emoji_pass, status_pass = _readiness_label(pass_rate_pct, good_if=95, warn_if=85, bad_if=70)
 pass_display = f"{pass_rate_pct:.1f}%" if pass_rate_pct is not None else "—"
 k2.metric(
@@ -971,13 +956,8 @@ k2.metric(
     value=pass_display,
     delta=f"{status_pass} · target ≥ 95%",
     delta_color="normal" if (pass_rate_pct or 0) >= 95 else "inverse",
-    help="% of incoming SWIM messages that pass schema and business-rule "
-         "validation. Below 95% indicates upstream FAA data-quality issues "
-         "or a parser drift after a SWIM schema revision. Sustained failures "
-         "= open a ticket with the SWIM service desk.",
 )
 
-# 3. Active alerts — operational triage queue
 total_alerts = len(alerts_raw)
 emoji_alert, status_alert = _readiness_label(
     total_alerts, good_if=0, warn_if=10, bad_if=50, lower_is_better=True
@@ -987,13 +967,8 @@ k3.metric(
     value=f"{total_alerts:,}",
     delta=f"{critical_alerts} CRITICAL · {warning_alerts} WARNING",
     delta_color="inverse" if critical_alerts > 0 else "off",
-    help="Alerts triggered by the deterministic rule engine awaiting "
-         "supervisor triage. CRITICAL alerts (low RVR, ISMC disconnect, "
-         "feed loss) require immediate attention. The AI Critic panel below "
-         "scores which CRITICALs deserve escalation vs which are spurious.",
 )
 
-# 4. Processing freshness — gap between event time and ingest time
 emoji_lat, status_lat = _readiness_label(
     avg_lat or 0, good_if=5_000, warn_if=30_000, bad_if=300_000, lower_is_better=True
 )
@@ -1010,14 +985,8 @@ k4.metric(
     value=lat_display,
     delta=f"{status_lat} · target < 5 s live",
     delta_color="normal" if (avg_lat or 0) < 5000 else "inverse",
-    help="Time between when the event occurred at the FAA facility and "
-         "when Sentinel received the message. Live target is sub-second. "
-         "Large values (minutes) indicate the system is processing a "
-         "BACKLOG rather than live data — normal during catch-up after "
-         "the Kit was offline. Falls quickly once the live feed catches up.",
 )
 
-# Interpretation summary line
 if pass_rate_pct is not None and avg_lat is not None:
     if (pass_rate_pct or 0) >= 95 and (avg_lat or 0) < 5000 and critical_alerts == 0:
         st.success("**Operational status: GREEN** — feed is healthy, data quality nominal, no critical alerts. Safe to rely on the feed for live operational decisions.")
@@ -1025,19 +994,17 @@ if pass_rate_pct is not None and avg_lat is not None:
         st.error(
             f"**Operational status: RED** — {critical_alerts} CRITICAL alerts active "
             f"and/or {pass_rate_pct:.0f}% schema conformance is below 70%. "
-            "Supervisor should validate against secondary sources (STARS console, "
-            "ATIS, telephone coordination) before using feed data for ops decisions."
+            "Supervisor should validate against secondary sources before using feed data for ops decisions."
         )
     else:
         st.warning(
             "**Operational status: AMBER** — feed is functional but degraded. "
-            "Review individual metrics below and the Critic intelligence panel "
-            "for context before acting on aggregate numbers."
+            "Review individual metrics below and the Critic intelligence panel for context."
         )
 
 st.divider()
 
-# ── Airport & service status ──────────────────────────────────────────────────
+# ── Airport & Service Status ──────────────────────────────────────────────────
 col_left, col_right = st.columns(2)
 
 st.markdown('<div id="airport-health"></div>', unsafe_allow_html=True)
@@ -1045,8 +1012,7 @@ with col_left:
     st.subheader("🏢 Airport Feed Health")
     st.caption(
         "**Answers:** *Which airports have a SWIM feed I can trust right now?* "
-        "🟢 OK · 🟡 STALE · 🟠 DEGRADED · 🔴 UNAVAILABLE/DISCONNECTED. "
-        "Worst-wins across all services per airport."
+        "🟢 OK · 🟡 STALE · 🟠 DEGRADED · 🔴 UNAVAILABLE/DISCONNECTED."
     )
     if health["airport_status"]:
         airport_rows = [
@@ -1064,8 +1030,7 @@ with col_right:
     st.subheader("📡 Service Health by Airport")
     st.caption(
         "**Answers:** *Which specific SWIM service at which specific airport is "
-        "the problem?* A single degraded service can be tolerated; multiple "
-        "services degraded at the same airport indicates infrastructure issues."
+        "the problem?*"
     )
     svc_rows = []
     for service, airport_map in health.get("service_status", {}).items():
@@ -1082,17 +1047,13 @@ with col_right:
 
 st.divider()
 
-# ── Latest RVR table ──────────────────────────────────────────────────────────
+# ── Latest RVR Table ──────────────────────────────────────────────────────────
 st.markdown('<div id="rvr-section"></div>', unsafe_allow_html=True)
 st.subheader("👁 Runway Visual Range (RVR)")
 st.caption(
     "**Answers:** *Is the visibility on each runway safe for normal instrument "
-    "approach procedures?* RVR below **1,200 ft** triggers low-visibility ops "
-    "procedures (CAT II/III ILS, increased separation, possible runway closure). "
-    "Highlighted red cells are safety-critical and the duty manager should "
-    "verify against tower-reported conditions."
+    "approach procedures?* RVR below **1,200 ft** triggers low-visibility ops procedures."
 )
-st.caption("Latest reading per runway, per airport:")
 if rvr_rows:
     rvr_df = pd.DataFrame(rvr_rows)[[
         "airport_code", "runway", "rvr_touchdown",
@@ -1106,7 +1067,6 @@ if rvr_rows:
         "event_time_utc": "Event Time (UTC)",
     })
 
-    # Highlight low RVR values
     def _highlight_rvr(val):
         try:
             if val is not None and float(val) < config.RVR_LOW_THRESHOLD_FT:
@@ -1129,16 +1089,13 @@ else:
 
 st.divider()
 
-# ── SMES counts & latency metrics ─────────────────────────────────────────────
+# ── SMES Counts & Latency Metrics ─────────────────────────────────────────────
 col_smes, col_lat = st.columns(2)
 
 with col_smes:
     st.subheader("🛬 Surface Movement Volume")
     st.caption(
-        "**Answers:** *How busy is the airport surface (taxi, ramp, runway "
-        "ground movement) at each facility?* Unusual spikes can indicate a "
-        "data loop, equipment fault, or genuine ground-traffic surge that "
-        "warrants a tower coordination call."
+        "**Answers:** *How busy is the airport surface at each facility?*"
     )
     smes = health.get("smes_counts", {})
     if smes:
@@ -1154,10 +1111,7 @@ st.markdown('<div id="latency-section"></div>', unsafe_allow_html=True)
 with col_lat:
     st.subheader("⏱ Delivery Latency by Service")
     st.caption(
-        "**Answers:** *Is each SWIM service delivering messages fast enough to "
-        "support real-time decisions?* Sustained values above 30 s indicate "
-        "broker, network, or upstream processing issues — investigate ISMC "
-        "link health first."
+        "**Answers:** *Is each SWIM service delivering messages fast enough to support real-time decisions?*"
     )
     lat_rows = []
     for svc, stats in sorted(health.get("latency_stats", {}).items()):
@@ -1176,13 +1130,10 @@ with col_lat:
 
 st.divider()
 
-# ── Validation summary ────────────────────────────────────────────────────────
+# ── Validation Summary ────────────────────────────────────────────────────────
 st.subheader("✅ Data Quality Posture (Schema Validation)")
 st.caption(
-    "**Answers:** *Are upstream FAA systems sending us well-formed data?* "
-    "Each incoming SWIM message is checked against service-specific schema "
-    "and business rules. Sustained failures on a specific service point to "
-    "an upstream data-quality issue worth a SWIM service-desk ticket."
+    "**Answers:** *Are upstream FAA systems sending us well-formed data?*"
 )
 v1, v2, v3 = st.columns(3)
 v1.metric("Total Validated", f"{total:,}")
@@ -1204,79 +1155,31 @@ if not events_df.empty and "validation_status" in events_df.columns:
 
 st.divider()
 
-# ── AI Critic Intelligence (promoted to its own section, always rendered) ────
+# ── AI Critic Intelligence ───────────────────────────────────────────────────
 st.markdown('<div id="critic-intel"></div>', unsafe_allow_html=True)
 st.subheader("🤖 AI Critic — *Should we escalate?*")
 st.caption(
-    "**Answers:** *Which CRITICAL alerts are genuinely safety-significant vs which are "
-    "data artifacts or transients?* Each alert is scored 0.0–1.0 confidence with a "
-    "pattern classification (CASCADE_FAILURE / ISOLATED_FAULT / WEATHER_CORRELATED / "
-    "DATA_ANOMALY / TRANSIENT) and an explicit escalation recommendation. The Critic "
-    "is an LLM advisory layer — the deterministic gate (HITL) is what blocks unsafe "
-    "automated actions."
+    "**Answers:** *Which CRITICAL alerts are genuinely safety-significant vs which are data artifacts?*"
 )
 
 _critic_rows_all = _run(storage.get_recent_critic_results(limit=50))
-_critic_by_id = {r["alert_id"]: r for r in _critic_rows_all}
 
-# KPI strip — each label is the question it answers for the supervisor
 _cri_total = len(_critic_rows_all)
 _cri_escalate = sum(1 for r in _critic_rows_all if r.get("escalate"))
 _cri_cascade = sum(1 for r in _critic_rows_all if r.get("pattern") == "CASCADE_FAILURE")
 _cri_isolated = sum(1 for r in _critic_rows_all if r.get("pattern") == "ISOLATED_FAULT")
-_cri_weather = sum(1 for r in _critic_rows_all if r.get("pattern") == "WEATHER_CORRELATED")
 _cri_avg_conf = (sum(r.get("confidence", 0) or 0 for r in _critic_rows_all) / _cri_total) if _cri_total else None
 
 ck1, ck2, ck3, ck4, ck5 = st.columns(5)
-ck1.metric(
-    label="How many alerts has the AI critic reviewed?",
-    value=f"{_cri_total:,}",
-    delta="CRITICAL alerts evaluated",
-    delta_color="off",
-    help="Total CRITICAL alerts the Critic has evaluated since the pipeline started.",
-)
-ck2.metric(
-    label="🔺 How many demand a supervisor look NOW?",
-    value=_cri_escalate,
-    delta="escalation recommended" if _cri_escalate else "no escalations",
-    delta_color="inverse" if _cri_escalate else "off",
-    help="Alerts the Critic flagged with escalate=true. Apply the rule: confidence ≥ 0.7 AND "
-         "severity CRITICAL, OR CASCADE_FAILURE pattern across multiple services/airports.",
-)
-ck3.metric(
-    label="How sure is the AI of its verdicts?",
-    value=f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—",
-    delta="mean confidence across verdicts",
-    delta_color="off",
-    help="Mean confidence (0–1) across all Critic verdicts. Below 0.5 means evidence is mixed "
-         "and the Critic itself is uncertain — supervisor should validate manually.",
-)
-ck4.metric(
-    label="Are multi-service degradations happening?",
-    value=_cri_cascade,
-    delta="CASCADE_FAILURE patterns",
-    delta_color="inverse" if _cri_cascade else "off",
-    help="Critic verdicts classified as CASCADE_FAILURE — multiple services or multiple airports "
-         "degrading together. These are the highest-severity operational events.",
-)
-ck5.metric(
-    label="Or just single-service issues?",
-    value=_cri_isolated,
-    delta="ISOLATED_FAULT patterns",
-    delta_color="off",
-    help="Critic verdicts classified as ISOLATED_FAULT — single service at single airport. "
-         "Less urgent than cascades but still worth investigation.",
-)
+ck1.metric("Alerts Evaluated", f"{_cri_total:,}")
+ck2.metric("🔺 Escalations Suggested", _cri_escalate, delta_color="inverse" if _cri_escalate else "off")
+ck3.metric("Mean Confidence", f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—")
+ck4.metric("Cascade Failures", _cri_cascade, delta_color="inverse" if _cri_cascade else "off")
+ck5.metric("Isolated Faults", _cri_isolated)
 
 if not _critic_rows_all:
-    st.info(
-        "**No Critic verdicts yet.** The AI Critic runs only on CRITICAL alerts, and only "
-        "when `LLM_PROVIDER` + a valid API key are configured in `.env`. Once Gemini "
-        "(or Anthropic) is wired and a CRITICAL alert fires, each verdict shows up "
-        "here within seconds."
-    )
+    st.info("No Critic verdicts yet. Configure `LLM_PROVIDER` and trigger a CRITICAL alert to populate.")
 else:
-    # Card-style render of recent Critic verdicts, joined to their alerts where possible
     _alert_id_to_row = {a.get("alert_id"): a for a in alerts_raw}
     _SEV_PATTERN_COLOR = {
         "CASCADE_FAILURE":    "red",
@@ -1307,7 +1210,6 @@ else:
             h3.markdown(f"pattern: :{pattern_color}[**{pattern}**]")
             h4.markdown(f":red[**{escalate_badge}**]" if escalate else escalate_badge)
             st.markdown(reasoning if reasoning else "_No reasoning recorded._")
-            # Citations
             cits_raw = cr.get("citations", "[]")
             cits = _parse_json_str_list(cits_raw, "citations")
             if cits:
@@ -1316,73 +1218,35 @@ else:
 st.divider()
 
 # ── Human Review Queue (HITL Execution Gate) ─────────────────────────────────
-from src.execution_gate import (
-    approve_staged_action as gate_approve,
-)
-from src.execution_gate import (
-    get_action_audit_log,
-    get_pending_staged_actions,
-    get_recent_staged_actions,
-)
-from src.execution_gate import (
-    reject_staged_action as gate_reject,
-)
-from src.storage import (
-    approve_operational_ticket,
-    get_ticket_by_action_id,
-    mark_operational_ticket_monitoring,
-    reject_operational_ticket,
-)
-
 st.markdown('<div id="hitl-queue"></div>', unsafe_allow_html=True)
 st.subheader("🧑‍✈️ Human Review Queue — *What needs operator approval?*")
 st.caption(
-    "**Answers:** *Which CRITICAL alerts are staged as PENDING actions that "
-    "cannot execute until a human approves them?* Every CRITICAL alert from "
-    "the deterministic engine produces a StagedAction here. The AI Critic can "
-    "recommend escalation but cannot move an action out of PENDING. Every "
-    "approve / reject writes an immutable row in `action_audit_log`."
+    "**Answers:** *Which CRITICAL alerts are staged as PENDING actions that cannot execute until a human approves them?*"
 )
 
 _pending_actions = _run(get_pending_staged_actions())
 
 if not _pending_actions:
-    st.success(
-        "✅ **No pending actions.** Either no CRITICAL alerts are active, or all "
-        "staged actions have been reviewed. Pipeline is operating without "
-        "human intervention required."
-    )
+    st.success("✅ **No pending actions.** All staged actions have been reviewed or no CRITICAL alerts are active.")
 else:
-    st.warning(
-        f"⚠️ **{len(_pending_actions)} staged action(s) await operator approval.** "
-        "None will execute until decided here."
-    )
+    st.warning(f"⚠️ **{len(_pending_actions)} staged action(s) await operator approval.**")
     for _action in _pending_actions:
-        # Wrap ticket fetch in _run()
         _ticket = _run(get_ticket_by_action_id(_action.action_id))
         with st.container(border=True):
-            # Title row from the ticket if available, else from the action
-            title = (_ticket.title if _ticket else
-                     f"{_action.alert_type} at {_action.airport_code or '—'}")
+            title = (_ticket.title if _ticket else f"{_action.alert_type} at {_action.airport_code or '—'}")
             h1, h2, h3 = st.columns([3, 1, 2])
             h1.markdown(f"### {title}")
-            conf_str = (
-                f"{_action.critic_confidence:.0%}"
-                if _action.critic_confidence is not None else "—"
-            )
+            conf_str = f"{_action.critic_confidence:.0%}" if _action.critic_confidence is not None else "—"
             h2.markdown(f"AI conf: **{conf_str}**")
             posture = _ticket.posture if _ticket else "ACTION"
-            posture_color = {"ACTION": "red", "ATTENTION": "orange",
-                             "NORMAL": "blue", "GOOD": "green"}.get(posture, "grey")
+            posture_color = {"ACTION": "red", "ATTENTION": "orange", "NORMAL": "blue", "GOOD": "green"}.get(posture, "grey")
             h3.markdown(f"posture: :{posture_color}[**{posture}**]")
 
-            # Summary from the Watch Officer Brief
             if _ticket and _ticket.summary:
                 st.markdown(f"**Summary:** {_ticket.summary}")
             else:
                 st.markdown(f"**Recommended action:** {_action.recommended_action}")
 
-            # Watch Officer detail (the Escalation Package narrative)
             if _ticket:
                 pc1, pc2 = st.columns(2)
                 with pc1:
@@ -1416,7 +1280,6 @@ else:
                     f"drafted: {_ticket.generated_at.strftime('%H:%M:%S')} UTC"
                 )
 
-            # Decision note + three-button row
             _active_actor = (
                 f"{st.session_state.get('operator_id', 'watch_officer_primary')}"
                 f" ({st.session_state.get('operator_role', 'Watch Officer')})"
@@ -1435,7 +1298,6 @@ else:
             )
             b1, b2, b3, _sp = st.columns([1.4, 1.4, 1.4, 2])
             
-            # Wrap all approval/rejection functions in _run()
             if b1.button("✅ Approve Escalation", key=ap_key, type="primary", use_container_width=True):
                 _run(gate_approve(_action.action_id, actor=_active_actor, note=note or ""))
                 if _ticket:
@@ -1459,22 +1321,20 @@ else:
                 st.toast(f"Action {_action.action_id[:8]} REJECTED by {_active_actor}", icon="❌")
                 st.rerun()
 
-# Decision Audit Trail (always rendered)
+# ── Decision Audit Trail ──────────────────────────────────────────────────────
 st.markdown('<div id="audit-trail"></div>', unsafe_allow_html=True)
 st.subheader("🗂 Decision Audit Trail")
 st.caption(
     "**Answers:** *Who approved or rejected which action, when, and why?* "
-    "Immutable append-only log of every staged-action state transition. "
-    "Sourced from `action_audit_log` table."
+    "Immutable append-only log sourced from `action_audit_log`."
 )
 
-# Wrap audit and recent action fetches in _run()
 _audit_rows = _run(get_action_audit_log(limit=50))
 _recent_actions = _run(get_recent_staged_actions(limit=50))
 _action_map = {a.action_id: a for a in _recent_actions}
 
 if not _audit_rows:
-    st.info("No staged actions have been decided yet. As you approve/reject above, decisions land here.")
+    st.info("No staged actions have been decided yet.")
 else:
     audit_display = []
     for r in _audit_rows:
@@ -1497,22 +1357,13 @@ else:
 
 st.divider()
 
-# ── Alert log ─────────────────────────────────────────────────────────────────
+# ── Alert Log ─────────────────────────────────────────────────────────────────
 st.markdown('<div id="alert-log"></div>', unsafe_allow_html=True)
 st.subheader("🚨 Operational Alert Log")
 st.caption(
-    "**Answers:** *What does the duty manager need to act on?* "
-    "Deterministic alerts (never bypassed by AI) for safety-critical conditions "
-    "and feed-health issues. The **AI Critic Intelligence** panel below scores "
-    "each CRITICAL alert with confidence, pattern classification, and escalation "
-    "recommendation so the supervisor knows which alerts demand immediate human "
-    "attention vs which are likely spurious."
+    "**Answers:** *What does the duty manager need to act on?*"
 )
 if not alerts_df.empty:
-    # Load critic results and index by alert_id
-    critic_rows = _run(storage.get_recent_critic_results(limit=200))
-    critic_by_id = {r["alert_id"]: r for r in critic_rows}
-
     display_cols = [c for c in
                     ["triggered_at", "severity", "alert_type",
                      "airport_code", "service_name", "description"]
@@ -1534,41 +1385,6 @@ if not alerts_df.empty:
         use_container_width=True,
     )
 
-    # Critic Intelligence panel — only CRITICAL alerts with critic results
-    critical_with_critic = [
-        (row, critic_by_id[row["alert_id"]])
-        for _, row in alerts_df.iterrows()
-        if row.get("severity") == "CRITICAL" and row.get("alert_id") in critic_by_id
-    ]
-    # (Inline Critic block in alert log is intentionally removed.
-    # The promoted "AI Critic Intelligence" section above handles all rendering.)
-    if False and critical_with_critic:
-        st.markdown('<div id="critic-intel-inline"></div>', unsafe_allow_html=True)
-        st.subheader("🤖 AI Critic Intelligence")
-        for alert_row, cr in critical_with_critic[:10]:
-            conf = cr.get("confidence")
-            conf_str = f"{conf:.0%}" if conf is not None else "N/A"
-            pattern = cr.get("pattern", "UNKNOWN")
-            escalate = bool(cr.get("escalate"))
-            reasoning = cr.get("reasoning", "")
-
-            badge = "🔺 ESCALATE" if escalate else ""
-            conf_color = "red" if (conf or 0) >= 0.7 else "orange"
-
-            with st.container(border=True):
-                h1, h2, h3, h4 = st.columns([3, 1, 2, 1])
-                h1.markdown(f"**{alert_row.get('alert_type')}** · {alert_row.get('airport_code','')}")
-                h2.markdown(f"conf: **:{conf_color}[{conf_str}]**")
-                h3.markdown(f"pattern: `{pattern}`")
-                h4.markdown(f"**{badge}**" if badge else "")
-                st.caption(reasoning)
-
-                cit_raw = cr.get("citations", "[]")
-                cits = _parse_json_str_list(cit_raw, "citations")
-                if cits:
-                    st.caption(f"Citations: {', '.join(cits[:5])}")
-
-    # Alert type breakdown
     with st.expander("Alert type breakdown"):
         type_counts = alerts_df["alert_type"].value_counts().reset_index()
         type_counts.columns = ["Alert Type", "Count"]
@@ -1579,7 +1395,7 @@ else:
 
 st.divider()
 
-# ── Replay test results panel ─────────────────────────────────────────────────
+# ── Replay Test Results Panel ─────────────────────────────────────────────────
 st.subheader("Replay Test Results")
 replay_files_list = sorted(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
 if replay_files_list:
@@ -1597,13 +1413,10 @@ else:
 
 st.divider()
 
-# ── Live SWIM Folder Status panel ─────────────────────────────────────────────
+# ── Live SWIM Folder Status Panel ─────────────────────────────────────────────
 st.subheader("Live SWIM Folder Status")
 st.caption(
-    "This panel reflects the output folder written by the "
-    "FAA SCDS Jumpstart JMS consumer. "
-    "Configure the Jumpstart Kit to write to `data/raw/swim_live/`, "
-    "then run `python -m src.main --mode swim-folder` to ingest."
+    "This panel reflects the output folder written by the FAA SCDS Jumpstart JMS consumer."
 )
 
 swim_live_dir = config.SWIM_RAW_FOLDER
@@ -1614,16 +1427,12 @@ sf1, sf2, sf3, sf4 = st.columns(4)
 
 pending_files = list([p for p in swim_live_dir.iterdir() if p.is_file()]) if swim_live_dir.exists() else []
 processed_files = list([p for p in processed_dir.iterdir() if p.is_file()]) if processed_dir.exists() else []
-# Exclude the ingest log itself from the count
 processed_files = [f for f in processed_files if f.name != "ingest_log.jsonl"]
 failed_files = list([p for p in failed_dir.iterdir() if p.is_file()]) if failed_dir.exists() else []
 
 sf1.metric("Pending Files", len(pending_files), help="Files waiting in swim_live/")
 sf2.metric("Processed Files", len(processed_files), help="Successfully ingested")
 sf3.metric("Failed Files", len(failed_files), help="Parse or normalisation errors")
-
-# Latest file timestamp from ingest log
-from src.swim_file_ingest import read_ingest_log
 
 ingest_log_entries = read_ingest_log(limit=50)
 processed_entries = [e for e in ingest_log_entries if e.get("status") == "processed"]
@@ -1635,12 +1444,10 @@ if processed_entries:
 else:
     sf4.metric("Latest Ingest", "--")
 
-# Trigger ingest from dashboard
 col_ingest, col_hint = st.columns([1, 2])
 with col_ingest:
     if st.button("Scan swim_live/ Now", use_container_width=True,
                  disabled=len(pending_files) == 0):
-        from src.swim_file_ingest import scan_swim_folder
         with st.spinner("Scanning swim_live/ ..."):
             sw_events, sw_stats = scan_swim_folder(swim_live_dir)
             for e in sw_events:
@@ -1666,7 +1473,6 @@ with col_hint:
             "configure the FAA SCDS Jumpstart Kit to write to this folder."
         )
 
-# Ingest audit log table
 if ingest_log_entries:
     with st.expander("Ingest audit log (latest 50 entries)"):
         log_df = pd.DataFrame(ingest_log_entries)

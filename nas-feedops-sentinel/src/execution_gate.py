@@ -80,6 +80,7 @@ get_pending_staged_actions = storage.get_pending_staged_actions
 get_recent_staged_actions = storage.get_recent_staged_actions
 get_action_audit_log = storage.get_action_audit_log
 
+_log = get_logger(__name__)
 
 def _strict_bool(value: Any) -> bool:
     """
@@ -293,7 +294,6 @@ async def stage_critical_alert(
         )
 
     except Exception as exc:  # noqa: BLE001
-        from src.logging_config import get_logger
 
         get_logger(__name__).warning(
             "ticket_creation_failed",

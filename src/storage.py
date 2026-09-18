@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from src import config
@@ -199,63 +199,78 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 # ── Write operations ──────────────────────────────────────────────────────────
 
+_INSERT_EVENT_SQL = """
+INSERT OR REPLACE INTO nas_events (
+    event_id, airport_code, tracon, service_name, message_type,
+    event_time_utc, received_time_utc, latency_ms, runway,
+    rvr_touchdown, rvr_midpoint, rvr_rollout, track_id,
+    aircraft_id, vehicle_id, surface_event_type,
+    lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
+    flight_phase, flight_rules, beacon_code,
+    feed_status, validation_status, validation_errors, raw_message_path
+) VALUES (
+    :event_id, :airport_code, :tracon, :service_name, :message_type,
+    :event_time_utc, :received_time_utc, :latency_ms, :runway,
+    :rvr_touchdown, :rvr_midpoint, :rvr_rollout, :track_id,
+    :aircraft_id, :vehicle_id, :surface_event_type,
+    :lat, :lon, :altitude_ft, :ground_speed_kt, :vertical_speed_fpm,
+    :flight_phase, :flight_rules, :beacon_code,
+    :feed_status, :validation_status, :validation_errors, :raw_message_path
+)
+"""
+
+_INSERT_ALERT_SQL = """
+INSERT OR REPLACE INTO alert_events VALUES (
+    :alert_id, :alert_type, :severity, :airport_code, :service_name,
+    :description, :triggered_at, :event_id
+)
+"""
+
+
+def _event_to_row(event: NASEvent) -> dict:
+    return {
+        **event.model_dump(),
+        "event_time_utc": event.event_time_utc.isoformat(),
+        "received_time_utc": event.received_time_utc.isoformat(),
+        "validation_errors": json.dumps(event.validation_errors),
+    }
+
+
+def _alert_to_row(alert: AlertEvent) -> dict:
+    return {
+        **alert.model_dump(),
+        "triggered_at": alert.triggered_at.isoformat(),
+    }
+
+
 def save_event(event: NASEvent) -> None:
     conn = _get_conn()
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO nas_events (
-            event_id, airport_code, tracon, service_name, message_type,
-            event_time_utc, received_time_utc, latency_ms, runway,
-            rvr_touchdown, rvr_midpoint, rvr_rollout, track_id,
-            aircraft_id, vehicle_id, surface_event_type,
-            lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
-            flight_phase, flight_rules, beacon_code,
-            feed_status, validation_status, validation_errors, raw_message_path
-        ) VALUES (
-            :event_id, :airport_code, :tracon, :service_name, :message_type,
-            :event_time_utc, :received_time_utc, :latency_ms, :runway,
-            :rvr_touchdown, :rvr_midpoint, :rvr_rollout, :track_id,
-            :aircraft_id, :vehicle_id, :surface_event_type,
-            :lat, :lon, :altitude_ft, :ground_speed_kt, :vertical_speed_fpm,
-            :flight_phase, :flight_rules, :beacon_code,
-            :feed_status, :validation_status, :validation_errors, :raw_message_path
-        )
-        """,
-        {
-            **event.model_dump(),
-            "event_time_utc": event.event_time_utc.isoformat(),
-            "received_time_utc": event.received_time_utc.isoformat(),
-            "validation_errors": json.dumps(event.validation_errors),
-        },
-    )
+    conn.execute(_INSERT_EVENT_SQL, _event_to_row(event))
     conn.commit()
 
 
 def save_alert(alert: AlertEvent) -> None:
     conn = _get_conn()
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO alert_events VALUES (
-            :alert_id, :alert_type, :severity, :airport_code, :service_name,
-            :description, :triggered_at, :event_id
-        )
-        """,
-        {
-            **alert.model_dump(),
-            "triggered_at": alert.triggered_at.isoformat(),
-        },
-    )
+    conn.execute(_INSERT_ALERT_SQL, _alert_to_row(alert))
     conn.commit()
 
 
 def save_events(events: List[NASEvent]) -> None:
-    for event in events:
-        save_event(event)
+    if not events:
+        return
+    conn = _get_conn()
+    rows = [_event_to_row(e) for e in events]
+    conn.executemany(_INSERT_EVENT_SQL, rows)
+    conn.commit()
 
 
 def save_alerts(alerts: List[AlertEvent]) -> None:
-    for alert in alerts:
-        save_alert(alert)
+    if not alerts:
+        return
+    conn = _get_conn()
+    rows = [_alert_to_row(a) for a in alerts]
+    conn.executemany(_INSERT_ALERT_SQL, rows)
+    conn.commit()
 
 
 # ── Read operations ───────────────────────────────────────────────────────────
@@ -327,7 +342,7 @@ def get_events_for_critic(
 ) -> List[dict]:
     """Return a lightweight event summary for the critic context window."""
     conn = _get_conn()
-    cutoff = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     if airport_code:
         rows = conn.execute(
             """SELECT event_id, airport_code, service_name, latency_ms, feed_status,
@@ -358,7 +373,7 @@ def get_alerts_for_critic(
 ) -> List[dict]:
     """Return recent alerts for the critic/planner context window."""
     conn = _get_conn()
-    cutoff = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     if airport_code:
         rows = conn.execute(
             """SELECT alert_id, alert_type, severity, airport_code, service_name,
@@ -438,7 +453,7 @@ def save_critic_result(result: CriticResult) -> None:
 def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> List[dict]:
     """Latest position per aircraft seen in the last N minutes (for airspace map)."""
     conn = _get_conn()
-    cutoff = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     rows = conn.execute(
         """
         SELECT e.*
@@ -464,7 +479,7 @@ def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> List[dict]
 def get_flight_phase_counts(window_minutes: int = 15) -> dict:
     """Count distinct aircraft by flight_phase within window (per airport)."""
     conn = _get_conn()
-    cutoff = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     rows = conn.execute(
         """
         SELECT airport_code,
@@ -487,7 +502,7 @@ def get_flight_phase_counts(window_minutes: int = 15) -> dict:
 def get_altitude_distribution(window_minutes: int = 15) -> List[dict]:
     """Altitudes for current aircraft (for histogram)."""
     conn = _get_conn()
-    cutoff = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     rows = conn.execute(
         """
         SELECT airport_code, altitude_ft, ground_speed_kt
@@ -553,7 +568,7 @@ def _row_to_staged_action(row) -> StagedAction:
         critic_pattern=d.get("critic_pattern"),
         status=d.get("status", "PENDING"),
         idempotency_key=d.get("idempotency_key") or "",
-        created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.utcnow(),
+        created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(timezone.utc),
         decided_at=datetime.fromisoformat(d["decided_at"]) if d.get("decided_at") else None,
         decided_by=d.get("decided_by"),
         decision_note=d.get("decision_note"),
@@ -667,7 +682,7 @@ def _decide_staged_action(
         # Terminal — return current state, do not modify or log.
         return _row_to_staged_action(row)
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """UPDATE staged_actions
            SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?
@@ -700,7 +715,7 @@ def _row_to_brief(row) -> WatchOfficerBrief:
     d = dict(row)
     return WatchOfficerBrief(
         brief_id=d["brief_id"],
-        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.utcnow(),
+        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.now(timezone.utc),
         posture=d.get("posture", "UNKNOWN"),
         trust_assessment=d.get("trust_assessment", "UNKNOWN"),
         headline=d.get("headline") or "",
@@ -783,7 +798,7 @@ def _row_to_ticket(row) -> OperationalTicket:
         action_id=d.get("action_id"),
         alert_id=d.get("alert_id"),
         brief_id=d.get("brief_id"),
-        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.utcnow(),
+        generated_at=datetime.fromisoformat(d["generated_at"]) if d.get("generated_at") else datetime.now(timezone.utc),
         title=d.get("title") or "",
         severity=d.get("severity") or "CRITICAL",
         affected_airport=d.get("affected_airport"),
@@ -921,7 +936,7 @@ def _transition_ticket(
     if current in ("APPROVED_FOR_ESCALATION", "REJECTED"):
         return _row_to_ticket(row)
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """UPDATE operational_tickets
            SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?

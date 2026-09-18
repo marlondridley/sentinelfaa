@@ -31,7 +31,7 @@ def get_critic_agent(llm: Any = None) -> Agent:
             "You analyze real-time ISMC, APDS_RVR, and SMES feed anomalies to assess operational risk "
             "and determine whether alerts warrant human escalation."
         ),
-        verbose=True,
+        verbose=settings.AGENT_VERBOSE,
         allow_delegation=False,
         llm=llm or get_llm(),
     )
