@@ -5,11 +5,14 @@ Usage:
     python -m src.main --mode sample --count 100
     python -m src.main --mode replay --source data/raw
     python -m src.main --mode swim-folder --source data/raw/swim_live
+    python -m src.main --mode swim-folder --watch --reconcile-interval 300
     python -m src.main --mode live
 """
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
 from pathlib import Path
 from typing import List
@@ -78,12 +81,18 @@ def _run_pipeline(events: List[NASEvent], label: str = "PIPELINE") -> None:
     critic = CriticAgent()
     critical_alerts = [a for a in alerts if a.severity == "CRITICAL"]
     critic_results = {}
-    max_critic_per_pass = int(__import__("os").getenv("MAX_CRITIC_PER_PASS", "5"))
+    max_critic_per_pass = int(os.getenv("MAX_CRITIC_PER_PASS", "5"))
     if critical_alerts:
         to_evaluate = critical_alerts[:max_critic_per_pass]
         skipped = len(critical_alerts) - len(to_evaluate)
-        suffix = f" (skipped {skipped})" if skipped > 0 else ""
-        print(f"  [CRITIC] Evaluating {len(to_evaluate)} CRITICAL alert(s){suffix} ...")
+        _log.info(
+            "critic_evaluation_start",
+            extra={
+                "evaluating_count": len(to_evaluate),
+                "skipped_count": skipped,
+                "total_critical": len(critical_alerts),
+            },
+        )
         for alert in to_evaluate:
             result = critic.critique(alert)
             save_critic_result(result)
@@ -99,7 +108,7 @@ def _run_pipeline(events: List[NASEvent], label: str = "PIPELINE") -> None:
         if action is not None:
             staged_count += 1
     if staged_count:
-        print(f"  [HITL] Staged {staged_count} CRITICAL action(s) for human review.")
+        _log.info("hitl_actions_staged", extra={"staged_count": staged_count})
 
     health = compute_feed_health(events)
     for airport, status in health["airport_status"].items():
@@ -148,14 +157,19 @@ def run_sample(count: int) -> None:
 
 def run_replay(source: Path) -> None:
     if not source.exists():
+        _log.error("replay_source_not_found", extra={"source": str(source)})
         print(f"[REPLAY] Source directory not found: {source}")
         print("[REPLAY] Generate data first:  python -m src.main --mode sample")
         sys.exit(1)
 
-    print(f"[REPLAY] Loading events from {source} ...")
+    _log.info("replay_scan_start", extra={"source": str(source)})
     events, errors = replay_from_directory(source)
 
     if errors:
+        _log.warning(
+            "replay_directory_parse_errors",
+            extra={"error_count": len(errors), "source": str(source), "sample_errors": errors[:5]},
+        )
         print(f"[REPLAY] {len(errors)} parse error(s):")
         for err in errors[:5]:
             print(f"  {err}")
@@ -163,6 +177,7 @@ def run_replay(source: Path) -> None:
             print(f"  ... and {len(errors) - 5} more.")
 
     if not events:
+        _log.warning("replay_scan_no_events_found", extra={"source": str(source)})
         print("[REPLAY] No events could be loaded. Aborting.")
         sys.exit(1)
 
@@ -182,6 +197,7 @@ def run_swim_folder(source: Path) -> None:
     from src.swim_file_ingest import scan_swim_folder
 
     source.mkdir(parents=True, exist_ok=True)
+    _log.info("swim_folder_scan_start", extra={"source": str(source)})
     print(f"[SWIM-FOLDER] Scanning {source} for new STDDS messages ...")
     events, stats = scan_swim_folder(source)
 
@@ -198,6 +214,35 @@ def run_swim_folder(source: Path) -> None:
         return
 
     _run_pipeline(events, "SWIM-FOLDER")
+
+
+def run_swim_folder_watch(source: Path, reconcile_interval: float) -> None:
+    """
+    Long-running counterpart to run_swim_folder(): watches --source for new
+    files (filesystem events) and re-scans it on a reconcile_interval-second
+    timer regardless, as a safety net. Runs until SIGTERM/SIGINT.
+
+    Each scan pass's events are fed into the same _run_pipeline() used by the
+    one-shot path, so validation/alerting/critic/HITL staging all run exactly
+    as they do today -- this only changes how often scan_swim_folder() runs.
+    """
+    from src.swim_file_ingest import watch_swim_folder
+
+    source.mkdir(parents=True, exist_ok=True)
+    _log.info(
+        "swim_folder_watch_start",
+        extra={"source": str(source), "reconcile_interval": reconcile_interval},
+    )
+    print(f"[SWIM-FOLDER] Watching {source} for new STDDS messages "
+          f"(reconcile every {reconcile_interval:.0f}s) ... Ctrl+C to stop.")
+
+    def _on_events(events, stats) -> None:
+        print(f"[SWIM-FOLDER] {stats.events_parsed} event(s) from "
+              f"{stats.files_processed} file(s); running pipeline ...")
+        _run_pipeline(events, "SWIM-FOLDER")
+
+    watch_swim_folder(source, reconcile_interval=reconcile_interval, on_events=_on_events)
+    print("[SWIM-FOLDER] Watch stopped.")
 
 
 def run_demo() -> None:
@@ -340,7 +385,46 @@ Examples:
             "data/raw/swim_live for swim-folder."
         ),
     )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        default=False,
+        help=(
+            "swim-folder mode only: keep running and watch --source for new "
+            "files instead of scanning once and exiting. Reacts to filesystem "
+            "events plus a periodic reconciliation scan (--reconcile-interval)."
+        ),
+    )
+    parser.add_argument(
+        "--reconcile-interval",
+        type=float,
+        default=300.0,
+        metavar="SECONDS",
+        help="Safety-net rescan interval in --watch mode (default 300s).",
+    )
     return parser
+
+
+# ── Graceful shutdown ─────────────────────────────────────────────────────────
+#
+# On docker stop / ECS / Kubernetes termination the process receives SIGTERM.
+# Left unhandled, Python's default action is immediate exit, which can drop an
+# in-flight SWIM file mid-parse/mid-move. Installing a handler here lets the
+# orchestrator's grace period (typically 30s) be used to finish the file
+# currently being ingested -- see swim_file_ingest.request_shutdown(), which
+# the scan loop polls between files -- rather than dropping it.
+
+def _install_shutdown_handler() -> None:
+    def _handle_shutdown_signal(signum: int, frame) -> None:
+        from src.swim_file_ingest import request_shutdown
+        _log.warning(
+            "shutdown_signal_received",
+            extra={"signal": signal.Signals(signum).name},
+        )
+        request_shutdown()
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
 
 
 def main() -> None:
@@ -348,6 +432,7 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging()
+    _install_shutdown_handler()
     if args.metrics:
         start_metrics_server(port=args.metrics_port)
         _log.info("metrics_server_started", extra={"port": args.metrics_port})
@@ -359,7 +444,10 @@ def main() -> None:
         run_replay(source)
     elif args.mode == "swim-folder":
         source = args.source or (config.DATA_DIR / "raw" / "swim_live")
-        run_swim_folder(source)
+        if args.watch:
+            run_swim_folder_watch(source, reconcile_interval=args.reconcile_interval)
+        else:
+            run_swim_folder(source)
     elif args.mode == "live":
         run_live()
     elif args.mode == "demo":

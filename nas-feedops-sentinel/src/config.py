@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     DB_NAME: str | None = None
 
     # ── Paths ────────────────────────────────────────────────────────────────[cite: 4]
-    DB_PATH: Path = DATA_DIR / "sentinel.db"
     INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
 
@@ -96,7 +95,7 @@ class Settings(BaseSettings):
 
     # ── Agents / LLM ─────────────────────────────────────────────────────────[cite: 4]
     CRITIC_ENABLED: bool = True
-
+    AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
     # This is an APPLICATION-FACING LiteLLM alias[cite: 4].
     LLM_MODEL: str = "openai/primary-model"
 
@@ -123,6 +122,17 @@ class Settings(BaseSettings):
     METRICS_PORT: int = 9108
 
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+
+    # ── Security & API ───────────────────────────────────────────────────────
+    API_KEY: str | None = None
+    CORS_ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:8501",
+            "http://localhost:3000",
+            "http://127.0.0.1:8501",
+            "http://127.0.0.1:3000",
+        ]
+    )
 
     # ── Vault ────────────────────────────────────────────────────────────────[cite: 4]
     VAULT_ADDR: str = "http://localhost:8200"

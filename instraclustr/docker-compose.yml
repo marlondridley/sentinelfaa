@@ -27,7 +27,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      
+
   kafka-connect:
     build:
       context: .
@@ -68,14 +68,14 @@ services:
       CASSANDRA_BROADCAST_ADDRESS: ${CASSANDRA_BROADCAST_ADDRESS}
     volumes:
       - cassandra-data:/var/lib/cassandra
-      - ./cassandra-init.sh:/scripts/cassandra-init.sh    
+      - ./cassandra-init.sh:/scripts/cassandra-init.sh
     healthcheck:
       test: ["CMD", "cqlsh", "127.0.0.1", "9042", "-e", "describe cluster"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 40s
-      
+
   cassandra-init:
     image: cassandra:4.1
     depends_on:
@@ -117,7 +117,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_HOST_AUTH_METHOD: md5
       POSTGRES_INITDB_ARGS: "--auth=md5"
     volumes:
@@ -137,7 +137,7 @@ services:
       LISTEN_PORT: 6432
       LISTEN_ADDR: 0.0.0.0
       DB_USER: ${POSTGRES_USER:-sentinel_user}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel_password}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       DB_HOST: postgres
       DB_NAME: ${POSTGRES_DB:-sentinel_db}
       POOL_MODE: transaction
@@ -162,7 +162,7 @@ services:
     ports:
       - "8200:8200"
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-myroottoken}
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:?VAULT_TOKEN is required}
       VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
       VAULT_ADDR: "http://127.0.0.1:8200"
     cap_add:
@@ -181,14 +181,14 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: ${VAULT_TOKEN:-myroottoken}
+      VAULT_TOKEN: ${VAULT_TOKEN:?VAULT_TOKEN is required}
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-litellm-master-key-123}
-      LLM_API_KEY: ${LLM_API_KEY:-sk-1234}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
     volumes:
       - ./vault-init.bash:/scripts/vault-init.bash:ro
     entrypoint: ["/bin/sh", "/scripts/vault-init.bash"]
@@ -202,13 +202,13 @@ services:
       vault-init:
         condition: service_completed_successfully
     environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-litellm-master-key-123}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - HCP_VAULT_ADDR=http://vault:8200
-      - HCP_VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+      - HCP_VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN:-myroottoken}
+      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]

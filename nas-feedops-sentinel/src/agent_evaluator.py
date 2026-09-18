@@ -160,7 +160,7 @@ class AgentEvaluator:
             agent=planner_agent,
             output_pydantic=PlannerResult,
         )
-        crew = Crew(agents=[planner_agent], tasks=[task], verbose=False)
+        crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False)
         crew_output = crew.kickoff()
         result = crew_output.pydantic
 

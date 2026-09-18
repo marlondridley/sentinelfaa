@@ -25,7 +25,7 @@ COPY src/ ./src/
 COPY prompts/ ./prompts/
 COPY dashboard/ ./dashboard/
 
-# Writable volume for SQLite + ingest folders
+# Writable volume for ingest folders
 RUN mkdir -p /app/data/raw/swim_live /app/data/processed /app/data/failed \
     && chown -R sentinel:sentinel /app
 
@@ -38,8 +38,15 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     LOG_LEVEL=INFO
 
-# Default: keep container alive running the swim-folder watcher with metrics exposed
-CMD ["python", "-m", "src.main", "--mode", "swim-folder", "--metrics"]
+# Default: keep container alive watching the live SWIM folder, metrics exposed.
+# NOTE: this main.py has no standalone "swim-folder" mode or --metrics flag (it
+# starts the metrics server unconditionally) -- the live-folder watch here lives
+# under --mode replay; --watch is what makes it long-running (fs-event driven +
+# periodic reconciliation scan) instead of a single scan-then-exit pass. The
+# docker-compose.yml services in this repo mostly override this CMD anyway
+# (temporal-worker runs src.temporal_worker, which is the durable long-running
+# ingest path); this is the fallback for running the image standalone.
+CMD ["python", "-m", "src.main", "--mode", "replay", "--watch"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9108/health').read()" || exit 1

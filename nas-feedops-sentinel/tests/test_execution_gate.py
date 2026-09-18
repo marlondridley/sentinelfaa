@@ -28,10 +28,13 @@ from src.models import AlertEvent, CriticResult
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def isolated_db():
+def isolated_db(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("NIM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     storage.override_db_path(":memory:")
     yield
-    storage.reset_db()
+    storage.override_db_path(":memory:")
 
 
 def _critical_alert(**kwargs) -> AlertEvent:

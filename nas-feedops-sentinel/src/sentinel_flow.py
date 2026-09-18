@@ -47,7 +47,8 @@ class SentinelFlow(Flow[SentinelState]):
         crew = Crew(
             agents=[critic_agent, planner_agent],
             tasks=[task_evaluate, task_plan],
-            process=Process.sequential
+            process=Process.sequential,
+            memory=False,
         )
 
         result = crew.kickoff()
@@ -60,15 +61,15 @@ class SentinelFlow(Flow[SentinelState]):
         return "generate_advisory_brief"
 
     @listen("stage_for_hitl")
-    def stage_action_gate(self):
-        self.state.staged_action = stage_critical_alert(
+    async def stage_action_gate(self):
+        self.state.staged_action = await stage_critical_alert(
             alert=self.state.alert,
-            critic_result=self.state.analysis_result
+            critic_result=self.state.analysis_result if isinstance(self.state.analysis_result, CriticResult) else None
         )
-        context = build_watch_officer_context(alert=self.state.alert)
+        context = await build_watch_officer_context(alert=self.state.alert)
         self.state.watch_brief = generate_watch_officer_brief(context, use_llm=True)
 
     @listen("generate_advisory_brief")
-    def build_standard_brief(self):
-        context = build_watch_officer_context(alert=self.state.alert)
+    async def build_standard_brief(self):
+        context = await build_watch_officer_context(alert=self.state.alert)
         self.state.watch_brief = generate_watch_officer_brief(context, use_llm=True)

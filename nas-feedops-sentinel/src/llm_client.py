@@ -3,6 +3,16 @@ LiteLLM-backed client. All agent model calls route through the proxy.
 
 Uses litellm.acompletion with api_base=settings.LITELLM_PROXY_URL and
 api_key=settings.LITELLM_API_KEY.
+
+Error taxonomy
+--------------
+LLMError            -- base, kept as the repo's single normalized exception type
+  LLMTransientError -- worth retrying (timeout, connection reset, 429, 5xx)
+  LLMPermanentError -- never retry (401/403 auth, 400 bad request, 404 model
+                       not found, context-window overflow, content policy)
+
+Only LLMTransientError is retry-eligible. Callers that catch LLMError keep
+working unchanged.
 """
 from __future__ import annotations
 
@@ -24,8 +34,104 @@ from src.logging_config import get_correlation_id, get_logger
 _log = get_logger(__name__)
 
 
+# --------------------------------------------------------------------------
+# Exception taxonomy
+# --------------------------------------------------------------------------
 class LLMError(Exception):
-    """Raised when the LLM call fails after all retries."""
+    """Raised when the LLM call fails. Base type for all client failures."""
+
+    retriable: bool = False
+
+
+class LLMTransientError(LLMError):
+    """A failure that may succeed on a subsequent attempt."""
+
+    retriable = True
+
+
+class LLMPermanentError(LLMError):
+    """A failure that will never succeed on retry. Fail fast."""
+
+    retriable = False
+
+
+def _exc_names(*names: str) -> tuple[type[BaseException], ...]:
+    """
+    Resolve litellm exception classes by name, tolerating version drift.
+
+    litellm renames/adds exception types between releases, so anything we
+    can't resolve is simply dropped rather than blowing up at import time.
+    """
+    resolved: list[type[BaseException]] = []
+    for name in names:
+        cls = getattr(litellm.exceptions, name, None) or getattr(litellm, name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            resolved.append(cls)
+    return tuple(resolved)
+
+
+_TRANSIENT_EXC = _exc_names(
+    "Timeout",
+    "APIConnectionError",
+    "RateLimitError",
+    "InternalServerError",
+    "ServiceUnavailableError",
+    "APIResponseValidationError",
+)
+
+_PERMANENT_EXC = _exc_names(
+    "AuthenticationError",
+    "PermissionDeniedError",
+    "NotFoundError",
+    "BadRequestError",
+    "UnprocessableEntityError",
+    "ContextWindowExceededError",
+    "ContentPolicyViolationError",
+    "UnsupportedParamsError",
+)
+
+# Status codes that are worth another attempt.
+_TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+
+
+def classify(exc: BaseException) -> LLMError:
+    """
+    Map a provider/transport exception onto the normalized taxonomy.
+
+    Classification order: explicit exception type, then HTTP status code,
+    then transport-level errors, then a conservative default.
+    """
+    if isinstance(exc, LLMError):
+        return exc
+
+    detail = f"{type(exc).__name__}: {exc}"
+
+    if _PERMANENT_EXC and isinstance(exc, _PERMANENT_EXC):
+        return LLMPermanentError(detail)
+
+    if _TRANSIENT_EXC and isinstance(exc, _TRANSIENT_EXC):
+        return LLMTransientError(detail)
+
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+
+    if status is not None:
+        if status in _TRANSIENT_STATUS:
+            return LLMTransientError(detail)
+        if 400 <= status < 500:
+            return LLMPermanentError(detail)
+        if status >= 500:
+            return LLMTransientError(detail)
+
+    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return LLMTransientError(detail)
+
+    # Unknown failure: allow one round of retries rather than failing a call
+    # that might have been a blip. Everything above narrows this down.
+    return LLMTransientError(detail)
 
 
 class LLMClient(Protocol):
@@ -79,7 +185,7 @@ class LiteLLMClient:
                     system_prompt, tool, user_message, max_tokens, model
                 )
             )
-        raise LLMError(
+        raise LLMPermanentError(
             "call_with_tool() cannot block inside a running event loop; "
             "use acall_with_tool() instead."
         )
@@ -87,7 +193,7 @@ class LiteLLMClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((LLMError, ConnectionError, TimeoutError)),
+        retry=retry_if_exception_type(LLMTransientError),
         reraise=True,
     )
     async def acall_with_tool(
@@ -106,30 +212,59 @@ class LiteLLMClient:
             f"Do not include any text outside the JSON object."
         )
         cid = get_correlation_id()
+        target_model = model or self._model
+
         _log.info(
             "litellm_completion_start",
-            extra={"model": model or self._model, "tool": tool.get("name")},
+            extra={"model": target_model, "tool": tool.get("name")},
         )
-        response = await litellm.acompletion(
-            model=model or self._model,
-            messages=[
-                {"role": "system", "content": augmented_system},
-                {"role": "user", "content": user_message},
-            ],
-            api_base=self._api_base,
-            api_key=self._api_key or None,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
-        )
+
+        try:
+            response = await litellm.acompletion(
+                model=target_model,
+                messages=[
+                    {"role": "system", "content": augmented_system},
+                    {"role": "user", "content": user_message},
+                ],
+                api_base=self._api_base,
+                api_key=self._api_key or None,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- normalized immediately below
+            err = classify(exc)
+            _log.warning(
+                "litellm_completion_failed",
+                extra={
+                    "model": target_model,
+                    "retriable": err.retriable,
+                    "error": str(err),
+                },
+            )
+            raise err from exc
+
         try:
             content = response.choices[0].message.content
-            if not content:
-                raise LLMError("Empty completion content.")
+        except (AttributeError, IndexError, TypeError) as exc:
+            # Malformed envelope from the proxy -- usually a transport-layer
+            # truncation rather than a modelling problem.
+            raise LLMTransientError(
+                f"Unexpected LiteLLM response shape: {exc}"
+            ) from exc
+
+        if not content:
+            raise LLMTransientError("Empty completion content.")
+
+        try:
             return json.loads(content)
-        except (AttributeError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise LLMError(f"Could not parse LiteLLM response: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            # temperature=0.0, so a re-roll reproduces the same malformed text.
+            # Treat as permanent: the prompt or schema needs fixing, not a retry.
+            raise LLMPermanentError(
+                f"Model returned non-JSON content: {exc}"
+            ) from exc
 
 
 def build_llm_client(model: str | None = None) -> LLMClient | None:

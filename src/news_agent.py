@@ -17,7 +17,7 @@ clicking the headline scroll-jumps to it.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from src import config, storage
@@ -304,7 +304,7 @@ def build_ticker_items(
     items.sort(key=lambda x: rank.get(x["severity"], 99))
 
     # Prepend a timestamp so the ticker visibly updates per refresh
-    ts = datetime.utcnow().strftime("%H:%M:%S UTC")
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     items.insert(0, {
         "text": f"PCT TRACON BREAKING · {ts}",
         "severity": "NORMAL",
