@@ -337,8 +337,8 @@ async def _build_escalation_package(
     """
 
     from src.watch_officer_agent import (
+        agenerate_watch_officer_brief,
         build_watch_officer_context,
-        generate_watch_officer_brief,
     )
 
     existing = await storage.get_ticket_by_action_id(
@@ -354,7 +354,8 @@ async def _build_escalation_package(
         alert=alert,
     )
 
-    brief = generate_watch_officer_brief(
+    # Off the event loop: the LLM path is a blocking CrewAI kickoff().
+    brief = await agenerate_watch_officer_brief(
         context,
         use_llm=True,
     )
