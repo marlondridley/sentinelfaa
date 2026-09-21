@@ -1,0 +1,20 @@
+# Text files are stored with LF in the repository and checked out in the
+# platform's native form. Without this, Windows working copies (CRLF) staged
+# whole files as changed: every Python file in HEAD is LF, and committing a
+# CRLF copy turns a two-line fix into a diff of every line. text=auto only
+# normalizes what git detects as text; binaries are left untouched.
+* text=auto
+
+# Shell scripts get bind-mounted straight into Linux containers (see
+# instraclustr/docker-compose.yml's vault-init/cassandra-init entrypoints),
+# so they MUST check out with LF line endings regardless of platform --
+# a CRLF line ending breaks `set -eu`/`set -euo pipefail` with
+# "illegal option -" the moment a container's shell tries to run it
+# (the trailing \r gets read as part of the option string). This bit us
+# for real with instraclustr/vault-init.bash: git checkout on Windows
+# doesn't normally rewrite line endings (core.autocrlf isn't set here),
+# but something along the way had left the working-tree copy as CRLF
+# while the committed blob was correctly LF -- this file guarantees it
+# can't happen again regardless of local git config or editor settings.
+*.sh text eol=lf
+*.bash text eol=lf
