@@ -4,6 +4,7 @@ Watch Officer — Advisory Operational Narrative Layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -436,6 +437,27 @@ class OutputGuardrail:
 
 # watch_officer_agent.py
 
+
+
+async def agenerate_watch_officer_brief(
+    context: dict[str, Any] | None = None,
+    use_llm: bool = True,
+    mcp_tools: list | None = None,
+) -> WatchOfficerBrief:
+    """
+    Async entry point for generate_watch_officer_brief(); use this from coroutines.
+
+    generate_watch_officer_brief() is synchronous, and with use_llm=True it runs
+    CrewAI's Crew.kickoff(), which blocks until the model answers. Called
+    directly from a coroutine it froze the event loop for that whole round-trip:
+    in the Temporal worker and the pipeline, every other activity, database call
+    and timer on that loop stalled behind it. The context is built here on the
+    caller's loop, since it is async storage I/O, and only the synchronous part
+    runs in a worker thread.
+    """
+    if context is None:
+        context = await build_watch_officer_context()
+    return await asyncio.to_thread(generate_watch_officer_brief, context, use_llm, mcp_tools)
 
 
 def generate_watch_officer_brief(

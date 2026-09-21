@@ -283,6 +283,53 @@ class TestQuerySemantics:
         assert len(global_audit) == 6
 
 
+# ── Event-loop responsiveness ────────────────────────────────────────────────
+
+async def test_escalation_package_does_not_block_the_event_loop(monkeypatch):
+    """
+    Staging a CRITICAL alert builds the Watch Officer brief, whose LLM path is
+    CrewAI's synchronous Crew.kickoff(). Run directly on the event loop it froze
+    every other coroutine -- in the Temporal worker and the pipeline alike --
+    for the whole model round-trip. A blocking stand-in for kickoff() must not
+    stop a concurrent coroutine from running.
+    """
+    import asyncio
+    import time
+
+    import src.watch_officer_agent as watch_officer
+
+    real_brief = watch_officer.generate_watch_officer_brief
+
+    def blocking_brief(context=None, use_llm=True, mcp_tools=None):
+        time.sleep(0.5)  # stands in for a synchronous LLM round-trip
+        return real_brief(context, use_llm=False)
+
+    monkeypatch.setattr(watch_officer, "generate_watch_officer_brief", blocking_brief)
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    try:
+        started = time.perf_counter()
+        action = await _persist_and_stage(_critical_alert())
+        elapsed = time.perf_counter() - started
+    finally:
+        task.cancel()
+
+    # The brief really ran and the ticket was built -- otherwise this test
+    # would pass without measuring anything.
+    assert elapsed >= 0.5
+    assert await storage.get_ticket_by_action_id(action.action_id) is not None
+    # A free loop ticks ~50 times in 0.5 s at a 10 ms interval.
+    assert ticks >= 25, f"event loop was blocked: only {ticks} ticks in {elapsed:.2f}s"
+
+
 # ── Idempotency key behavior ──────────────────────────────────────────────────
 
 class TestIdempotencyKey:
