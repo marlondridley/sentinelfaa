@@ -247,6 +247,10 @@ auth0-python==6.6.0 \
     --hash=sha256:58dd4bb7672532b1b61e2a8601558fb9de507169db1dbb83d4fb9df28c38be19 \
     --hash=sha256:60495ce092bce3615730565d1dea838104f149e3fc4945684a21ed21a293b00f
     # via crewai
+authlib==1.8.0 \
+    --hash=sha256:88aebbd9af6757e14e912d5dc007ae1dc1f3e27e3b2152ce7c552ee2c3b3c121 \
+    --hash=sha256:f3ecd5f1da737262fb53bf1a4d95c4ea1ad9dd509316587a255c99ab1838a4f0
+    # via streamlit
 bcrypt==5.0.0 \
     --hash=sha256:046ad6db88edb3c5ece4369af997938fb1c19d6a699b9c1b27b0db432faae4c4 \
     --hash=sha256:0c418ca99fd47e9c59a301744d63328f17798b5947b0f791e9af3c1c499c2d0a \
@@ -1433,6 +1437,10 @@ jmespath==1.1.0 \
     # via
     #   boto3
     #   botocore
+joserfc==1.7.5 \
+    --hash=sha256:add2c2c84e8373b084d526a8b53daba5d7a513a118cd2dcd9fc9f979d0922159 \
+    --hash=sha256:d5ff536e658e17664f8c1b1ab60dc4aa62aa973fcef1edd33cc44bda45d6f5ea
+    # via authlib
 json-repair==0.63.4 \
     --hash=sha256:0f374f3eee21454aef0a5d72c06b8689b660a1788f80ab392639e3f7d5c5d458 \
     --hash=sha256:77aa642193d62b02b889e8ce0df33898d3ea87282f0b9d8653f8ce8772c642b4
