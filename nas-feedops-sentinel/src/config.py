@@ -165,32 +165,44 @@ class Settings(BaseSettings):
 
     # APDS_RVR_SCALE_FT -- multiplier converting a wire RVR reading to feet.
     #
-    # UNCONFIRMED ASSUMPTION. This is the one value in the ingest path not
-    # verified against either a varied real sample or an ICD, and it is
-    # safety-adjacent, so it is called out here rather than buried in code.
+    # CORROBORATED, NOT YET CONFIRMED AGAINST THE ICD. The wire format is
+    # defined in the STDDS APDS service description (WSDD NAS-JMSDD-4307-001),
+    # which is not public, so it is called out here, not buried in code.
     #
-    # Evidence available: exactly one real APDS message was captured
-    # (tests/fixtures/swim_kit/apds_sample). Every one of KBWI's six runway
-    # ends reports touchdown/midpoint/rollout = 60, all with a rising trend.
+    # Evidence: the one captured APDS message
+    # (tests/fixtures/swim_kit/apds_sample, KBWI, 2026-08-27T20:42Z) reports
+    # touchdown/midpoint/rollout = 60 on all six runway ends. KBWI's ASOS
+    # reported 10.00 statute miles visibility at 19:54, 20:54 and 21:54 UTC
+    # that day (Iowa Environmental Mesonet ASOS archive, station BWI). At
+    # 10 SM, RVR sits at the top of its reportable range, which in the US is
+    # 6000 ft. A true reading of 60 ft would need dense fog -- well under
+    # 1/16 SM -- on every runway at once. So the wire value is not plain
+    # feet, and 60 x 100 = 6000 ft matches the observed weather exactly.
     #
-    # Read as feet, 60 ft RVR is far below any landing minimum -- six runway
-    # ends simultaneously at 60 ft would mean the airport was closed, not
-    # operating normally. Read as hundreds of feet, 60 becomes 6000 ft,
-    # which is the standard maximum reportable RVR and is exactly what a
-    # clear day looks like. Only the second reading is consistent with the
-    # capture, hence the default of 100.
+    # What that does NOT prove: that low readings also scale by 100 (a coded
+    # "at maximum" value would look the same). A capture taken in genuinely
+    # low visibility, or the ICD, settles it; then drop this caveat.
     #
-    # Both error directions are costly, which is why this needs confirming:
-    #   too high -- a genuine low-RVR event reads as 120,000 ft and
+    # Both error directions are costly:
+    #   too high -- a genuine low-RVR event reads as ~100x too far and
     #               ALERT_LOW_RVR never fires. A missed safety signal.
     #   too low  -- every routine message reads below RVR_LOW_THRESHOLD_FT
-    #               and ALERT_LOW_RVR fires constantly. Alarm fatigue makes
-    #               the alert worthless, which is a missed signal too.
-    #
-    # Confirm against the APDS RVRDataUpdateMessage ICD, or against a
-    # capture taken in genuinely low visibility, then set this and remove
-    # this caveat.
+    #               and ALERT_LOW_RVR fires constantly; alarm fatigue.
+    # The first is the silent one, so it is also guarded at runtime: see
+    # APDS_RVR_MAX_PLAUSIBLE_FT below.
     APDS_RVR_SCALE_FT: int = 100
+
+    # APDS_RVR_MAX_PLAUSIBLE_FT -- runtime check on APDS_RVR_SCALE_FT.
+    #
+    # ENGINEERING-CHOSEN. No US RVR system reports above 6000 ft. If the
+    # wire value were already in feet, APDS_RVR_SCALE_FT = 100 would turn a
+    # real 1800 ft reading into 180,000 ft -- and, being far above the
+    # low-RVR threshold, it would never alert. Any scaled reading above this
+    # bound therefore means the scale is wrong, and the message is refused
+    # into data/failed/ with that diagnosis instead of being stored. The
+    # bound is deliberately loose: a wrong scale is off by 100x, so exactly
+    # where it sits between 6000 and ~100,000 ft does not matter.
+    APDS_RVR_MAX_PLAUSIBLE_FT: int = 10_000
 
     # ── Agents / LLM ─────────────────────────────────────────────────────────
     CRITIC_ENABLED: bool = True

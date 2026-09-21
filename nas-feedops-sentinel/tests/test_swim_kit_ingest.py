@@ -205,8 +205,8 @@ def test_real_apds_rvr_scales_to_feet_and_does_not_false_alarm():
     and ALERT_LOW_RVR would fire continuously, which destroys the value of a
     safety alert just as surely as never firing at all.
 
-    See the APDS_RVR_SCALE_FT comment in src/config.py -- that factor is the
-    one unconfirmed assumption in this path.
+    See the APDS_RVR_SCALE_FT comment in src/config.py: KBWI's ASOS reported
+    10 SM visibility around this capture, which rules out reading 60 as feet.
     """
     records, _ = _parse_file(FIXTURES / "apds_sample")
     touchdowns = [r["rvr_touchdown"] for r in records]
@@ -227,6 +227,27 @@ def test_real_apds_missing_reading_becomes_none_not_zero(tmp_path: Path):
     # 15L/33R report touchdown and rollout but send "" for midpoint.
     assert by_runway["15L"]["rvr_midpoint"] is None
     assert by_runway["15L"]["rvr_touchdown"] == 6000
+
+
+def test_implausible_rvr_refuses_the_message_instead_of_misreading_it(tmp_path: Path):
+    """
+    If the wire value were already in feet, a real 1800 ft reading would scale
+    to 180,000 ft -- far above the low-RVR threshold, so it would never alert.
+    A physically impossible RVR must refuse the message and name the scale
+    factor, not be stored as a reading.
+    """
+    body = {"ns2:RVRDataUpdateMessage": {
+        "airport": "KBWI",
+        "runwayData": [{
+            "runwayID": {"numericRunwayID": 15, "runwaySubID": "L"},
+            "touchdownVisualRange": 1800,
+        }],
+    }}
+    records, error = _parse_file(_kit_file(tmp_path, "1787863344881", "APDS", "RR", body))
+
+    assert records == []
+    assert error is not None
+    assert "APDS_RVR_SCALE_FT" in error
 
 
 def test_real_tdes_message_yields_a_departure_event():
@@ -257,7 +278,7 @@ def test_real_messages_become_valid_nasevents():
     was rejected with "invalid event_time_utc" -- total silent feed loss on
     any interpreter older than the container's.
     """
-    for fixture in ("apds_sample", "tdes_sample"):
+    for fixture in ("apds_sample", "tdes_sample", "smes_sample"):
         records, error = _parse_file(FIXTURES / fixture)
         assert error is None
         assert records, f"{fixture} produced no records"
@@ -269,15 +290,60 @@ def test_real_messages_become_valid_nasevents():
             assert event.latency_ms is not None
 
 
-def test_smes_still_has_no_extractor_and_says_so():
-    """
-    SMES (ns2:asdexMsg) is the one remaining feed without an extractor.
-    It must keep failing loudly, naming its real shape, rather than being
-    filed as a successful zero-event ingest.
-    """
-    records, error = _parse_file(FIXTURES / "smes_sample")
+def test_real_smes_message_yields_one_event_per_adsb_report():
+    """ns2:asdexMsg -> one surface event per ADS-B report, each with its own time."""
+    from src.validators import validate_event
 
+    records, error = _parse_file(FIXTURES / "smes_sample")
+    assert error is None
+    assert len(records) == 2
+
+    by_track = {r["track_id"]: r for r in records}
+    assert set(by_track) == {"417", "890"}
+    first = by_track["417"]
+    assert first["airport_code"] == "KIAD"
+    assert first["service_name"] == "SMES"
+    assert first["message_type"] == "SMES_AD"
+    assert first["lat"] == pytest.approx(38.93986)
+    assert first["lon"] == pytest.approx(-77.44608)
+    # Reports in one message are taken at different instants.
+    assert by_track["417"]["event_time_utc"] != by_track["890"]["event_time_utc"]
+
+    for raw in records:
+        event, err = _normalise_record(raw, "smes_sample")
+        assert event is not None, err
+        result = validate_event(event)
+        assert result.passed, result.errors
+
+
+def test_smes_single_report_as_object_is_not_dropped(tmp_path: Path):
+    """XML-to-JSON turns a one-element list into a bare object."""
+    body = {"ns2:asdexMsg": {
+        "airport": "KDCA",
+        "adsbReport": {"report": {"basicReport": {
+            "time": "2026-08-27T20:42:24.563Z",
+            "position": {"lat": 38.85, "lon": -77.04},
+            "track": 12,
+        }}},
+    }}
+    records, error = _parse_file(_kit_file(tmp_path, "1787863344879", "SMES", "AD", body))
+    assert error is None
+    assert [r["track_id"] for r in records] == ["12"]
+
+
+def test_smes_unverified_report_type_is_refused_not_partly_ingested(tmp_path: Path):
+    """
+    Only adsbReport has been seen in captured traffic. A message that also
+    carries another report type must be refused whole, naming the unverified
+    key, rather than ingesting the ADS-B half and dropping the rest.
+    """
+    body = {"ns2:asdexMsg": {
+        "airport": "KIAD",
+        "adsbReport": [{"report": {"basicReport": {
+            "time": "2026-08-27T20:42:24.563Z", "track": 1}}}],
+        "positionReport": [{"track": 2}],
+    }}
+    records, error = _parse_file(_kit_file(tmp_path, "1787863344880", "SMES", "AD", body))
     assert records == []
     assert error is not None
-    assert "SMES" in error
-    assert "asdexMsg" in error
+    assert "positionReport" in error

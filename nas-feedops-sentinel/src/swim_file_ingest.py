@@ -76,7 +76,7 @@ FAILED_DIR: Path = config.DATA_DIR / "failed"
 # writes one file per JMS message named by epoch millis, no extension).
 SCAN_EXTENSIONS: set[str] = {".json", ".xml", ".txt", ""}
 
-# PCT TRACON primary airports â€” used to filter TAIS records to in-scope traffic.
+# PCT TRACON primary airports -- used to filter TAIS records to in-scope traffic.
 _PCT_PRIMARY_AIRPORTS: set[str] = {"KDCA", "KIAD", "KBWI", "KADW"}
 
 # XML tag names that map to NASEvent fields (best-effort)
@@ -276,7 +276,7 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
 
 
 def _jms_headers_only_record(headers: dict[str, str], path: Path) -> dict:
-    """Fallback when there's no JSON body â€” synthesize a metadata-only event."""
+    """Fallback when there's no JSON body -- synthesize a metadata-only event."""
     return {
         "airport_code": _normalise_icao(
             headers.get("tracon") or headers.get("srcTracon") or "PCT"
@@ -317,11 +317,11 @@ def _derive_flight_phase(
     """
     Heuristic flight-phase classifier from track data.
 
-    GROUND     â€” altitude < 500 ft (taxiing / on surface)
-    DEPARTURE  â€” climbing AND this airport is the departure
-    ARRIVAL    â€” descending AND this airport is the destination
-    ENROUTE    â€” level flight at cruise altitude
-    UNKNOWN    â€” insufficient signal
+    GROUND     -- altitude < 500 ft (taxiing / on surface)
+    DEPARTURE  -- climbing AND this airport is the departure
+    ARRIVAL    -- descending AND this airport is the destination
+    ENROUTE    -- level flight at cruise altitude
+    UNKNOWN    -- insufficient signal
     """
     if altitude_ft is None:
         return "UNKNOWN"
@@ -426,6 +426,9 @@ def _extract_records(
     if "TowerDepartureEventMessage" in root_name or "departureAirport" in payload:
         return _extract_tdes(headers, payload), True
 
+    if "asdexMsg" in root_name or "adsbReport" in payload:
+        return _extract_smes(headers, payload), True
+
     return [], False
 
 
@@ -509,16 +512,24 @@ def _scale_rvr(value: Any) -> int | None:
     """
     Convert a wire RVR reading to feet via config.APDS_RVR_SCALE_FT.
 
-    THE SCALE FACTOR IS AN ASSUMPTION AND IS NOT YET CONFIRMED AGAINST THE
-    APDS ICD. See the comment on APDS_RVR_SCALE_FT in src/config.py for the
-    evidence behind the current default and why getting it wrong matters in
-    both directions. It is a single config value precisely so that confirming
-    it is a one-line change.
+    The scale factor is corroborated but not confirmed against the APDS ICD;
+    see APDS_RVR_SCALE_FT in src/config.py for the evidence. A result above
+    config.APDS_RVR_MAX_PLAUSIBLE_FT is physically impossible for RVR, so it
+    is treated as proof the scale is wrong and the message is refused, rather
+    than stored as a reading far above every alert threshold.
     """
     raw = _coerce_int(value)
     if raw is None:
         return None
-    return raw * config.APDS_RVR_SCALE_FT
+    feet = raw * config.APDS_RVR_SCALE_FT
+    if feet > config.APDS_RVR_MAX_PLAUSIBLE_FT:
+        raise ValueError(
+            f"APDS RVR wire value {raw} scales to {feet} ft, above the "
+            f"{config.APDS_RVR_MAX_PLAUSIBLE_FT} ft maximum any RVR system "
+            f"reports. APDS_RVR_SCALE_FT={config.APDS_RVR_SCALE_FT} is probably "
+            f"wrong for this feed; see src/config.py."
+        )
+    return feet
 
 
 # ── TDES -- tower departure / TDLS clearance events ───────────────────────────
@@ -568,6 +579,99 @@ def _extract_tdes(headers: dict[str, str], payload: dict) -> list[dict]:
         "surface_event_type": f"DEPARTURE_{msg_type}",
         "feed_status": "operational",
     }]
+
+
+# ── SMES -- ASDE-X surface movement ───────────────────────────────────────────
+
+# Report arrays in an asdexMsg that this extractor has been verified against.
+# The ASDE-X schema defines others (positionReport among them), but none has
+# appeared in captured traffic, so their field layout is unconfirmed.
+_SMES_VERIFIED_REPORTS = frozenset({"adsbReport"})
+_SMES_NON_REPORT_KEYS = frozenset({"airport"})
+
+
+def _coerce_float(value: Any) -> float | None:
+    """STDDS numbers can arrive as JSON numbers or strings; "" means absent."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_smes(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:asdexMsg -> one event per ADS-B surface report.
+
+    Shape (confirmed against tests/fixtures/swim_kit/smes_sample, a real
+    captured message):
+
+        { "airport": "KIAD",
+          "adsbReport": [
+            { "enhancedData": { "eramGufi": "KW677325sW" },
+              "report": { "basicReport": {
+                  "time": "2026-08-27T20:42:24.563Z",
+                  "position": { "x": 225, "y": 87,
+                                "lat": 38.93986, "lon": -77.44608 },
+                  "track": 417 } },
+              "full": false }, ... ] }
+
+    `track` is the ASDE-X surface track number and becomes track_id, which
+    is what the SMES validation rule requires (a moving entity must be
+    identified). Each report's own basicReport.time is its event time: one
+    message batches reports taken at different instants, and latency_ms is
+    derived from it. eramGufi identifies the ERAM flight, not the aircraft,
+    so it is not put in aircraft_id; NASEvent has no field for it.
+
+    A message carrying any report type other than adsbReport is refused
+    rather than partly ingested. Guessing at an unseen layout could store
+    wrong positions, and silently extracting only the ADS-B half would drop
+    the rest while reporting success. Refused files land in data/failed/
+    with the unverified keys named, and can be re-ingested once supported.
+    """
+    unverified = sorted(
+        k for k in payload
+        if k not in _SMES_VERIFIED_REPORTS
+        and k not in _SMES_NON_REPORT_KEYS
+        and not k.startswith("xmlns")
+    )
+    if unverified:
+        raise ValueError(
+            f"SMES asdexMsg contains report types this extractor has not been "
+            f"verified against: {unverified}. Only {sorted(_SMES_VERIFIED_REPORTS)} "
+            f"is supported; see _extract_smes() in src/swim_file_ingest.py."
+        )
+
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "AD")
+
+    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    if airport is None:
+        return []
+
+    reports = payload.get("adsbReport") or []
+    if isinstance(reports, dict):
+        reports = [reports]
+
+    records = []
+    for report in reports:
+        basic = ((report or {}).get("report") or {}).get("basicReport") or {}
+        position = basic.get("position") or {}
+        track = basic.get("track")
+        records.append({
+            "airport_code": airport,
+            "tracon": tracon,
+            "service_name": service_name,
+            "message_type": f"SMES_{msg_type}",
+            "event_time_utc": basic.get("time") or header_ts,
+            "track_id": str(track) if track not in (None, "") else None,
+            "lat": _coerce_float(position.get("lat")),
+            "lon": _coerce_float(position.get("lon")),
+            "surface_event_type": "ADSB_REPORT",
+            "feed_status": "operational",
+        })
+    return records
 
 
 # ── TAIS -- terminal automation tracks ────────────────────────────────────────
