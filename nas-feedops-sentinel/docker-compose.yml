@@ -315,7 +315,6 @@ services:
       - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       - POSTGRES_SEEDS=temporal-postgresql
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
     ports:
       # Lets you point the temporal/tctl CLI or SDKs at localhost:7233 from
       # the host if you ever need to inspect workflows outside the container.
