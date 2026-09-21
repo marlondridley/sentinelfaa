@@ -214,11 +214,20 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER is required}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
       - GF_USERS_ALLOW_SIGN_UP=false
+      # Open the dashboards without a login prompt, read-only. Anonymous
+      # users get the Viewer role: they can look, not edit or administer --
+      # changes still need the admin account above (Sign in, bottom-left).
+      # The port below is bound to 127.0.0.1 for the same reason: anonymous
+      # access is for this machine, not for anyone on the local network.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/nas-sentinel.json
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
 
