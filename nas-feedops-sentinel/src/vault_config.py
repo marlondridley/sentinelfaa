@@ -25,7 +25,7 @@ class VaultConfigError(RuntimeError):
 
 
 class VaultSettingsSource(PydanticBaseSettingsSource):
-    """Custom Pydantic source interceptor to pull secrets from HashiCorp Vault[cite: 5]."""
+    """Custom Pydantic source interceptor to pull secrets from HashiCorp Vault."""
 
     def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         return None, field_name, False

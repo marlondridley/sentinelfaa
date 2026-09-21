@@ -40,7 +40,15 @@ def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
       smes_counts      — {airport: int}
       total_events     — int
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
+
+    # NASEvent.received_time_utc is always tz-aware UTC (enforced by
+    # models.NASEvent.ensure_utc_awareness), including when it comes back
+    # from Postgres via asyncpg (TIMESTAMPTZ columns deserialize as aware
+    # datetimes, not strings). now/stale_cutoff must stay aware too, or the
+    # 'latest.received_time_utc < stale_cutoff' comparison below raises
+    # TypeError: can't compare offset-naive and offset-aware datetimes the
+    # moment this runs against any real event batch.
 
     stale_cutoff = now - timedelta(seconds=config.STALE_FEED_SECONDS)
 

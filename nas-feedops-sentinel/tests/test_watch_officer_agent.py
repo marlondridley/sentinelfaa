@@ -65,10 +65,29 @@ def _critical_alert(**kwargs) -> AlertEvent:
         airport_code="KDCA",
         service_name="APDS_RVR",
         description="Low RVR 700 ft at KDCA runway 19.",
-        event_id="evt-1",
     )
     base.update(kwargs)
     return AlertEvent(**base)
+
+
+async def _persist_and_stage(alert: AlertEvent):
+    """Save the alert, then stage it -- the same order src/pipeline.py uses
+    (staged_actions.alert_id is a foreign key to alert_events)."""
+    await storage.save_alert(alert)
+    return await stage_critical_alert(alert)
+
+
+async def _brief_from_current_state() -> WatchOfficerBrief:
+    """
+    Build the context on this test's event loop and hand it in, the way
+    execution_gate._build_escalation_package() does. Calling
+    generate_watch_officer_brief() without a context makes it fetch one via
+    async_bridge.run_async(), which cannot run inside an already-running loop.
+    The no-context path is what the synchronous dashboard uses, and the
+    synchronous tests below (no data, pydantic round-trip, LLM disabled)
+    keep covering it.
+    """
+    return generate_watch_officer_brief(await build_watch_officer_context(), use_llm=False)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -81,28 +100,28 @@ class TestWatchOfficer:
         assert brief.confidence <= 0.5
         assert brief.llm_used is False
 
-    def test_normal_with_fresh_data(self):
+    async def test_normal_with_fresh_data(self):
         # ISMC events are fresh but no aircraft tracks → INCOMPLETE is the
         # correct trust assessment per the spec ("live positions missing").
         # Posture is still NORMAL/GOOD because no actions are pending.
-        storage.save_events([_fresh_event(ap) for ap in ("KDCA", "KIAD", "KBWI", "KADW")])
-        brief = generate_watch_officer_brief(use_llm=False)
+        await storage.save_events([_fresh_event(ap) for ap in ("KDCA", "KIAD", "KBWI", "KADW")])
+        brief = await _brief_from_current_state()
         assert brief.posture in ("NORMAL", "GOOD")
         # With ISMC fresh but no TAIS positions, trust is INCOMPLETE per design
         assert brief.trust_assessment in ("INCOMPLETE", "TRUSTWORTHY", "UNKNOWN", "DEGRADED")
         assert brief.headline
 
-    def test_attention_with_stale_airports(self):
+    async def test_attention_with_stale_airports(self):
         # No events for KDCA + KIAD = STALE feed health
         old = _now_minus(15)
-        storage.save_events([
+        await storage.save_events([
             NASEvent(
                 airport_code="KBWI", tracon="PCT", service_name="ISMC",
                 message_type="link_status", event_time_utc=old, received_time_utc=old,
                 feed_status="operational", latency_ms=200.0, validation_status="PASSED",
             )
         ])
-        ctx = build_watch_officer_context()
+        ctx = await build_watch_officer_context()
         signals = _detect_signals(ctx)
         assert signals["stale_airports"] or signals["missing_airports"] or signals["degraded_airports"], \
             "Expected feed-health signals to indicate at least one airport off-nominal"
@@ -116,10 +135,10 @@ class TestWatchOfficer:
                "integrity" in brief.headline.lower() or \
                brief.posture in ("ATTENTION", "ACTION")
 
-    def test_action_when_pending_staged_action_exists(self):
+    async def test_action_when_pending_staged_action_exists(self):
         # Stage one critical alert → pending action exists
-        stage_critical_alert(_critical_alert())
-        brief = generate_watch_officer_brief(use_llm=False)
+        await _persist_and_stage(_critical_alert())
+        brief = await _brief_from_current_state()
         assert brief.posture == "ACTION"
         assert brief.pending_actions_count >= 1
 
@@ -131,10 +150,10 @@ class TestWatchOfficer:
         round_trip = WatchOfficerBrief(**brief.model_dump())
         assert round_trip.posture == brief.posture
 
-    def test_brief_round_trips_through_storage(self):
-        brief = generate_watch_officer_brief(use_llm=False)
-        storage.save_watch_officer_brief(brief)
-        latest = storage.get_latest_watch_officer_brief()
+    async def test_brief_round_trips_through_storage(self):
+        brief = await _brief_from_current_state()
+        await storage.save_watch_officer_brief(brief)
+        latest = await storage.get_latest_watch_officer_brief()
         assert latest is not None
         assert latest.brief_id == brief.brief_id
         assert latest.posture == brief.posture
@@ -145,18 +164,18 @@ class TestWatchOfficer:
         brief = generate_watch_officer_brief(use_llm=False)
         assert brief.llm_used is False
 
-    def test_evidence_includes_snapshot_numbers(self):
+    async def test_evidence_includes_snapshot_numbers(self):
         # Deterministic brief should always include the snapshot evidence row
-        storage.save_events([_fresh_event()])
-        brief = generate_watch_officer_brief(use_llm=False)
+        await storage.save_events([_fresh_event()])
+        brief = await _brief_from_current_state()
         joined = " ".join(brief.evidence)
         assert "events_in_window=" in joined
         assert "pending_actions=" in joined
 
-    def test_affected_airports_includes_critical_alert_airports(self):
+    async def test_affected_airports_includes_critical_alert_airports(self):
         alert = _critical_alert(airport_code="KIAD")
-        storage.save_alerts([alert])
-        ctx = build_watch_officer_context()
+        await storage.save_alerts([alert])
+        ctx = await build_watch_officer_context()
         signals = _detect_signals(ctx)
         brief = _deterministic_brief(ctx, signals)
         assert "KIAD" in brief.affected_airports or brief.posture == "ACTION"

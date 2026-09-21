@@ -1,6 +1,8 @@
 """Shared ingest → validate → alert → critic pipeline (CLI + Temporal)."""
 from __future__ import annotations
 
+import asyncio
+
 from src.alert_engine import check_alerts
 from src.config import settings
 from src.critic_agent import CriticAgent
@@ -65,10 +67,15 @@ async def run_pipeline(
             "total_critical": len(critical_alerts),
             },
         )
-        for alert in to_evaluate:
+        async def _critique_and_save(alert):
             result = await critic.critique(alert)
             await save_critic_result(result)
-            critic_results[alert.alert_id] = result
+            return alert.alert_id, result
+
+        pairs = await asyncio.gather(
+            *(_critique_and_save(alert) for alert in to_evaluate)
+        )
+        critic_results.update(pairs)
 
     staged_count = 0
     for alert in critical_alerts:

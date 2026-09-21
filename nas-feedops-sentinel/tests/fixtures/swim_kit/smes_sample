@@ -1,0 +1,22 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = SMES
+Property name = msgType; value = AD
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = SMES/all/false/AD/KIAD/PCT
+Property name = globalID; value = 51190811
+Property name = msgSeqID; value = 1291039
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KIAD
+Property name = pubNode; value = NEMS_ACY
+Property name = tracon; value = PCT
+Property name = timeline; value = 1787863344879 1787863344938 1787863344983
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:24.879Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:asdexMsg":{"xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:smes:surfacemovementevent","adsbReport":[{"enhancedData":{"eramGufi":"KW677325sW"},"report":{"basicReport":{"time":"2026-08-27T20:42:24.563Z","position":{"x":225,"y":87,"lon":-77.44608,"lat":38.93986},"track":417}},"full":false},{"enhancedData":{"eramGufi":"KW631345Dg"},"report":{"basicReport":{"time":"2026-08-27T20:42:24.641Z","position":{"x":-510,"y":3275,"lon":-77.45457,"lat":38.96851},"track":890}},"full":false}],"airport":"KIAD"}}

@@ -26,9 +26,37 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATA_DIR=${DATA_DIR:-/app/data}
       - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
+      # Real Temporal server (see the temporal/temporal-postgresql services below).
+      # Previously unset here, so this silently fell back to config.py's
+      # localhost:7233 default -- which pointed at nothing inside this
+      # container and made temporal-worker crash-loop on every connect
+      # attempt (main()'s bare try/finally logs 'temporal_worker_stopped' and
+      # re-raises on any failure, and restart: unless-stopped then respawned
+      # it immediately). temporal:7233 is the new service's name on nas-network.
+      - TEMPORAL_HOST=${TEMPORAL_HOST:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
     volumes:
-      - sentinel-data:/app/data
+      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
+      # Two volume entries at the same target (/app/data) is ambiguous: whichever
+      # one "won" at container CREATION time sticks for that container's whole
+      # life, and a later `restart` never re-evaluates it -- only a recreate
+      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
+      # service ended up reading an empty, disconnected sentinel-data volume
+      # instead of the real host ./data/raw/swim_live directory, crash-looping
+      # on FileNotFoundError even though the host directory was fine all along.
       - ./data:/app/data
+    depends_on:
+      - temporal
+    healthcheck:
+      # Overrides the image's baked-in HEALTHCHECK (docker/Dockerfile), which
+      # probes port 9108 -- that's src/metrics.py's server, only ever started
+      # by src/main.py. This service runs src.temporal_worker instead, which
+      # never binds 9108, so the inherited check would report "unhealthy"
+      # forever regardless of whether the worker is actually fine. A pure
+      # background worker has no HTTP surface to honestly probe, so disable
+      # it rather than ship a check that's always wrong.
+      disable: true
 
   # 2. Metrics API Service
   api:
@@ -37,12 +65,44 @@ services:
       dockerfile: docker/Dockerfile
     image: nas-feedops-sentinel:latest
     container_name: nas-api
-    command: ["python", "-m", "src.metrics"]
+    # Previously ran "python -m src.metrics" -- a second copy of the exact
+    # same Prometheus metrics server sentinel already runs in-process.
+    # Nothing scraped it (monitoring/prometheus.yml only targets
+    # sentinel:9108), so it was a pure duplicate. This is what src/api.py
+    # (FastAPI: /health, /v1/ingest, the workflow-trigger endpoints) was
+    # actually built to run behind, and nothing was running it -- so the
+    # Temporal stack below had no caller. Fixes both at once.
+    command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
+      - POSTGRES_PORT=6432
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Same fix as temporal-worker: without this, src/config.py's
+      # TEMPORAL_HOST default (localhost:7233) points at nothing inside this
+      # container, and every /v1/ingest call would fail with
+      # temporal_unavailable even though the temporal service is healthy.
+      - TEMPORAL_HOST=${TEMPORAL_HOST:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+      - API_KEY=${API_KEY:-}
+      - API_KEYS=${API_KEYS:-}
     ports:
-      - "9108:9108" # Metrics endpoint for Prometheus
+      - "8000:8000"
     volumes:
       - sentinel-data:/app/data
+    depends_on:
+      - temporal
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # 3. Legacy/CLI Replay Runner (Optional standalone mode)
   sentinel:
@@ -52,7 +112,7 @@ services:
     image: nas-feedops-sentinel:latest
     container_name: nas-sentinel
     restart: unless-stopped
-    command: ["python", "-m", "src.main", "--mode", "replay"]
+    command: ["python", "-m", "src.main", "--mode", "replay", "--watch"]
     environment:
       - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
       - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
@@ -70,7 +130,14 @@ services:
       - DATA_DIR=${DATA_DIR:-/app/data}
       - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
     volumes:
-      - sentinel-data:/app/data
+      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
+      # Two volume entries at the same target (/app/data) is ambiguous: whichever
+      # one "won" at container CREATION time sticks for that container's whole
+      # life, and a later `restart` never re-evaluates it -- only a recreate
+      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
+      # service ended up reading an empty, disconnected sentinel-data volume
+      # instead of the real host ./data/raw/swim_live directory, crash-looping
+      # on FileNotFoundError even though the host directory was fine all along.
       - ./data:/app/data
 
   # 4. Streamlit Dashboard
@@ -95,10 +162,33 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - sentinel-data:/app/data
+      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
+      # Two volume entries at the same target (/app/data) is ambiguous: whichever
+      # one "won" at container CREATION time sticks for that container's whole
+      # life, and a later `restart` never re-evaluates it -- only a recreate
+      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
+      # service ended up reading an empty, disconnected sentinel-data volume
+      # instead of the real host ./data/raw/swim_live directory, crash-looping
+      # on FileNotFoundError even though the host directory was fine all along.
       - ./data:/app/data
+      # Keycloak OIDC config for the dashboard's login screen (src/auth.py's
+      # OIDC path via dashboard/lib/page_setup.py). Mounted read-only so the
+      # client secret never gets baked into the image layer. Does not exist
+      # until you copy .streamlit/secrets.toml.example -> .streamlit/secrets.toml
+      # and fill it in -- until then this mount is simply absent and the
+      # dashboard falls back to the self-declared operator-ID box.
+      - ./.streamlit:/app/.streamlit:ro
     depends_on:
       - api
+    healthcheck:
+      # Overrides the image's baked-in HEALTHCHECK (port 9108 -- see the
+      # temporal-worker comment above for why that's wrong here too).
+      # Streamlit serves its own liveness endpoint on the app's own port.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8501/_stcore/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
 
   # 5. Monitoring Stack
   prometheus:
@@ -142,13 +232,115 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+    volumes:
+      # start-dev's default H2 database lives here. Without this, the
+      # nas-sentinel realm + client + secret you set up by hand in the admin
+      # console (see the Keycloak setup steps in chat) vanish the moment this
+      # container is recreated (`down`+`up`, not a plain `restart`) and you'd
+      # have to click through the whole setup again.
+      - keycloak-data:/opt/keycloak/data
     networks:
       - default
+
+  # 6. FAA SWIM SCDS Jumpstart Kit -- NOT containerized, deliberately.
+  #
+  # The kit ships a prebuilt fat jar (jumpstart/lib/jumpstart-jar-with-
+  # dependencies.jar) and its own launchers (jumpstart/bin/run, run.bat), so
+  # containerizing it added a Maven/JDK-25 build step that bought nothing --
+  # and that build was the only thing failing in this compose project,
+  # aborting the whole bake and blocking services unrelated to it.
+  #
+  # It now runs natively on the host, per jumpstart/README.md:
+  #
+  #   cd jumpstart
+  #   mkdir ..\data\raw\swim_live\log
+  #   cd ..\data\raw\swim_live
+  #   ..\..\..\jumpstart\bin\run.bat ^
+  #       -DproviderUrl=%SWIM_PROVIDER_URL% -Dqueue=%SWIM_QUEUE% ^
+  #       -DconnectionFactory=%SWIM_CONNECTION_FACTORY% ^
+  #       -Dusername=%SWIM_USERNAME% -Dpassword=%SWIM_PASSWORD% ^
+  #       -Dvpn=%SWIM_VPN% ^
+  #       -Doutput=com.harris.cinnato.outputs.MessageFileOutput ^
+  #       -Djson=true -Dheaders=true
+  #
+  # MessageFileOutput hardcodes its output to <cwd>/log/, which is why the
+  # kit is launched from data/raw/swim_live/. -Djson=true -Dheaders=true is
+  # not optional: src/swim_file_ingest.py:_parse_jms_message_file() parses
+  # exactly that shape (JMS property header lines, then one JSON object).
+  # SWIM_RAW_FOLDER points the sentinel watcher at that same directory.
+  #
+  # Requires a Java 25 runtime on the host -- the shipped jar is compiled to
+  # bytecode major 69. `java -version` must report 25 or newer.
+  #
+  # Known limitations of the stock MessageFileOutput, accepted here:
+  #   - files are named by epoch millisecond with no extension, so two
+  #     messages landing in the same millisecond overwrite each other;
+  #   - writes are not atomic (FileOutputStream straight to the final name),
+  #     mitigated but not eliminated by the watcher's 2 s debounce.
+  # jumpstart/src/.../outputs/IngestFolderFileOutput.java fixes both and takes
+  # a configurable -DoutputDir, but using it means rebuilding the jar
+  # (JDK 25 + `mvn -B -DskipTests clean package` in jumpstart/). Left dormant
+  # in the kit's source tree rather than deleted, for if that trade becomes
+  # worth making.
+
+  # 7. Temporal Server -- workflow orchestration backend for temporal-worker.
+  # Dedicated Postgres instance below, kept separate from the pgbouncer'd
+  # sentinel_db pool so Temporal's own schema/load never touches production
+  # alert data or its finite connection pool.
+  temporal-postgresql:
+    image: postgres:16
+    container_name: nas-temporal-postgresql
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
+      - POSTGRES_PASSWORD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEMPORAL_DB_USER:-temporal_worker}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1
+    container_name: nas-temporal
+    restart: unless-stopped
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
+      - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
+      - POSTGRES_SEEDS=temporal-postgresql
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    ports:
+      # Lets you point the temporal/tctl CLI or SDKs at localhost:7233 from
+      # the host if you ever need to inspect workflows outside the container.
+      - "7233:7233"
+
+  # Optional web UI for inspecting workflow runs/history at localhost:8088.
+  # Not required for temporal-worker to function -- safe to remove if unused.
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    container_name: nas-temporal-ui
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8088
+    ports:
+      - "8088:8080"
 
 volumes:
   sentinel-data:
   prometheus-data:
   grafana-data:
+  temporal-postgres-data:
+  keycloak-data:
 
 networks:
   default:

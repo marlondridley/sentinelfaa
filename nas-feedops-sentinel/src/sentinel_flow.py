@@ -49,6 +49,7 @@ class SentinelFlow(Flow[SentinelState]):
             tasks=[task_evaluate, task_plan],
             process=Process.sequential,
             memory=False,
+            share_crew=True,
         )
 
         result = crew.kickoff()

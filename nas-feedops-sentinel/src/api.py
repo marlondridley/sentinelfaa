@@ -12,6 +12,7 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from pydantic import BaseModel, Field, ValidationError
 
 from src import storage
+from src.auth import Principal, PrincipalSource, principal_from_api_key
 from src.config import settings
 from src.logging_config import (
     CORRELATION_HEADER,
@@ -21,6 +22,8 @@ from src.logging_config import (
     get_logger,
 )
 from src.models import NASEvent
+from temporalio.service import RPCError
+
 from src.temporal_worker import start_ingest_workflow, start_pipeline_workflow
 
 configure_logging()
@@ -54,32 +57,51 @@ bearer_auth = HTTPBearer(auto_error=False)
 async def verify_auth(
     api_key: str | None = Security(api_key_header),
     bearer: HTTPAuthorizationCredentials | None = Security(bearer_auth),
-) -> None:
+) -> Principal:
     """
-    Enforce authentication for privileged control/ingestion endpoints.
-    Accepts X-API-Key header or Authorization: Bearer <key>.
+    Enforce authentication for privileged control/ingestion endpoints and resolve the
+    caller's Principal.
+
+    Accepts X-API-Key header or Authorization: Bearer <key>, checked against the named
+    API_KEYS map first (so distinct callers get distinct, auditable identities) and the
+    legacy single API_KEY/LITELLM_API_KEY second (recorded as the generic
+    "legacy_api_key" principal).
+
+    If no key is configured at all, this fails open (unchanged prior behavior, meant for
+    local/dev deployments) but returns an explicit "anonymous" Principal rather than
+    silently returning nothing, so callers of this dependency always get an identity to
+    log or attribute against -- the audit trail can distinguish "ran with auth
+    configured" from "ran with no auth configured" instead of conflating the two.
     """
     expected_key = settings.API_KEY or settings.LITELLM_API_KEY
-    if not expected_key:
-        return
-
+    named_keys = settings.API_KEYS
     provided = api_key or (bearer.credentials if bearer else None)
-    if not provided or provided != expected_key:
+
+    if not expected_key and not named_keys:
+        _log.warning("api_auth_not_configured", extra={"correlation_id": get_correlation_id()})
+        return Principal(principal_id="anonymous", role="unauthenticated", source=PrincipalSource.ANONYMOUS)
+
+    principal = principal_from_api_key(provided or "", named_keys=named_keys, legacy_key=expected_key)
+    if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return principal
 
 
 class IngestRequest(BaseModel):
     events: list[dict[str, Any]] = Field(
         default=[],
+        max_length=10000,
         description=(
             "Inline event payloads to ingest directly. If this list is non-empty, "
             "it takes priority: a pipeline workflow is started from these events and "
             "`source_dir` is ignored. Each entry is validated against the NASEvent "
-            "schema synchronously; malformed entries return 422 before any workflow starts."
+            "schema synchronously; malformed entries return 422 before any workflow starts. "
+            "Capped at 10,000 entries per request so a single call can't block the "
+            "request-handling event loop or exhaust memory."
         ),
     )
     label: str = Field(
@@ -212,7 +234,6 @@ async def ready() -> JSONResponse:
 
 @router.post(
     "/ingest",
-    dependencies=[Depends(verify_auth)],
     summary="Start an ingestion workflow",
     description=(
         "Starts a Temporal workflow to process NAS events. If `events` is provided, a "
@@ -220,12 +241,14 @@ async def ready() -> JSONResponse:
         "against `source_dir`. Inline events are validated against the NASEvent schema before "
         "the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header "
         "to make retries attach to the existing workflow. Requires authentication via "
-        "`X-API-Key` or a Bearer token."
+        "`X-API-Key` or a Bearer token; the resolved caller identity is recorded against "
+        "this call in the application logs."
     ),
 )
 async def ingest(
     body: IngestRequest,
     idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    principal: Principal = Depends(verify_auth),
 ) -> JSONResponse:
     """
     Start a Temporal workflow to ingest and process NAS events.
@@ -243,6 +266,15 @@ async def ingest(
     workflow instead of double-processing the batch.
     """
     cid = get_correlation_id()
+
+    _log.info(
+        "ingest_request_authenticated",
+        extra={
+            "correlation_id": cid,
+            "principal_id": principal.principal_id,
+            "principal_source": principal.source.value,
+        },
+    )
 
     if body.events:
         _validate_events(body.events)
@@ -269,8 +301,13 @@ async def ingest(
             workflow_id = await start_ingest_workflow(
                 source_dir=body.source_dir, correlation_id=workflow_key
             )
-    except Exception as exc:  # noqa: BLE001
-        _log.error("ingest_workflow_failed", extra={"error": str(exc)})
+    except RPCError as exc:
+        # Temporal server unreachable/timed out -- an expected, transient
+        # infrastructure failure. Anything else (a real bug in workflow
+        # construction, a programming error) is intentionally left to
+        # propagate to FastAPI's top-level handler rather than being
+        # mislabeled as "temporal_unavailable" here.
+        _log.error("ingest_workflow_unavailable", extra={"error": str(exc)})
         return JSONResponse(
             status_code=503,
             content={"error": "temporal_unavailable", "detail": str(exc), "correlation_id": cid},
@@ -281,6 +318,7 @@ async def ingest(
             "workflow_key": workflow_key,
             "correlation_id": cid,
             "task_queue": settings.TEMPORAL_TASK_QUEUE,
+            "principal_id": principal.principal_id,
         }
     )
 

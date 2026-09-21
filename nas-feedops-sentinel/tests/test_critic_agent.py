@@ -1,7 +1,9 @@
 """
 Tests for CriticAgent.
 
-The Anthropic client is mocked so no API key or network is required.
+The LLM client is always controlled explicitly -- patched to None or to a
+mock -- so no test reaches a real provider, even when the suite runs in the
+app container where .env supplies LITELLM_API_KEY.
 Tests verify:
   - Degraded path when API key is absent
   - Degraded path when API call raises
@@ -13,7 +15,7 @@ Tests verify:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,7 +41,6 @@ def _sample_alert(**kwargs) -> AlertEvent:
         airport_code="KDCA",
         service_name="APDS_RVR",
         description="Low RVR 800 ft at touchdown on runway 01 at KDCA.",
-        event_id="evt-001",
     )
     defaults.update(kwargs)
     return AlertEvent(**defaults)
@@ -63,12 +64,12 @@ def _mock_tool_response(
 
 # ── Degraded-path tests ───────────────────────────────────────────────────────
 
-def test_no_api_key_returns_degraded_result(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("NIM_ENDPOINT", raising=False)
+async def test_no_api_key_returns_degraded_result(monkeypatch):
+    monkeypatch.setattr("src.critic_agent.settings.CRITIC_ENABLED", True)
+    monkeypatch.setattr("src.critic_agent.build_llm_client", lambda *a, **k: None)
     agent = CriticAgent()
     alert = _sample_alert()
-    result = agent.critique(alert)
+    result = await agent.critique(alert)
 
     assert result.alert_id == alert.alert_id
     assert result.confidence is None
@@ -76,50 +77,42 @@ def test_no_api_key_returns_degraded_result(monkeypatch):
     assert "no LLM provider" in result.reasoning.lower() or "unavailable" in result.reasoning.lower()
 
 
-def test_api_error_returns_degraded_result(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("CRITIC_ENABLED", "1")
+async def test_api_error_returns_degraded_result(monkeypatch):
+    # settings is read once at import, so flags are patched on the object
+    # rather than through the environment.
+    monkeypatch.setattr("src.critic_agent.settings.CRITIC_ENABLED", True)
 
     mock_llm = MagicMock()
-    mock_llm.call_with_tool.side_effect = RuntimeError("network timeout")
+    mock_llm.acall_with_tool = AsyncMock(side_effect=RuntimeError("network timeout"))
 
     with patch("src.critic_agent.build_llm_client", return_value=mock_llm):
         agent = CriticAgent()
         alert = _sample_alert()
-        result = agent.critique(alert)
+        result = await agent.critique(alert)
 
     assert result.confidence is None
     assert "network timeout" in result.reasoning
 
 
-def test_critic_disabled_via_env(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("CRITIC_ENABLED", "0")
+async def test_critic_disabled_via_env(monkeypatch):
+    # critic_agent reads the settings object it imported, so the flag is
+    # patched there. (This used to patch src.critic_agent.config and reload
+    # src.config -- the module has no `config` attribute any more, and the
+    # reload replaced the settings singleton for every later test.)
+    monkeypatch.setattr("src.critic_agent.settings.CRITIC_ENABLED", False)
 
-    # Reload config so the env change takes effect
-    import importlib
-
-    from src import config as cfg
-    importlib.reload(cfg)
-
-    with patch("src.critic_agent.config", cfg):
-        agent = CriticAgent()
-        alert = _sample_alert()
-        result = agent.critique(alert)
+    agent = CriticAgent()
+    alert = _sample_alert()
+    result = await agent.critique(alert)
 
     assert result.confidence is None
     assert "CRITIC_ENABLED" in result.reasoning
 
-    # Restore
-    monkeypatch.setenv("CRITIC_ENABLED", "1")
-    importlib.reload(cfg)
-
 
 # ── Happy-path test ───────────────────────────────────────────────────────────
 
-def test_happy_path_returns_critic_result(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("CRITIC_ENABLED", "1")
+async def test_happy_path_returns_critic_result(monkeypatch):
+    monkeypatch.setattr("src.critic_agent.settings.CRITIC_ENABLED", True)
 
     mock_response = _mock_tool_response(
         confidence=0.91,
@@ -130,12 +123,12 @@ def test_happy_path_returns_critic_result(monkeypatch):
     )
 
     mock_llm = MagicMock()
-    mock_llm.call_with_tool.return_value = mock_response
+    mock_llm.acall_with_tool = AsyncMock(return_value=mock_response)
 
     with patch("src.critic_agent.build_llm_client", return_value=mock_llm):
         agent = CriticAgent()
         alert = _sample_alert()
-        result = agent.critique(alert)
+        result = await agent.critique(alert)
 
     assert result.alert_id == alert.alert_id
     assert abs(result.confidence - 0.91) < 1e-6
@@ -145,12 +138,48 @@ def test_happy_path_returns_critic_result(monkeypatch):
     assert "evt-aaa" in result.citations
 
 
+# ── Output bounding ───────────────────────────────────────────────────────────
+#
+# Critic output is recorded in critic_results and shown on the staged action a
+# human approves, so what the model returns must be bounded before it is
+# stored. Each case below was stored verbatim before the output guardrail was
+# wired into CriticAgent.
+
+async def _critique_with_model_output(monkeypatch, **overrides) -> CriticResult:
+    monkeypatch.setattr("src.critic_agent.settings.CRITIC_ENABLED", True)
+    mock_llm = MagicMock()
+    mock_llm.acall_with_tool = AsyncMock(return_value={**_mock_tool_response(), **overrides})
+    with patch("src.critic_agent.build_llm_client", return_value=mock_llm):
+        return await CriticAgent().critique(_sample_alert())
+
+
+@pytest.mark.parametrize("model_value", ["false", "False", "0", "no"])
+async def test_string_false_escalate_is_recorded_as_false(monkeypatch, model_value):
+    """bool("false") is True: the model's "do not escalate" must not be inverted."""
+    result = await _critique_with_model_output(monkeypatch, escalate=model_value)
+    assert result.escalate is False
+    assert result.confidence is not None, "a well-formed answer must not be rejected"
+
+
+async def test_out_of_bounds_confidence_is_rejected(monkeypatch):
+    result = await _critique_with_model_output(monkeypatch, confidence=7.3)
+    assert result.confidence is None
+    assert "rejected by guardrail" in result.reasoning
+
+
+async def test_invented_pattern_is_rejected(monkeypatch):
+    result = await _critique_with_model_output(monkeypatch, pattern="MADE_UP_PATTERN")
+    assert result.confidence is None
+    assert result.pattern == "UNKNOWN"
+    assert "rejected by guardrail" in result.reasoning
+
+
 # ── Context-builder tests ─────────────────────────────────────────────────────
 
-def test_build_context_empty_db():
+async def test_build_context_empty_db():
     alert = _sample_alert()
     router = ContextRouter()
-    ctx = router.build_alert_context(airport_code=alert.airport_code)
+    ctx = await router.build_alert_context(airport_code=alert.airport_code)
 
     assert ctx["total_recent_events"] == 0
     assert ctx["service_summary"] == {}
@@ -158,13 +187,13 @@ def test_build_context_empty_db():
     assert ctx["window_minutes"] == 30
 
 
-def test_build_context_with_events(monkeypatch):
+async def test_build_context_with_events(monkeypatch):
     from src.models import NASEvent
     from src.storage import save_alert, save_event
 
     now = datetime.now(timezone.utc)
     for i in range(3):
-        save_event(NASEvent(
+        await save_event(NASEvent(
             airport_code="KDCA",
             tracon="PCT",
             service_name="APDS_RVR",
@@ -178,10 +207,10 @@ def test_build_context_with_events(monkeypatch):
         ))
 
     alert = _sample_alert()
-    save_alert(alert)
+    await save_alert(alert)
 
     router = ContextRouter()
-    ctx = router.build_alert_context(airport_code=alert.airport_code)
+    ctx = await router.build_alert_context(airport_code=alert.airport_code)
 
     assert ctx["total_recent_events"] == 3
     assert "APDS_RVR" in ctx["service_summary"]
@@ -222,8 +251,10 @@ def test_format_user_message_contains_key_fields():
 
 # ── Storage round-trip test ───────────────────────────────────────────────────
 
-def test_save_and_retrieve_critic_result():
+async def test_save_and_retrieve_critic_result():
     alert = _sample_alert()
+    # critic_results.alert_id is a foreign key to alert_events.
+    await storage.save_alert(alert)
     result = CriticResult(
         alert_id=alert.alert_id,
         confidence=0.75,
@@ -232,16 +263,15 @@ def test_save_and_retrieve_critic_result():
         pattern="ISOLATED_FAULT",
         escalate=True,
     )
-    storage.save_critic_result(result)
+    await storage.save_critic_result(result)
 
-    conn = storage._get_conn()
-    row = conn.execute(
-        "SELECT * FROM critic_results WHERE alert_id = ?", (alert.alert_id,)
-    ).fetchone()
+    rows = await storage.get_recent_critic_results(limit=5)
+    assert len(rows) == 1
+    row = rows[0]
 
-    assert row is not None
+    assert row["alert_id"] == alert.alert_id
     assert abs(row["confidence"] - 0.75) < 1e-6
     assert row["pattern"] == "ISOLATED_FAULT"
-    assert row["escalate"] == 1
+    assert row["escalate"] is True
     import json
     assert json.loads(row["citations"]) == ["id-x", "id-y"]

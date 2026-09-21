@@ -33,16 +33,22 @@ def _critical_alert(**kwargs) -> AlertEvent:
         airport_code="KDCA",
         service_name="APDS_RVR",
         description="Low RVR 700 ft.",
-        event_id="evt-1",
     )
     base.update(kwargs)
     return AlertEvent(**base)
 
 
+async def _persist_and_stage(alert: AlertEvent, critic_result=None):
+    """Save the alert, then stage it -- the same order src/pipeline.py uses
+    (staged_actions.alert_id is a foreign key to alert_events)."""
+    await storage.save_alert(alert)
+    return await stage_critical_alert(alert, critic_result)
+
+
 class TestBannerFastSignal:
-    def test_red_action_when_staged_actions_exist(self):
-        stage_critical_alert(_critical_alert())
-        items = build_fast_signal_items(
+    async def test_red_action_when_staged_actions_exist(self):
+        await _persist_and_stage(_critical_alert())
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "OK", "KIAD": "OK", "KBWI": "OK", "KADW": "OK"},
             alerts=[], rvr_rows=[],
         )
@@ -50,8 +56,8 @@ class TestBannerFastSignal:
         action_text = next(it["text"] for it in items if it["severity"] == "ACTION")
         assert "pending" in action_text.lower() or "review" in action_text.lower()
 
-    def test_yellow_attention_when_feed_stale_no_pending(self):
-        items = build_fast_signal_items(
+    async def test_yellow_attention_when_feed_stale_no_pending(self):
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "STALE", "KIAD": "OK", "KBWI": "OK", "KADW": "OK"},
             alerts=[], rvr_rows=[],
         )
@@ -60,8 +66,8 @@ class TestBannerFastSignal:
         # Must NOT contain an ACTION item (no pending review)
         assert not any(it["severity"] == "ACTION" for it in items)
 
-    def test_green_good_when_all_clear(self):
-        items = build_fast_signal_items(
+    async def test_green_good_when_all_clear(self):
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "OK", "KIAD": "OK", "KBWI": "OK", "KADW": "OK"},
             alerts=[], rvr_rows=[],
         )
@@ -69,8 +75,8 @@ class TestBannerFastSignal:
         assert any(it["severity"] == "GOOD" for it in items)
         assert not any(it["severity"] == "ACTION" for it in items)
 
-    def test_red_action_includes_low_rvr_safety(self):
-        items = build_fast_signal_items(
+    async def test_red_action_includes_low_rvr_safety(self):
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "OK"},
             alerts=[],
             rvr_rows=[{"airport_code": "KDCA", "runway": "19", "rvr_touchdown": 700}],
@@ -78,17 +84,17 @@ class TestBannerFastSignal:
         # Sub-1200 ft RVR must surface as ACTION (safety-critical)
         assert any(it["severity"] == "ACTION" and "RVR" in it["text"].upper() for it in items)
 
-    def test_banner_is_concise(self):
+    async def test_banner_is_concise(self):
         # Even with multiple stale airports, banner stays focused (≤ 8 items)
-        items = build_fast_signal_items(
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "STALE", "KIAD": "STALE", "KBWI": "DEGRADED", "KADW": "OK"},
             alerts=[], rvr_rows=[],
         )
         assert len(items) <= 8
 
-    def test_anchor_links_present(self):
-        stage_critical_alert(_critical_alert())
-        items = build_fast_signal_items(
+    async def test_anchor_links_present(self):
+        await _persist_and_stage(_critical_alert())
+        items = await build_fast_signal_items(
             airport_status={"KDCA": "OK"}, alerts=[], rvr_rows=[],
         )
         # Every banner item must have an anchor for jump-to-section behavior

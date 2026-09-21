@@ -1,0 +1,23 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = APDS
+Property name = msgType; value = RR
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = APDS/all/false/RR/KBWI/PCT
+Property name = link; value = KBWI_RVR
+Property name = globalID; value = 51190693
+Property name = msgSeqID; value = 46095
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KBWI
+Property name = pubNode; value = NEMS_ACY
+Property name = tracon; value = PCT
+Property name = timeline; value = 1787863340471 1787863340481 1787863340506
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:20.481Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:RVRDataUpdateMessage":{"xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:apds:rvrdataupdatemessage","airport":"KBWI","runwayData":[{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":10,"runwaySubID":""},"midpointVisualRange":60,"touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"+","runwayCenterLineLightSetting":0},{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":28,"runwaySubID":""},"midpointVisualRange":60,"touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"+","runwayCenterLineLightSetting":0},{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":15,"runwaySubID":"L"},"midpointVisualRange":"","touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"","runwayCenterLineLightSetting":""},{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":33,"runwaySubID":"R"},"midpointVisualRange":"","touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"","runwayCenterLineLightSetting":""},{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":15,"runwaySubID":"R"},"midpointVisualRange":60,"touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"+","runwayCenterLineLightSetting":0},{"runwayEdgeLightSetting":0,"runwayID":{"numericRunwayID":33,"runwaySubID":"L"},"midpointVisualRange":60,"touchdownTrend":"+","touchdownVisualRange":60,"rolloutVisualRange":60,"rolloutTrend":"+","midpointTrend":"+","runwayCenterLineLightSetting":0}]}}
