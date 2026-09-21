@@ -44,7 +44,16 @@
 
 [CmdletBinding()]
 param(
-    [string]$LogPath = "C:\Users\marlo\source\sentinelfaa\jumpstart-latest\log",
+    # Defaults to nas-feedops-sentinel\data\raw\swim_live\log, derived from this
+    # script's own location rather than hardcoded to one machine's paths.
+    #
+    # This MUST stay under data/, because that is the only directory bind-
+    # mounted into the sentinel container (./data:/app/data in
+    # docker-compose.yml). The previous default pointed at
+    # sentinelfaa\jumpstart-latest\log, which sits outside that mount -- the
+    # container could not see those files at all, so nothing written there
+    # was ever ingested.
+    [string]$LogPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'data\raw\swim_live\log'),
     [int]$MaxAgeMinutes = 5,
     [switch]$Watch,
     [int]$IntervalSeconds = 60
