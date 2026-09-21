@@ -5,7 +5,7 @@ import sys
 import uuid
 from contextvars import ContextVar, Token
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 CORRELATION_HEADER = "x-correlation-id"
 
@@ -35,7 +35,7 @@ def configure_logging(level: str | None = None) -> None:
         root.removeHandler(h)
 
     handler = logging.StreamHandler(sys.stdout)
-    formatter = jsonlogger.JsonFormatter(
+    formatter = JsonFormatter(
         fmt="%(asctime)s %(name)s %(levelname)s %(correlation_id)s %(service)s %(message)s",
         rename_fields={"asctime": "timestamp", "levelname": "level"},
     )
