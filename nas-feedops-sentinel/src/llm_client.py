@@ -30,6 +30,7 @@ from tenacity import (
 
 from src.config import settings
 from src.logging_config import get_correlation_id, get_logger
+from src.redaction import redact_text
 
 _log = get_logger(__name__)
 
@@ -152,6 +153,7 @@ class LLMClient(Protocol):
         user_message: str,
         max_tokens: int = 768,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> dict[str, Any]:
         ...
 
@@ -176,13 +178,14 @@ class LiteLLMClient:
         user_message: str,
         max_tokens: int = 768,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> dict[str, Any]:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(
                 self.acall_with_tool(
-                    system_prompt, tool, user_message, max_tokens, model
+                    system_prompt, tool, user_message, max_tokens, model, temperature
                 )
             )
         raise LLMPermanentError(
@@ -203,6 +206,7 @@ class LiteLLMClient:
         user_message: str,
         max_tokens: int = 768,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> dict[str, Any]:
         schema_text = json.dumps(tool.get("input_schema", {}), indent=2)
         augmented_system = (
@@ -214,6 +218,13 @@ class LiteLLMClient:
         cid = get_correlation_id()
         target_model = model or self._model
 
+        # Mandatory redaction: every caller of acall_with_tool() goes through
+        # this one chokepoint before anything reaches the model host, so a
+        # caller can't forget to scrub identifying NAS telemetry (aircraft
+        # tail numbers, squawk codes, raw lat/lon, callsigns, ...) out of its
+        # prompt. See src/redaction.py for what's covered and why.
+        redacted_user_message = redact_text(user_message)
+
         _log.info(
             "litellm_completion_start",
             extra={"model": target_model, "tool": tool.get("name")},
@@ -224,12 +235,12 @@ class LiteLLMClient:
                 model=target_model,
                 messages=[
                     {"role": "system", "content": augmented_system},
-                    {"role": "user", "content": user_message},
+                    {"role": "user", "content": redacted_user_message},
                 ],
                 api_base=self._api_base,
                 api_key=self._api_key or None,
                 max_tokens=max_tokens,
-                temperature=0.0,
+                temperature=temperature,
                 response_format={"type": "json_object"},
                 extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
             )
@@ -260,9 +271,16 @@ class LiteLLMClient:
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
-            # temperature=0.0, so a re-roll reproduces the same malformed text.
-            # Treat as permanent: the prompt or schema needs fixing, not a retry.
-            raise LLMPermanentError(
+            if temperature == 0.0:
+                # Deterministic call: a re-roll reproduces the same malformed
+                # text, so this is permanent -- the prompt/schema needs fixing.
+                raise LLMPermanentError(
+                    f"Model returned non-JSON content: {exc}"
+                ) from exc
+            # Non-zero temperature: a retry may legitimately produce valid
+            # JSON next time, so this is worth one more attempt rather than
+            # failing fast.
+            raise LLMTransientError(
                 f"Model returned non-JSON content: {exc}"
             ) from exc
 

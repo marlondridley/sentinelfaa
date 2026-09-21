@@ -24,14 +24,16 @@ Architectural contract:
                     |
                     v
               HUMAN REVIEW
-                /       \
-               /         \
-          APPROVE       REJECT
+              /    |     \
+             /     |      \
+       APPROVE  OVERRIDE  REJECT
+                (edit text/
+                 severity,
+                 then sign off)
 
 The gate NEVER:
-    - auto-executes an operational action
-    - allows an LLM to approve an action
-    - allows an LLM to reject an action
+    - auto-executes an operational action, whether APPROVED or OVERRIDDEN
+    - allows an LLM to approve, override, or reject an action
     - allows an LLM to determine the CRITICAL/non-CRITICAL boundary
     - treats an AI recommendation as human authorization
 
@@ -46,6 +48,13 @@ Public API:
 
     reject_staged_action(action_id, actor, note)
         -> StagedAction | None
+
+    override_staged_action(action_id, overridden_recommendation, overridden_severity, actor, note)
+        -> StagedAction | None
+        Human-edited sign-off: the operator changes the AI's recommendation
+        text and/or severity before approving. Still purely advisory/record-
+        keeping -- see the module docstring's "gate NEVER" list below. No
+        automated execution is triggered by this any more than by approve/reject.
 
     get_pending_staged_actions()
         -> list[StagedAction]
@@ -63,11 +72,11 @@ import hashlib
 from typing import Any
 
 from src import storage
+from src.logging_config import get_logger
 from src.metrics import HITL_QUEUE_DEPTH
 from src.models import (
     AlertEvent,
     CriticResult,
-    GateDecision,
     OperationalTicket,
     PlannerResult,
     StagedAction,
@@ -76,6 +85,7 @@ from src.models import (
 # Re-export storage-layer HITL operations through the gate's public API.
 approve_staged_action = storage.approve_staged_action
 reject_staged_action = storage.reject_staged_action
+override_staged_action = storage.override_staged_action
 get_pending_staged_actions = storage.get_pending_staged_actions
 get_recent_staged_actions = storage.get_recent_staged_actions
 get_action_audit_log = storage.get_action_audit_log
@@ -211,7 +221,8 @@ async def _refresh_hitl_queue_metric() -> None:
     try:
         pending = await storage.get_pending_staged_actions()
         HITL_QUEUE_DEPTH.set(len(pending))
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("hitl_queue_metric_refresh_failed", extra={"error": str(exc)})
         return
 
 
@@ -512,130 +523,6 @@ def _safe_airport_from_alert_id(
     airport = parts[0].strip()
 
     return airport or None
-
-
-class ExecutionGate:
-    """
-    Legacy compatibility shim.
-
-    New code should use stage_critical_alert() directly.
-
-    This class remains because existing evaluator scenarios may still call
-    ExecutionGate.evaluate().
-
-    It does NOT provide an execution path.
-    """
-
-    def evaluate(
-        self,
-        planner_result: PlannerResult,
-        critic_result: CriticResult | None = None,
-        idempotency_key: str | None = None,
-        critical_alert_count: int = 0,
-        has_warning_alerts: bool = False,
-    ) -> GateDecision:
-
-        if critic_result:
-            pattern = (
-                critic_result.pattern
-                or "UNKNOWN"
-            )
-
-            # FIX:
-            # Never use bool("false") here.
-            escalate = _strict_bool(
-                critic_result.escalate
-            )
-
-            confidence = (
-                critic_result.confidence
-                if critic_result.confidence is not None
-                else planner_result.confidence
-            )
-
-        else:
-            pattern = (
-                "CASCADE_FAILURE"
-                if critical_alert_count >= 3
-                else (
-                    "ISOLATED_FAULT"
-                    if critical_alert_count > 0
-                    else "TRANSIENT"
-                )
-            )
-
-            escalate = False
-            confidence = planner_result.confidence
-
-        tier, factors = _derive_tier(
-            pattern,
-            confidence,
-            escalate,
-            critical_alert_count,
-        )
-
-        idem_key = (
-            idempotency_key
-            or (
-                (planner_result.question or "")[:64]
-                + (
-                    critic_result.alert_id
-                    if critic_result
-                    and critic_result.alert_id
-                    else ""
-                )
-            )
-        )
-
-        blocked = tier in (
-            "CRITICAL",
-            "HIGH",
-        )
-
-        ticket_id = None
-
-        if blocked:
-            airport_code = _safe_airport_from_alert_id(
-                critic_result.alert_id
-                if critic_result
-                else None
-            )
-
-            synthetic = AlertEvent(
-                alert_id=idem_key,
-                alert_type=f"LEGACY_{pattern}",
-                severity="CRITICAL",
-                airport_code=airport_code,
-                service_name=None,
-                description=(
-                    "Legacy gate evaluation: "
-                    f"tier={tier} factors={factors}"
-                ),
-                event_id=None,
-            )
-
-            from src.async_bridge import run_async
-
-            staged = run_async(
-                stage_critical_alert(
-                    synthetic,
-                    critic_result,
-                )
-            )
-
-            if staged:
-                ticket_id = (
-                    f"HITL-{staged.action_id[:8].upper()}"
-                )
-
-        return GateDecision(
-            allowed=not blocked,
-            risk_tier=tier,
-            hitl_required=blocked,
-            idempotency_key=idem_key,
-            risk_factors=factors,
-            ticket_id=ticket_id,
-        )
 
 
 def get_staged_actions(

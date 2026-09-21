@@ -14,22 +14,7 @@ from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
 from src.llm_config import get_llm
 from src.models import PlannerResult
-
-_PLANNER_SYSTEM_PROMPT = """You are the NAS FeedOps Sentinel Planner Agent for PCT TRACON.
-Your task is to analyze operational questions, inspect current feed and alert data,
-and return a JSON response containing an advisory synthesis for the duty manager.
-
-STRICT REQUIREMENTS:
-1. Return ONLY a valid JSON object with these keys:
-   - "answer": Clear, concise string summarizing operational status or answering the question.
-   - "confidence": Float between 0.0 and 1.0 reflecting certainty based on available data.
-   - "recommended_actions": List of strings detailing immediate operational steps.
-   - "sub_queries": List of strings representing secondary diagnostic queries or checks.
-
-2. Do NOT invent alerts or events not present in the provided context.
-3. If critical/high alerts are active, always include explicit escalation or notification steps.
-4. Keep answers focused strictly on PCT TRACON aviation operations, feed health, and RVR conditions.
-"""
+from src.prompts_loader import system_prompt, tool_schema
 
 
 def get_planner_agent(llm: Any = None) -> Agent:
@@ -54,6 +39,8 @@ class PlannerAgent:
     def __init__(self) -> None:
         self._llm = build_llm_client() if settings.CRITIC_ENABLED else None
         self._guardrail = OutputGuardrail()
+        self._prompt = system_prompt("planner")
+        self._tool = tool_schema("planner")
 
     async def query(self, question: str) -> PlannerResult:
         """Processes an operator question against current persisted NAS state asynchronously."""
@@ -78,70 +65,102 @@ class PlannerAgent:
             "critic_reviews": critic_reviews,
         }
 
-        if self._llm:
-            result = await self._query_llm(question, context_summary)
-        else:
-            result = self._query_deterministic(question, context_summary)
-
-        raw_dict = {
-            "answer": result.answer,
-            "confidence": result.confidence,
-            "recommended_actions": result.recommended_actions,
-            "sub_queries": result.sub_queries,
-        }
-        guard_res = self._guardrail.verify_planner_output(raw_dict)
-
-        if not guard_res.is_compliant:
-            return PlannerResult(
-                question=question,
-                answer=f"Guardrail intercepted response: {guard_res.detail}",
-                confidence=0.0,
-                recommended_actions=["Manual duty manager review required due to output compliance failure."],
-                sub_queries=["Check system logs for output guardrail violations."],
-            )
-
-        return result
-
-    async def _query_llm(self, question: str, context: dict[str, Any]) -> PlannerResult:
-        user_content = f"Question: {question}\n\nCurrent System Context:\n{json.dumps(context, indent=2, default=str)}"
+        # PlannerResult.confidence is None when no model made an assessment
+        # (see src/models.py), and the rest of this method keeps to that:
+        # a number in that field always means a model produced it.
+        if not self._llm:
+            return self._query_deterministic(question, context_summary)
 
         try:
-            # Route call through the LiteLLM client proxy
-            raw_response = await self._llm.acall(
-                system_prompt=_PLANNER_SYSTEM_PROMPT,
-                user_message=user_content,
-                max_tokens=1000,
-                temperature=0.1,
-            )
-            parsed = json.loads(raw_response.strip())
-
+            parsed = await self._call_llm(question, context_summary)
+        except Exception as err:  # noqa: BLE001 -- any failure degrades, never raises to the operator
             return PlannerResult(
                 question=question,
-                answer=str(parsed.get("answer", "")),
-                confidence=float(parsed.get("confidence", 0.0)),
-                recommended_actions=list(parsed.get("recommended_actions", [])),
-                sub_queries=list(parsed.get("sub_queries", [])),
-            )
-        except Exception as err:
-            return PlannerResult(
-                question=question,
-                answer=f"LLM execution error: {err}",
-                confidence=0.0,
+                answer=(
+                    f"LLM planner unavailable ({err}). No model assessment was made; "
+                    f"review alerts and feed health on the dashboard directly."
+                ),
+                confidence=None,
                 recommended_actions=["Fallback to manual operator review."],
                 sub_queries=[],
             )
 
-    def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:
-        alerts = context.get("alerts", [])
-        has_critical = any(a.get("severity") == "CRITICAL" for a in alerts)
-        has_warnings = any(a.get("severity") in ("WARNING", "HIGH") for a in alerts)
-
-        if not alerts:
+        # Guard what the model actually returned, before any defaults are
+        # applied -- otherwise a response that omitted `confidence` would be
+        # filled in with a value and sail through the missing-field check.
+        # Deterministic output is not routed through here: this guardrail
+        # exists to catch malformed or out-of-bounds model output, and code
+        # this module writes itself has neither failure mode.
+        guard_res = self._guardrail.verify_planner_output(parsed)
+        if not guard_res.is_compliant:
             return PlannerResult(
                 question=question,
-                answer="PCT TRACON operations are currently nominal. All monitored feeds report healthy status with no active alerts.",
-                confidence=0.95,
-                recommended_actions=["Continue routine system monitoring."],
+                answer=f"Guardrail intercepted response: {guard_res.detail}",
+                confidence=None,
+                recommended_actions=["Manual duty manager review required due to output compliance failure."],
+                sub_queries=["Check system logs for output guardrail violations."],
+            )
+
+        return PlannerResult(
+            question=question,
+            answer=str(parsed["answer"]),
+            confidence=float(parsed["confidence"]),
+            citations=list(parsed.get("citations") or []),
+            recommended_actions=list(parsed["recommended_actions"]),
+            sub_queries=list(parsed["sub_queries"]),
+        )
+
+    async def _call_llm(self, question: str, context: dict[str, Any]) -> dict[str, Any]:
+        """Return the model's structured output, unmodified. Raises on any LLM failure."""
+        user_content = f"Question: {question}\n\nCurrent System Context:\n{json.dumps(context, indent=2, default=str)}"
+
+        # Route call through the LiteLLM client proxy, forced to structured
+        # output via the planner tool schema (matches CriticAgent's pattern).
+        return await self._llm.acall_with_tool(
+            system_prompt=self._prompt,
+            tool=self._tool,
+            user_message=user_content,
+            max_tokens=1000,
+            temperature=0.1,
+        )
+
+    def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:
+        """
+        Rule-based summary for when no LLM is configured.
+
+        This is a deterministic control, not a model, so it states only what
+        the persisted records directly show and carries no confidence score.
+        It used to report fixed confidences (0.95 / 0.88 / 0.75 / 0.60) in the
+        same field a model's confidence goes into, and with no alerts on
+        record it told the operator "All monitored feeds report healthy
+        status" -- including when nothing had been ingested at all. Absence of
+        alerts is not evidence of feed health; the Watch Officer reports
+        UNKNOWN in that situation, and this now agrees with it.
+        """
+        alerts = context.get("alerts", [])
+        event_count = context.get("recent_events_count", 0)
+        has_critical = any(a.get("severity") == "CRITICAL" for a in alerts)
+        has_warnings = any(a.get("severity") in ("WARNING", "HIGH") for a in alerts)
+        prefix = "LLM planner unavailable; deterministic summary of stored records. "
+
+        if not alerts:
+            if event_count == 0:
+                answer = (
+                    prefix + "No NAS events are on record, so feed health cannot be "
+                    "confirmed. Absence of alerts here reflects absence of data."
+                )
+                actions = ["Confirm the SWIM feeds are connected and ingesting before relying on this view."]
+            else:
+                answer = (
+                    prefix + f"No active alerts. The {event_count} most recent NAS events on "
+                    "record raised none; this does not by itself confirm every feed is current."
+                )
+                actions = ["Continue routine system monitoring."]
+            return PlannerResult(
+                question=question,
+                answer=answer,
+                confidence=None,
+                recommended_actions=actions,
                 sub_queries=["Verify telemetry heartbeats across KDCA, KIAD, KBWI, and KADW."],
             )
 
@@ -149,8 +168,8 @@ class PlannerAgent:
             airports = sorted({a.get("airport") for a in alerts if a.get("airport")})
             return PlannerResult(
                 question=question,
-                answer=f"CRITICAL operational impact detected across airports: {', '.join(airports)}. Multiple high-severity feed anomalies active.",
-                confidence=0.88,
+                answer=prefix + f"CRITICAL alerts are active at: {', '.join(airports)}.",
+                confidence=None,
                 recommended_actions=[
                     "Escalate immediately to Duty Manager and TRACON Technical Supervisor.",
                     "Verify backup data feeds and switch feed sources if secondary links are operational.",
@@ -165,8 +184,8 @@ class PlannerAgent:
         if has_warnings:
             return PlannerResult(
                 question=question,
-                answer="Elevated risk detected. Degradation or transient anomalies present on TRACON feeds.",
-                confidence=0.75,
+                answer=prefix + "WARNING-level alerts are active on TRACON feeds; no CRITICAL alerts.",
+                confidence=None,
                 recommended_actions=[
                     "Monitor affected feed latency closely.",
                     "Notify system administrator if latency exceeds 30-second window.",
@@ -176,8 +195,8 @@ class PlannerAgent:
 
         return PlannerResult(
             question=question,
-            answer="Active low-priority events recorded. No immediate threat to TRACON operations.",
-            confidence=0.60,
+            answer=prefix + "Only low-priority alerts are active; none are WARNING or CRITICAL.",
+            confidence=None,
             recommended_actions=["Review event logs during standard shift transition."],
             sub_queries=[],
         )

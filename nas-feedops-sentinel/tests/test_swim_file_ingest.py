@@ -1,7 +1,29 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from src import storage
 from src.swim_file_ingest import scan_swim_folder
+
+
+@pytest.fixture(autouse=True)
+def isolated_db():
+    """
+    Reset the database before each test, matching the convention in the
+    rest of the suite.
+
+    Without this these tests passed exactly once against a fresh database
+    and failed on every run after. scan_swim_folder() skips files already
+    recorded in ingest_log, and ingest_log is keyed by FILE NAME, not by
+    path -- so the fixed names used here (sample_msg.json, bom_msg.json,
+    ...) were treated as already-processed on the second run even though
+    each test writes them into its own tmp_path. A test that only passes
+    on a virgin database is not evidence of anything.
+    """
+    storage.override_db_path(":memory:")
+    yield
+    storage.override_db_path(":memory:")
 
 
 def test_scan_swim_folder(tmp_path: Path):

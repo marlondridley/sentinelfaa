@@ -16,13 +16,9 @@ from src.feed_health import compute_feed_health
 from src.llm_config import get_configured_llm
 from src.logging_config import get_logger
 from src.models import NASEvent, WatchOfficerBrief
+from src.redaction import redact_structured
 
 _log = get_logger(__name__)
-
-_REDACT_FIELDS = frozenset({
-    "aircraft_id", "beacon_code", "squawk", "track_id", "callsign",
-    "latitude", "longitude", "lat", "lon", "altitude", "raw_payload",
-})
 
 EVENT_LIMIT = 200
 
@@ -442,15 +438,6 @@ class OutputGuardrail:
 
 
 
-def _redact(obj: Any) -> Any:
-    """Drop high-cardinality identifying fields before prompt serialization."""
-    if isinstance(obj, dict):
-        return {k: _redact(v) for k, v in obj.items() if k not in _REDACT_FIELDS}
-    if isinstance(obj, list):
-        return [_redact(item) for item in obj]
-    return obj
-    
-    
 def generate_watch_officer_brief(
     context: dict[str, Any] | None = None,
     use_llm: bool = True,
@@ -464,7 +451,7 @@ def generate_watch_officer_brief(
     if use_llm:
         try:
             agent = get_watch_officer_agent(llm=get_configured_llm(), tools=mcp_tools)
-            payload = _redact({"context": context, "signals": signals})
+            payload = redact_structured({"context": context, "signals": signals})
             task = Task(
                 description=(
                     "Synthesize operational watch summary for context: "
@@ -475,7 +462,7 @@ def generate_watch_officer_brief(
                 output_json=RawLLMNarrative,
             )
             
-            crew = Crew(agents=[agent], tasks=[task], verbose=settings.AGENT_VERBOSE, memory=False)
+            crew = Crew(agents=[agent], tasks=[task], verbose=settings.AGENT_VERBOSE, memory=False, share_crew=True)
             result = crew.kickoff()
             
             narrative = result.pydantic if hasattr(result, "pydantic") and result.pydantic else RawLLMNarrative.model_validate_json(result.raw)

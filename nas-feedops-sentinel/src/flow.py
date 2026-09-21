@@ -21,6 +21,7 @@ from src.models import AlertEvent, WatchOfficerBrief, StagedAction
 from src.watch_officer_agent import build_watch_officer_context, generate_watch_officer_brief
 from src.execution_gate import stage_critical_alert
 from src.llm_config import get_configured_llm
+from src.config import settings
 
 # =============================================================================
 # 1. OPENTELEMETRY & PROMETHEUS INITIALIZATION
@@ -28,8 +29,20 @@ from src.llm_config import get_configured_llm
 
 resource = Resource.create({"service.name": "nas-feedops-sentinel"})
 provider = TracerProvider(resource=resource)
-otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
-provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
+# Only wire up a real OTLP exporter when a collector is actually expected to be
+# listening (settings.OTEL_TRACING_ENABLED, default False -- see src/config.py).
+# Previously this was hardcoded to "http://localhost:4317" unconditionally, which
+# inside a container means "this container's own loopback" -- nothing has ever
+# listened there, so every BatchSpanProcessor flush silently timed out and retried
+# in the background on every flow run. With no exporter attached, spans created via
+# tracer.start_as_current_span() below are still created (so the `with` blocks and
+# any span.set_attribute()/span.record_exception() calls keep working) but are just
+# dropped in-process instead of being queued for a network export that always fails.
+if settings.OTEL_TRACING_ENABLED:
+    otlp_exporter = OTLPSpanExporter(endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT, insecure=True)
+    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer("sentinel.flow")
 
@@ -110,6 +123,7 @@ class SentinelFlow(Flow[SentinelState]):
                     tasks=[task_evaluate, task_plan],
                     process=Process.sequential,
                     memory=False,
+                    share_crew=True,
                 )
 
                 result = crew.kickoff()

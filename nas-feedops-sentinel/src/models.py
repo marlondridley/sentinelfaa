@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
 TraconCode = Literal["PCT"]
@@ -62,7 +62,7 @@ class OperationalTicket(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     recommended_review: list[str] = Field(default_factory=list)
     critic_rationale: str | None = None
-    status: str = "DRAFT"  # DRAFT | APPROVED_FOR_ESCALATION | REJECTED | MONITORING
+    status: str = "DRAFT"  # DRAFT | APPROVED_FOR_ESCALATION | REJECTED | MONITORING | OVERRIDDEN
     created_by_agent: str = "watch_officer"
     decided_by: str | None = None
     decided_at: datetime | None = None
@@ -89,12 +89,18 @@ class StagedAction(BaseModel):
     rationale: str = ""
     critic_confidence: float | None = None
     critic_pattern: str | None = None
-    status: str = "PENDING"                # PENDING | APPROVED | REJECTED | EXPIRED
+    status: str = "PENDING"                # PENDING | APPROVED | REJECTED | OVERRIDDEN | EXPIRED
     idempotency_key: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     decided_at: datetime | None = None
     decided_by: str | None = None
     decision_note: str | None = None
+    # Only set when status == OVERRIDDEN: the operator-edited recommendation/severity
+    # actually signed off on. recommended_action/severity above stay untouched as the
+    # AI's original suggestion, so the audit trail can show both what the AI proposed
+    # and what a human actually approved in its place -- see execution_gate.override_staged_action().
+    overridden_recommendation: str | None = None
+    overridden_severity: str | None = None
 
 
 class ActionAuditEntry(BaseModel):
@@ -110,6 +116,20 @@ class ActionAuditEntry(BaseModel):
 
 class NASEvent(BaseModel):
     """Normalized FAA SWIM/STDDS terminal event record."""
+
+    # Unknown fields are an error, not silently dropped. Pydantic's default
+    # (extra="ignore") let src/agent_evaluator.py build its "clean state" RVR
+    # events with rvr_feet= and runway_id= -- neither is a field -- so they were
+    # discarded, the events carried no runway and no RVR value, and the
+    # evaluator's baseline raised four ALERT_SCHEMA_VALIDATION_FAILED alerts
+    # against data it believed was nominal. The same default meant a client
+    # POSTing a misspelled field to /ingest got past api._validate_events(),
+    # whose whole job is to report malformed payloads in the 422 response.
+    # nas_events' columns match these fields one-for-one, and every in-repo
+    # construction site (SWIM extractors, replay, storage reads) passes the
+    # suite with this on, as do the real captured FAA messages in
+    # tests/fixtures/swim_kit/.
+    model_config = ConfigDict(extra="forbid")
 
     # Core identity
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))

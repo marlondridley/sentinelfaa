@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -58,26 +58,30 @@ def _mock_planner_response(
 
 # ── Degraded-path tests ───────────────────────────────────────────────────────
 
-def test_no_api_key_returns_degraded(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("NIM_ENDPOINT", raising=False)
+async def test_no_api_key_returns_degraded(monkeypatch):
+    # Pin the client to "none configured" explicitly. Run inside the app
+    # container with --env-file .env, LITELLM_API_KEY is set, and without this
+    # the test would make a live call to the LiteLLM proxy on nas-network.
+    monkeypatch.setattr("src.planner_agent.build_llm_client", lambda *a, **k: None)
     agent = PlannerAgent()
-    result = agent.query("What is the status?")
+    result = await agent.query("What is the status?")
 
     assert result.confidence is None
     assert "no LLM provider" in result.answer.lower() or "unavailable" in result.answer.lower()
     assert result.question == "What is the status?"
 
 
-def test_api_error_returns_degraded(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+async def test_api_error_returns_degraded(monkeypatch):
+    # settings is read once at import, so the flag is patched on the object
+    # rather than through the environment.
+    monkeypatch.setattr("src.planner_agent.settings.CRITIC_ENABLED", True)
 
     mock_llm = MagicMock()
-    mock_llm.call_with_tool.side_effect = RuntimeError("connection refused")
+    mock_llm.acall_with_tool = AsyncMock(side_effect=RuntimeError("connection refused"))
 
     with patch("src.planner_agent.build_llm_client", return_value=mock_llm):
         agent = PlannerAgent()
-        result = agent.query("What is the status?")
+        result = await agent.query("What is the status?")
 
     assert result.confidence is None
     assert "connection refused" in result.answer
@@ -85,9 +89,8 @@ def test_api_error_returns_degraded(monkeypatch):
 
 # ── Happy-path test ───────────────────────────────────────────────────────────
 
-def test_happy_path_returns_planner_result(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("CRITIC_ENABLED", "1")
+async def test_happy_path_returns_planner_result(monkeypatch):
+    monkeypatch.setattr("src.planner_agent.settings.CRITIC_ENABLED", True)
 
     mock_response = _mock_planner_response(
         answer="KDCA is experiencing a CASCADE_FAILURE across ISMC and APDS_RVR.",
@@ -101,11 +104,11 @@ def test_happy_path_returns_planner_result(monkeypatch):
     )
 
     mock_llm = MagicMock()
-    mock_llm.call_with_tool.return_value = mock_response
+    mock_llm.acall_with_tool = AsyncMock(return_value=mock_response)
 
     with patch("src.planner_agent.build_llm_client", return_value=mock_llm):
         agent = PlannerAgent()
-        result = agent.query("What is happening at PCT TRACON right now?")
+        result = await agent.query("What is happening at PCT TRACON right now?")
 
     assert abs(result.confidence - 0.92) < 1e-6
     assert "CASCADE_FAILURE" in result.answer
@@ -114,11 +117,41 @@ def test_happy_path_returns_planner_result(monkeypatch):
     assert "evt-001" in result.citations
 
 
+async def test_deterministic_summary_does_not_claim_health_without_data(monkeypatch):
+    """No alerts and no events is absence of data, not evidence of feed health."""
+    monkeypatch.setattr("src.planner_agent.build_llm_client", lambda *a, **k: None)
+    result = await PlannerAgent().query("Are the feeds healthy?")
+
+    assert result.confidence is None, "a deterministic summary is not a model assessment"
+    assert "healthy" not in result.answer.lower()
+    assert "nominal" not in result.answer.lower()
+    assert "cannot be confirmed" in result.answer.lower()
+
+
+async def test_model_output_missing_confidence_is_intercepted(monkeypatch):
+    """
+    The guardrail must see the model's raw output. Validating a copy with
+    defaults already filled in let a response that omitted `confidence`
+    through as confidence=0.0.
+    """
+    monkeypatch.setattr("src.planner_agent.settings.CRITIC_ENABLED", True)
+    response = _mock_planner_response()
+    del response["confidence"]
+
+    mock_llm = MagicMock()
+    mock_llm.acall_with_tool = AsyncMock(return_value=response)
+    with patch("src.planner_agent.build_llm_client", return_value=mock_llm):
+        result = await PlannerAgent().query("What is the status?")
+
+    assert result.confidence is None
+    assert "guardrail intercepted" in result.answer.lower()
+
+
 # ── ContextRouter tests ───────────────────────────────────────────────────────
 
-def test_build_status_context_empty_db():
+async def test_build_status_context_empty_db():
     router = ContextRouter()
-    ctx = router.build_status_context()
+    ctx = await router.build_status_context()
 
     assert "airports" in ctx
     assert "active_alerts" in ctx
@@ -130,26 +163,26 @@ def test_build_status_context_empty_db():
         assert ctx["airports"][ap]["overall_status"] == "NO DATA"
 
 
-def test_build_status_context_with_events():
+async def test_build_status_context_with_events():
     now = datetime.now(timezone.utc)
-    storage.save_event(NASEvent(
+    await storage.save_event(NASEvent(
         airport_code="KDCA", tracon="PCT", service_name="ISMC",
         message_type="link_status", event_time_utc=now, received_time_utc=now,
         latency_ms=300.0, feed_status="degraded", validation_status="PASSED",
     ))
 
     router = ContextRouter()
-    ctx = router.build_status_context()
+    ctx = await router.build_status_context()
 
     assert ctx["airports"]["KDCA"]["overall_status"] == "DEGRADED"
     assert ctx["airports"]["KDCA"]["event_count_30m"] == 1
     assert "ISMC" in ctx["airports"]["KDCA"]["services"]
 
 
-def test_build_alert_context_delegates_to_router():
+async def test_build_alert_context_delegates_to_router():
     now = datetime.now(timezone.utc)
     for _ in range(4):
-        storage.save_event(NASEvent(
+        await storage.save_event(NASEvent(
             airport_code="KIAD", tracon="PCT", service_name="APDS_RVR",
             message_type="rvr_report", event_time_utc=now, received_time_utc=now,
             latency_ms=210.0, runway="01", rvr_touchdown=3000,
@@ -157,7 +190,7 @@ def test_build_alert_context_delegates_to_router():
         ))
 
     router = ContextRouter()
-    ctx = router.build_alert_context(airport_code="KIAD")
+    ctx = await router.build_alert_context(airport_code="KIAD")
 
     assert ctx["total_recent_events"] == 4
     assert "APDS_RVR" in ctx["service_summary"]
@@ -211,7 +244,7 @@ def test_demo_scenario_healthy_contrast():
 
 # ── Storage round-trip test ───────────────────────────────────────────────────
 
-def test_save_and_retrieve_planner_result():
+async def test_save_and_retrieve_planner_result():
     result = PlannerResult(
         question="What is the status of KDCA?",
         answer="KDCA is experiencing a cascade failure.",
@@ -220,9 +253,9 @@ def test_save_and_retrieve_planner_result():
         citations=["id-a", "id-b"],
         recommended_actions=["Notify tower.", "Initiate LVP."],
     )
-    storage.save_planner_result(result)
+    await storage.save_planner_result(result)
 
-    briefs = storage.get_recent_planner_results(limit=5)
+    briefs = await storage.get_recent_planner_results(limit=5)
     assert len(briefs) == 1
     assert briefs[0]["question"] == result.question
     assert json.loads(briefs[0]["recommended_actions"]) == result.recommended_actions

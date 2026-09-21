@@ -8,6 +8,17 @@ Verifies the behavior contracts the README claims:
   - approve / reject transition only from PENDING.
   - Terminal states are sticky — re-approving an APPROVED action is a no-op.
   - Every state transition writes an immutable audit row.
+
+The storage layer and every gate function here are async (asyncpg). These
+tests used to call them without awaiting, so each call returned an
+un-awaited coroutine, the first attribute access on it raised, and none of
+the contracts above was ever actually checked. They are async now.
+
+Alerts are persisted before they are staged because production does exactly
+that (src/pipeline.py calls save_alerts() before stage_critical_alert()), and
+the schema enforces it: staged_actions.alert_id is a foreign key to
+alert_events. Staging an alert that was never saved exercises a state the
+pipeline cannot produce, so _persist_and_stage() below does both, in order.
 """
 from __future__ import annotations
 
@@ -44,7 +55,6 @@ def _critical_alert(**kwargs) -> AlertEvent:
         airport_code="KDCA",
         service_name="APDS_RVR",
         description="Low RVR 700 ft at touchdown on runway 19 at KDCA.",
-        event_id="evt-001",
     )
     base.update(kwargs)
     return AlertEvent(**base)
@@ -74,12 +84,18 @@ def _critic(**kwargs) -> CriticResult:
     return CriticResult(**base)
 
 
+async def _persist_and_stage(alert: AlertEvent, critic_result: CriticResult | None = None):
+    """Save the alert, then stage it -- the same order src/pipeline.py uses."""
+    await storage.save_alert(alert)
+    return await stage_critical_alert(alert, critic_result)
+
+
 # ── Staging behavior ──────────────────────────────────────────────────────────
 
 class TestStaging:
-    def test_critical_alert_creates_staged_action(self):
+    async def test_critical_alert_creates_staged_action(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
+        action = await _persist_and_stage(alert)
 
         assert action is not None
         assert action.status == "PENDING"
@@ -90,40 +106,40 @@ class TestStaging:
         assert action.rationale            # non-empty
         assert action.idempotency_key      # non-empty
 
-    def test_non_critical_alert_does_not_stage(self):
+    async def test_non_critical_alert_does_not_stage(self):
         warn = _warning_alert()
-        action = stage_critical_alert(warn)
+        action = await _persist_and_stage(warn)
         assert action is None
-        assert get_pending_staged_actions() == []
+        assert await get_pending_staged_actions() == []
 
-    def test_staged_action_starts_pending(self):
+    async def test_staged_action_starts_pending(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
+        action = await _persist_and_stage(alert)
         assert action.status == "PENDING"
         assert action.decided_at is None
         assert action.decided_by is None
 
-    def test_duplicate_critical_alert_does_not_create_duplicate(self):
+    async def test_duplicate_critical_alert_does_not_create_duplicate(self):
         alert = _critical_alert()
-        first  = stage_critical_alert(alert)
-        second = stage_critical_alert(alert)  # same alert object → same idempotency_key
+        first  = await _persist_and_stage(alert)
+        second = await _persist_and_stage(alert)  # same alert object → same idempotency_key
 
         assert first.action_id == second.action_id, \
             "Re-staging the same alert must return the existing action, not a new one"
-        assert len(get_pending_staged_actions()) == 1
+        assert len(await get_pending_staged_actions()) == 1
 
-    def test_different_critical_alerts_create_different_actions(self):
+    async def test_different_critical_alerts_create_different_actions(self):
         a1 = _critical_alert(alert_type="ALERT_LOW_RVR")
         a2 = _critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED", service_name="ISMC")
-        s1 = stage_critical_alert(a1)
-        s2 = stage_critical_alert(a2)
+        s1 = await _persist_and_stage(a1)
+        s2 = await _persist_and_stage(a2)
         assert s1.action_id != s2.action_id
-        assert len(get_pending_staged_actions()) == 2
+        assert len(await get_pending_staged_actions()) == 2
 
-    def test_critic_result_enriches_rationale_and_confidence(self):
+    async def test_critic_result_enriches_rationale_and_confidence(self):
         alert = _critical_alert()
         critic = _critic(alert_id=alert.alert_id, confidence=0.92)
-        action = stage_critical_alert(alert, critic)
+        action = await _persist_and_stage(alert, critic)
 
         assert action.critic_confidence == 0.92
         assert action.critic_pattern == "WEATHER_CORRELATED"
@@ -132,9 +148,9 @@ class TestStaging:
         # Recommended action should reference the critic confidence
         assert "0.92" in action.recommended_action or "92%" in action.recommended_action
 
-    def test_no_critic_uses_deterministic_rationale(self):
+    async def test_no_critic_uses_deterministic_rationale(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert, critic_result=None)
+        action = await _persist_and_stage(alert, critic_result=None)
 
         assert action.critic_confidence is None
         assert action.critic_pattern is None
@@ -145,10 +161,10 @@ class TestStaging:
 # ── Decision workflow (approve / reject) ─────────────────────────────────────
 
 class TestDecisionWorkflow:
-    def test_approve_transitions_pending_to_approved(self):
+    async def test_approve_transitions_pending_to_approved(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        updated = approve_staged_action(action.action_id, actor="supervisor_smith", note="verified")
+        action = await _persist_and_stage(alert)
+        updated = await approve_staged_action(action.action_id, actor="supervisor_smith", note="verified")
 
         assert updated is not None
         assert updated.status == "APPROVED"
@@ -156,23 +172,23 @@ class TestDecisionWorkflow:
         assert updated.decision_note == "verified"
         assert updated.decided_at is not None
 
-    def test_reject_transitions_pending_to_rejected(self):
+    async def test_reject_transitions_pending_to_rejected(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        updated = reject_staged_action(action.action_id, actor="supervisor_smith", note="false alarm")
+        action = await _persist_and_stage(alert)
+        updated = await reject_staged_action(action.action_id, actor="supervisor_smith", note="false alarm")
 
         assert updated is not None
         assert updated.status == "REJECTED"
         assert updated.decided_by == "supervisor_smith"
         assert updated.decision_note == "false alarm"
 
-    def test_approve_writes_audit_row(self):
+    async def test_approve_writes_audit_row(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        before_count = len(get_action_audit_log(action_id=action.action_id))
-        approve_staged_action(action.action_id, actor="supervisor_smith", note="ok")
+        action = await _persist_and_stage(alert)
+        before_count = len(await get_action_audit_log(action_id=action.action_id))
+        await approve_staged_action(action.action_id, actor="supervisor_smith", note="ok")
 
-        audit = get_action_audit_log(action_id=action.action_id)
+        audit = await get_action_audit_log(action_id=action.action_id)
         assert len(audit) == before_count + 1
         latest = audit[0]
         assert latest["previous_status"] == "PENDING"
@@ -180,22 +196,22 @@ class TestDecisionWorkflow:
         assert latest["actor"] == "supervisor_smith"
         assert latest["note"] == "ok"
 
-    def test_reject_writes_audit_row(self):
+    async def test_reject_writes_audit_row(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        reject_staged_action(action.action_id, actor="supervisor_smith", note="not real")
+        action = await _persist_and_stage(alert)
+        await reject_staged_action(action.action_id, actor="supervisor_smith", note="not real")
 
-        audit = get_action_audit_log(action_id=action.action_id)
+        audit = await get_action_audit_log(action_id=action.action_id)
         latest = audit[0]
         assert latest["previous_status"] == "PENDING"
         assert latest["new_status"] == "REJECTED"
         assert latest["actor"] == "supervisor_smith"
 
-    def test_duplicate_approval_is_idempotent(self):
+    async def test_duplicate_approval_is_idempotent(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        first = approve_staged_action(action.action_id, actor="a", note="first")
-        second = approve_staged_action(action.action_id, actor="b", note="second-attempt")
+        action = await _persist_and_stage(alert)
+        first = await approve_staged_action(action.action_id, actor="a", note="first")
+        second = await approve_staged_action(action.action_id, actor="b", note="second-attempt")
 
         # State must not change on re-approval
         assert second.status == "APPROVED"
@@ -204,63 +220,63 @@ class TestDecisionWorkflow:
         assert second.decision_note == "first"
 
         # No second audit row for the duplicate
-        audit = get_action_audit_log(action_id=action.action_id)
+        audit = await get_action_audit_log(action_id=action.action_id)
         # 1 from staging + 1 from first approval = 2; the duplicate must not add a third
         assert len(audit) == 2
 
-    def test_rejected_action_cannot_later_be_approved(self):
+    async def test_rejected_action_cannot_later_be_approved(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        reject_staged_action(action.action_id, actor="supervisor", note="ignore")
-        attempted = approve_staged_action(action.action_id, actor="supervisor2", note="overrule?")
+        action = await _persist_and_stage(alert)
+        await reject_staged_action(action.action_id, actor="supervisor", note="ignore")
+        attempted = await approve_staged_action(action.action_id, actor="supervisor2", note="overrule?")
 
         # Terminal — must remain REJECTED.
         assert attempted.status == "REJECTED"
         assert attempted.decided_by == "supervisor"
 
-    def test_approving_unknown_action_returns_none(self):
-        result = approve_staged_action("nonexistent-id-12345", actor="x", note="")
+    async def test_approving_unknown_action_returns_none(self):
+        result = await approve_staged_action("nonexistent-id-12345", actor="x", note="")
         assert result is None
 
 
 # ── Query semantics ───────────────────────────────────────────────────────────
 
 class TestQuerySemantics:
-    def test_pending_query_returns_only_pending(self):
-        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+    async def test_pending_query_returns_only_pending(self):
+        a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
-        a3 = stage_critical_alert(_critical_alert(alert_type="ALERT_FEED_DISCONNECTED",
+        a3 = await _persist_and_stage(_critical_alert(alert_type="ALERT_FEED_DISCONNECTED",
                                                  service_name="SMES"))
 
-        approve_staged_action(a1.action_id, actor="x", note="")
-        reject_staged_action(a2.action_id, actor="x", note="")
+        await approve_staged_action(a1.action_id, actor="x", note="")
+        await reject_staged_action(a2.action_id, actor="x", note="")
         # a3 stays PENDING
 
-        pending = get_pending_staged_actions()
+        pending = await get_pending_staged_actions()
         assert len(pending) == 1
         assert pending[0].action_id == a3.action_id
 
-    def test_recent_query_returns_all_statuses(self):
-        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+    async def test_recent_query_returns_all_statuses(self):
+        a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
-        approve_staged_action(a1.action_id, actor="x", note="")
+        await approve_staged_action(a1.action_id, actor="x", note="")
 
-        recent = get_recent_staged_actions(limit=10)
+        recent = await get_recent_staged_actions(limit=10)
         statuses = {r.status for r in recent}
         assert "APPROVED" in statuses
         assert "PENDING" in statuses
         assert len(recent) == 2
 
-    def test_audit_log_global_query_returns_all_entries(self):
-        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+    async def test_audit_log_global_query_returns_all_entries(self):
+        a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
-        approve_staged_action(a1.action_id, actor="x", note="")
-        reject_staged_action(a2.action_id, actor="x", note="")
+        await approve_staged_action(a1.action_id, actor="x", note="")
+        await reject_staged_action(a2.action_id, actor="x", note="")
 
-        global_audit = get_action_audit_log(action_id=None, limit=50)
+        global_audit = await get_action_audit_log(action_id=None, limit=50)
         # 2 stagings (action) + 2 ticket DRAFT rows + 1 approve + 1 reject = 6
         # (Each staging also creates an OperationalTicket whose initial draft
         # transition is recorded in the shared action_audit_log table.)

@@ -36,19 +36,25 @@ def _critical_alert(**kwargs) -> AlertEvent:
         airport_code="KDCA",
         service_name="APDS_RVR",
         description="Low RVR 700 ft at KDCA runway 19.",
-        event_id="evt-1",
     )
     base.update(kwargs)
     return AlertEvent(**base)
 
 
+async def _persist_and_stage(alert: AlertEvent, critic_result=None):
+    """Save the alert, then stage it -- the same order src/pipeline.py uses
+    (staged_actions.alert_id is a foreign key to alert_events)."""
+    await storage.save_alert(alert)
+    return await stage_critical_alert(alert, critic_result)
+
+
 # ── Ticket creation tied to staging ──────────────────────────────────────────
 
 class TestTicketCreation:
-    def test_critical_alert_creates_ticket(self):
+    async def test_critical_alert_creates_ticket(self):
         alert = _critical_alert()
-        action = stage_critical_alert(alert)
-        ticket = storage.get_ticket_by_action_id(action.action_id)
+        action = await _persist_and_stage(alert)
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
         assert ticket is not None
         assert ticket.action_id == action.action_id
         assert ticket.alert_id == alert.alert_id
@@ -56,33 +62,33 @@ class TestTicketCreation:
         assert ticket.brief_id  # brief was generated
         assert ticket.created_by_agent == "watch_officer"
 
-    def test_duplicate_alert_returns_existing_ticket(self):
+    async def test_duplicate_alert_returns_existing_ticket(self):
         alert = _critical_alert()
-        stage_critical_alert(alert)
-        ticket_a = storage.get_ticket_by_action_id(
-            storage.get_pending_staged_actions()[0].action_id
+        await _persist_and_stage(alert)
+        ticket_a = await storage.get_ticket_by_action_id(
+            (await storage.get_pending_staged_actions())[0].action_id
         )
         # Re-stage same alert
-        stage_critical_alert(alert)
-        ticket_b = storage.get_ticket_by_action_id(
-            storage.get_pending_staged_actions()[0].action_id
+        await _persist_and_stage(alert)
+        ticket_b = await storage.get_ticket_by_action_id(
+            (await storage.get_pending_staged_actions())[0].action_id
         )
         assert ticket_a.ticket_id == ticket_b.ticket_id, "duplicate staging must be idempotent"
-        assert len(storage.get_draft_operational_tickets()) == 1
+        assert len(await storage.get_draft_operational_tickets()) == 1
 
-    def test_non_critical_alert_does_not_create_ticket(self):
+    async def test_non_critical_alert_does_not_create_ticket(self):
         warn = _critical_alert(severity="WARNING")
-        stage_critical_alert(warn)  # returns None, no ticket
-        assert storage.get_draft_operational_tickets() == []
+        await _persist_and_stage(warn)  # returns None, no ticket
+        assert await storage.get_draft_operational_tickets() == []
 
-    def test_draft_query_returns_only_drafts(self):
-        a1 = stage_critical_alert(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = stage_critical_alert(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+    async def test_draft_query_returns_only_drafts(self):
+        a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
+        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
-        t1 = storage.get_ticket_by_action_id(a1.action_id)
-        storage.approve_operational_ticket(t1.ticket_id, actor="x", note="")
+        t1 = await storage.get_ticket_by_action_id(a1.action_id)
+        await storage.approve_operational_ticket(t1.ticket_id, actor="x", note="")
 
-        drafts = storage.get_draft_operational_tickets()
+        drafts = await storage.get_draft_operational_tickets()
         draft_ids = {t.ticket_id for t in drafts}
         # The approved one should be excluded
         assert t1.ticket_id not in draft_ids
@@ -91,53 +97,53 @@ class TestTicketCreation:
 # ── Decision transitions ──────────────────────────────────────────────────────
 
 class TestTicketDecisions:
-    def test_approve_transitions_draft_to_approved(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        updated = storage.approve_operational_ticket(
+    async def test_approve_transitions_draft_to_approved(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        updated = await storage.approve_operational_ticket(
             ticket.ticket_id, actor="supervisor_smith", note="cleared by tower"
         )
         assert updated.status == "APPROVED_FOR_ESCALATION"
         assert updated.decided_by == "supervisor_smith"
         assert updated.decision_note == "cleared by tower"
 
-    def test_reject_transitions_draft_to_rejected(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        updated = storage.reject_operational_ticket(
+    async def test_reject_transitions_draft_to_rejected(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        updated = await storage.reject_operational_ticket(
             ticket.ticket_id, actor="supervisor_smith", note="false alarm"
         )
         assert updated.status == "REJECTED"
         assert updated.decided_by == "supervisor_smith"
 
-    def test_monitoring_is_non_terminal(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
+    async def test_monitoring_is_non_terminal(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
         # Move to MONITORING
-        monitored = storage.mark_operational_ticket_monitoring(
+        monitored = await storage.mark_operational_ticket_monitoring(
             ticket.ticket_id, actor="supervisor", note="watching weather"
         )
         assert monitored.status == "MONITORING"
         # Then later approve it — should work (MONITORING is non-terminal)
-        approved = storage.approve_operational_ticket(
+        approved = await storage.approve_operational_ticket(
             ticket.ticket_id, actor="supervisor", note="escalating now"
         )
         assert approved.status == "APPROVED_FOR_ESCALATION"
 
-    def test_approved_is_sticky(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        storage.approve_operational_ticket(ticket.ticket_id, actor="a", note="first")
-        again = storage.reject_operational_ticket(ticket.ticket_id, actor="b", note="overrule?")
+    async def test_approved_is_sticky(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        await storage.approve_operational_ticket(ticket.ticket_id, actor="a", note="first")
+        again = await storage.reject_operational_ticket(ticket.ticket_id, actor="b", note="overrule?")
         # Terminal state must hold
         assert again.status == "APPROVED_FOR_ESCALATION"
         assert again.decided_by == "a"
 
-    def test_rejected_is_sticky(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        storage.reject_operational_ticket(ticket.ticket_id, actor="a", note="ignore")
-        attempted = storage.approve_operational_ticket(ticket.ticket_id, actor="b", note="overrule?")
+    async def test_rejected_is_sticky(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        await storage.reject_operational_ticket(ticket.ticket_id, actor="a", note="ignore")
+        attempted = await storage.approve_operational_ticket(ticket.ticket_id, actor="b", note="overrule?")
         assert attempted.status == "REJECTED"
         assert attempted.decided_by == "a"
 
@@ -145,25 +151,25 @@ class TestTicketDecisions:
 # ── Audit trail integration ───────────────────────────────────────────────────
 
 class TestAuditIntegration:
-    def test_ticket_creation_writes_audit_row(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        audit = storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
+    async def test_ticket_creation_writes_audit_row(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        audit = await storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
         assert any(r["new_status"] == "DRAFT" for r in audit)
 
-    def test_approve_writes_audit_row(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        storage.approve_operational_ticket(ticket.ticket_id, actor="x", note="ok")
-        audit = storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
+    async def test_approve_writes_audit_row(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        await storage.approve_operational_ticket(ticket.ticket_id, actor="x", note="ok")
+        audit = await storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
         assert any(
             r["previous_status"] == "DRAFT" and r["new_status"] == "APPROVED_FOR_ESCALATION"
             for r in audit
         )
 
-    def test_monitoring_writes_audit_row(self):
-        action = stage_critical_alert(_critical_alert())
-        ticket = storage.get_ticket_by_action_id(action.action_id)
-        storage.mark_operational_ticket_monitoring(ticket.ticket_id, actor="x", note="watching")
-        audit = storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
+    async def test_monitoring_writes_audit_row(self):
+        action = await _persist_and_stage(_critical_alert())
+        ticket = await storage.get_ticket_by_action_id(action.action_id)
+        await storage.mark_operational_ticket_monitoring(ticket.ticket_id, actor="x", note="watching")
+        audit = await storage.get_action_audit_log(action_id=f"ticket:{ticket.ticket_id}")
         assert any(r["new_status"] == "MONITORING" for r in audit)

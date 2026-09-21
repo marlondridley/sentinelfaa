@@ -10,6 +10,8 @@ from crewai import Agent
 
 from src.config import settings
 from src.context_router import ContextRouter
+from src.execution_gate import _strict_bool
+from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
 from src.llm_config import get_llm
 from src.logging_config import get_logger
@@ -81,6 +83,7 @@ class CriticAgent:
 
     def __init__(self) -> None:
         self._llm = build_llm_client() if settings.CRITIC_ENABLED else None
+        self._guardrail = OutputGuardrail()
         self._prompt = system_prompt("critic")
         self._tool = tool_schema("critic")
 
@@ -98,7 +101,41 @@ class CriticAgent:
         start = time.perf_counter()
         try:
             context = await _router.build_alert_context(alert.airport_code)
-            result = await self._call_llm(alert, context)
+            raw = await self._call_llm(alert, context)
+
+            # The critic's output reaches critic_results and the staged action a
+            # human approves, so it is bounded here, on the model's raw output,
+            # before anything is recorded. OutputGuardrail.verify_critic_output()
+            # existed and was tested but was never called: a model answer with
+            # confidence=7.3 or a made-up pattern was stored as-is.
+            guard = self._guardrail.verify_critic_output(raw)
+            if not guard.is_compliant:
+                LLM_CALLS.labels(agent="critic", outcome="guardrail_rejected").inc()
+                _log.warning(
+                    "critic_output_rejected",
+                    extra={
+                        "alert_id": alert.alert_id,
+                        "violation_type": guard.violation_type,
+                        "detail": guard.detail,
+                    },
+                )
+                return CriticResult(
+                    alert_id=alert.alert_id,
+                    reasoning=f"Critic output rejected by guardrail: {guard.detail}",
+                )
+
+            result = CriticResult(
+                alert_id=alert.alert_id,
+                confidence=float(raw["confidence"]),
+                reasoning=raw["reasoning"],
+                citations=raw.get("citations") or [],
+                pattern=raw["pattern"],
+                # _strict_bool, not bool(): bool("false") is True, which recorded
+                # a model's "do not escalate" as escalate=True. execution_gate
+                # also applies _strict_bool, but only to the already-converted
+                # value, too late to catch this.
+                escalate=_strict_bool(raw["escalate"]),
+            )
             LLM_CALLS.labels(agent="critic", outcome="success").inc()
             _log.info(
                 "critic_success",
@@ -123,18 +160,11 @@ class CriticAgent:
         finally:
             LLM_CALL_LATENCY.labels(agent="critic").observe(time.perf_counter() - start)
 
-    async def _call_llm(self, alert: AlertEvent, context: dict[str, Any]) -> CriticResult:
-        inp = await self._llm.acall_with_tool(
+    async def _call_llm(self, alert: AlertEvent, context: dict[str, Any]) -> dict[str, Any]:
+        """Return the model's structured output, unmodified. Raises on any LLM failure."""
+        return await self._llm.acall_with_tool(
             system_prompt=self._prompt,
             tool=self._tool,
             user_message=_format_user_message(alert, context),
             max_tokens=512,
-        )
-        return CriticResult(
-            alert_id=alert.alert_id,
-            confidence=float(inp["confidence"]),
-            reasoning=inp["reasoning"],
-            citations=inp.get("citations", []),
-            pattern=inp["pattern"],
-            escalate=bool(inp["escalate"]),
         )

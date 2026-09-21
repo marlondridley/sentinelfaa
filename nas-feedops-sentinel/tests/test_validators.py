@@ -174,3 +174,15 @@ def test_ismc_with_feed_status_passes():
     )
     result = validate_event(event)
     assert result.passed
+
+
+def test_unknown_field_is_rejected_not_silently_dropped():
+    """
+    A misspelled field must fail at construction. Silently dropping it is how
+    src/agent_evaluator.py's "clean" RVR baseline came to carry no runway and
+    no RVR value (see NASEvent.model_config).
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="rvr_feet"):
+        _base(service_name="APDS_RVR", message_type="rvr_reading", runway="01", rvr_feet=4500)

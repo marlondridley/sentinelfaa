@@ -1,359 +1,51 @@
 """
-NAS FeedOps Sentinel — Streamlit Dashboard
+NAS FeedOps Sentinel — Streamlit Dashboard (Overview)
 
-Displays live/replayed feed health, RVR conditions, SMES counts,
-validation summaries, latency metrics, and alert logs for the
-PCT TRACON (KDCA, KIAD, KBWI, KADW).
+This is the landing page of a multipage Streamlit app. It answers the
+top-level question -- "does PCT TRACON have a trustworthy aircraft
+movement picture right now, and what should the duty manager do about
+it?" -- via the live status ticker, the AI Planner, the Watch Officer
+brief, and the operational readiness snapshot. Everything else (the live
+airspace map, feed/service health, the AI Critic and human review queue,
+the alert log, and ingest/replay tooling) lives on its own page under
+dashboard/pages/ -- see the docstring in dashboard/lib/__init__.py for why
+this was split out of what used to be a single ~1500-line script.
 
 Run with:
     streamlit run dashboard/app.py
 """
 from __future__ import annotations
 
-import json
-import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-# Allow imports from the repository root when running dashboard/app.py
+# Allow `from src import ...` and `from lib import ...` regardless of which
+# page/script Streamlit actually executes -- every page under
+# dashboard/pages/ repeats this same boilerplate for the same reason: each
+# page is its own independently-run script, not a submodule of app.py.
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DASHBOARD_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(DASHBOARD_DIR))
 
-import altair as alt
-import pandas as pd
-import pydeck as pdk
 import streamlit as st
 
-from src import config, storage
-from src.alert_engine import check_alerts
-from src.async_bridge import run_async as _run
-from src.execution_gate import (
-    approve_staged_action as gate_approve,
-)
-from src.execution_gate import (
-    get_action_audit_log,
-    get_pending_staged_actions,
-    get_recent_staged_actions,
-)
-from src.execution_gate import (
-    reject_staged_action as gate_reject,
-)
-from src.feed_health import compute_feed_health
-from src.logging_config import get_logger
-from src.maintenance import purge_old_kit_files
-from src.models import NASEvent
-from src.news_agent import build_ticker_items
+from lib.data import format_ts, readiness_label
+from lib.page_setup import bootstrap_page
+from lib.ticker import render_ticker
+from src import storage
+from src.async_bridge import run_async as run
 from src.planner_agent import PlannerAgent
-from src.replay import replay_from_directory
-from src.sample_data import generate_sample_batch
-from src.storage import (
-    approve_operational_ticket,
-    get_ticket_by_action_id,
-    mark_operational_ticket_monitoring,
-    reject_operational_ticket,
-    save_alerts,
-    save_events,
-    save_planner_result,
-)
-from src.swim_file_ingest import read_ingest_log, scan_swim_folder
-from src.validators import validate_event
-from src.watch_officer_agent import (
-    build_watch_officer_context,
-    generate_watch_officer_brief,
-)
+from src.storage import save_planner_result
+from src.watch_officer_agent import build_watch_officer_context, generate_watch_officer_brief
 
-_log = get_logger(__name__)
+bootstrap_page(page_title="PCT TAIS FeedOps Sentinel", page_icon="✈")
 
-
-def _parse_json_str_list(raw: Any, field_name: str = "json_field") -> list[str]:
-    """Safely decode and validate that a value or JSON string is a list[str]."""
-    if raw is None:
-        return []
-    parsed = raw
-    if isinstance(raw, str):
-        raw_stripped = raw.strip()
-        if not raw_stripped or raw_stripped == "[]":
-            return []
-        try:
-            parsed = json.loads(raw_stripped)
-        except json.JSONDecodeError as exc:
-            _log.warning(
-                "json_decode_failed",
-                extra={"field": field_name, "error": str(exc), "raw_sample": raw[:100]},
-            )
-            return []
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "json_parse_error",
-                extra={"field": field_name, "error": str(exc)},
-            )
-            return []
-
-    if isinstance(parsed, list):
-        return [str(item) for item in parsed if item is not None]
-
-    _log.warning(
-        "json_shape_mismatch",
-        extra={"field": field_name, "expected": "list[str]", "actual_type": type(parsed).__name__},
-    )
-    return []
-
-
-def _reconstruct_nas_events(raw_rows: list[dict]) -> list[NASEvent]:
-    """Reconstruct NASEvent instances from raw storage dictionaries with structured error logging."""
-    events: list[NASEvent] = []
-    for row in raw_rows:
-        try:
-            r = dict(row)
-            if isinstance(r.get("event_time_utc"), str):
-                r["event_time_utc"] = datetime.fromisoformat(r["event_time_utc"])
-            if isinstance(r.get("received_time_utc"), str):
-                r["received_time_utc"] = datetime.fromisoformat(r["received_time_utc"])
-
-            if isinstance(r.get("validation_errors"), (str, list)):
-                r["validation_errors"] = _parse_json_str_list(
-                    r.get("validation_errors"), "validation_errors"
-                )
-
-            events.append(NASEvent(**r))
-        except Exception as exc:
-            _log.warning(
-                "nas_event_reconstruct_failed",
-                extra={
-                    "event_id": row.get("event_id", "unknown") if isinstance(row, dict) else "unknown",
-                    "error": str(exc),
-                    "raw_sample": str(row)[:150],
-                },
-            )
-    return events
-
-
-# Kit log folder path (resolved via the data/raw/swim_live junction)
-KIT_LOG_PATH = config.SWIM_RAW_FOLDER
-
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="PCT TAIS FeedOps Sentinel",
-    page_icon="✈",
-    layout="wide",
-)
-
-# ── OIDC / Keycloak Authentication Gate ────────────────────────────────────────
-_oidc_configured = False
-try:
-    if hasattr(st, "secrets") and "auth" in st.secrets:
-        _oidc_configured = True
-except Exception:
-    _oidc_configured = False
-
-if _oidc_configured:
-    try:
-        if hasattr(st, "user") and hasattr(st.user, "is_logged_in") and not st.user.is_logged_in:
-            st.title("✈ NAS FeedOps Sentinel")
-            st.info("🔐 **Authentication required** to access the operations dashboard and human review queue.")
-            c_auth1, _ = st.columns([1, 3])
-            with c_auth1:
-                st.button(
-                    "Sign in with Keycloak OIDC",
-                    on_click=st.login,
-                    args=["keycloak"],
-                    type="primary",
-                    use_container_width=True,
-                )
-            st.stop()
-    except Exception as _auth_exc:
-        _log.warning("oidc_auth_check_error", extra={"error": str(_auth_exc)})
-
-# ── Operator Authentication / Identity (Sidebar) ──────────────────────────────
-with st.sidebar:
-    st.markdown("### 👤 Watch Officer Session")
-    st.caption("Attributed operator identity for all Execution Gate & Escalation decisions.")
-
-    _oidc_user = None
-    if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
-        _oidc_user = (
-            getattr(st.user, "email", None)
-            or getattr(st.user, "preferred_username", None)
-            or getattr(st.user, "name", None)
-        )
-
-    _default_op = _oidc_user or os.getenv("OPERATOR_ID") or os.getenv("USERNAME") or os.getenv("USER") or "watch_officer_primary"
-    if "operator_id" not in st.session_state:
-        st.session_state["operator_id"] = _default_op
-
-    _op_input = st.text_input(
-        "Operator ID / Callsign",
-        value=st.session_state["operator_id"],
-        help="This callsign/ID is recorded in the immutable action_audit_log table on every approve/reject transition.",
-    )
-    if _op_input:
-        st.session_state["operator_id"] = _op_input.strip()
-
-    _op_role = st.selectbox(
-        "Role / Station",
-        [
-            "Watch Officer",
-            "Supervisory Traffic Management Coordinator (STMC)",
-            "Operations Manager in Charge (OMIC)",
-            "Systems Engineer",
-        ],
-        index=0,
-    )
-    st.session_state["operator_role"] = _op_role
-
-    st.success(f"Authenticated: **{st.session_state['operator_id']}** ({_op_role})")
-    if _oidc_user and hasattr(st, "logout"):
-        st.button("Sign out", on_click=st.logout, use_container_width=True)
-    st.divider()
-
-# ── Status colour mapping ─────────────────────────────────────────────────────
-STATUS_EMOJI = {
-    "OK": "🟢",
-    "STALE": "🟡",
-    "DEGRADED": "🟠",
-    "UNAVAILABLE": "🔴",
-    "DISCONNECTED": "🔴",
-    "NO DATA": "⚫",
-}
-SEVERITY_EMOJI = {"CRITICAL": "🔴", "WARNING": "🟡", "INFO": "🔵"}
-
-
-def _status_label(status: str) -> str:
-    return f"{STATUS_EMOJI.get(status, '⚪')} {status}"
-
-
-# ── Single Consolidated Ingest & Breaking News Ticker ─────────────────────────
-events_raw       = _run(storage.get_recent_events(limit=1000))
-_news_alerts_raw = _run(storage.get_recent_alerts(limit=200))
-_news_rvr_rows   = _run(storage.get_latest_rvr())
-_news_phase      = _run(storage.get_flight_phase_counts(window_minutes=15))
-_news_active     = _run(storage.get_active_aircraft(window_minutes=5, limit=300))
-_news_lat        = _run(storage.get_latency_stats())
-
-# Reconstruct NASEvent list once for downstream components
-live_events: list[NASEvent] = _reconstruct_nas_events(events_raw)
-
-# Slice reconstructed domain objects directly for ticker and feed health
-_news_live = live_events[:300]
-_news_health = compute_feed_health(_news_live) if _news_live else {"airport_status": {}}
-
-ticker_items = _run(build_ticker_items(
-    airport_status=_news_health.get("airport_status", {}),
-    alerts=_news_alerts_raw,
-    rvr_rows=_news_rvr_rows,
-    phase_counts=_news_phase,
-    active_aircraft_total=len(_news_active),
-    avg_latency_ms=_news_lat.get("avg_ms"),
-))
-
-# Severity → CSS class
-_SEV_CLASS = {
-    "GOOD":      "tk-green",
-    "NORMAL":    "tk-grey",
-    "ATTENTION": "tk-yellow",
-    "ACTION":    "tk-red",
-}
-_SEV_GLYPH = {"GOOD": "●", "NORMAL": "●", "ATTENTION": "▲", "ACTION": "■"}
-_ticker_html_items = "".join(
-    f'<a class="tk-item {_SEV_CLASS.get(it["severity"], "tk-grey")}" '
-    f'href="#{it.get("anchor","page-top")}" title="Click to jump to section">'
-    f'<span class="tk-glyph">{_SEV_GLYPH.get(it["severity"], "●")}</span> '
-    f'{it["text"]}'
-    f'</a>'
-    for it in ticker_items
-)
-_ticker_payload = f"{_ticker_html_items}{_ticker_html_items}"
-_scroll_seconds = max(90, len(ticker_items) * 9)
-
-st.markdown(
-    f"""
-    <a id="page-top"></a>
-    <style>
-    .ticker-wrap {{
-        background: #1a1a1a;
-        border-top:    3px solid #ff3030;
-        border-bottom: 3px solid #ff3030;
-        overflow: hidden;
-        white-space: nowrap;
-        padding: 14px 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 20px;
-        font-weight: 600;
-        line-height: 1.3;
-        margin: 0 0 14px 0;
-        position: relative;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-    }}
-    .ticker-label {{
-        background: #ff3030;
-        color: #ffffff;
-        padding: 8px 18px;
-        font-weight: 900;
-        letter-spacing: 0.1em;
-        font-size: 18px;
-        margin-right: 24px;
-        display: inline-block;
-        vertical-align: middle;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.4);
-        border-radius: 2px;
-    }}
-    .ticker {{
-        display: inline-block;
-        padding-left: 100%;
-        animation: ticker-scroll {_scroll_seconds}s linear infinite;
-    }}
-    .ticker-wrap:hover .ticker,
-    .ticker-wrap:active .ticker,
-    .ticker-wrap:focus-within .ticker {{
-        animation-play-state: paused;
-    }}
-    @keyframes ticker-scroll {{
-        0%   {{ transform: translate3d(0, 0, 0); }}
-        100% {{ transform: translate3d(-50%, 0, 0); }}
-    }}
-    .tk-item {{
-        display: inline-block;
-        margin: 0 32px 0 0;
-        padding: 4px 6px;
-        vertical-align: middle;
-        text-shadow: 0 1px 1px rgba(0,0,0,0.5);
-        text-decoration: none;
-        cursor: pointer;
-        border-radius: 3px;
-        transition: background-color 0.15s ease-out;
-    }}
-    .tk-item:hover, .tk-item:focus {{
-        background: rgba(255,255,255,0.12);
-        text-decoration: underline;
-        outline: none;
-    }}
-    .tk-glyph {{
-        font-size: 14px;
-        margin-right: 6px;
-        vertical-align: middle;
-    }}
-    .tk-green  {{ color: #4ade80; }}
-    .tk-grey   {{ color: #e5e7eb; }}
-    .tk-yellow {{ color: #fbbf24; font-weight: 800; }}
-    .tk-red    {{ color: #ff5252; font-weight: 900; }}
-    [id^="anchor-"], #airport-health, #airspace-ops, #alert-log,
-    #rvr-section, #critic-intel, #latency-section {{
-        scroll-margin-top: 80px;
-    }}
-    </style>
-    <div class="ticker-wrap" title="Hover or tap to pause · click any headline to jump to its section">
-        <span class="ticker-label">PCT&nbsp;LIVE</span>
-        <div class="ticker">{_ticker_payload}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+render_ticker()
 
 
 def _render_mission_panel() -> None:
-    """7-row decision support table that doubles as a nav index."""
+    """7-row decision support table that doubles as a nav index across pages."""
     st.markdown(
         """
         <style>
@@ -400,37 +92,37 @@ def _render_mission_panel() -> None:
           <tbody>
             <tr>
               <td><span class="mission-num">1.</span><span class="mission-q">Is the PCT TAIS feed alive right now?</span></td>
-              <td><a href="#latency-section">Message rate, last message time, files processed</a></td>
+              <td><a href="Feed_Health" target="_self">Message rate, last message time, files processed</a></td>
               <td><span class="mission-decision">Confirms the SWIM feed is connected and usable</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">2.</span><span class="mission-q">Can we trust the current aircraft picture?</span></td>
-              <td><a href="#airspace-ops">Live positions, stale status, no-data status</a></td>
+              <td><a href="Live_Airspace" target="_self">Live positions, stale status, no-data status</a></td>
               <td><span class="mission-decision">Determines whether the airspace view is operationally reliable</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">3.</span><span class="mission-q">Which airport is driving the traffic load?</span></td>
-              <td><a href="#airspace-ops">KDCA, KIAD, KBWI, KADW departure / arrival / en route counts</a></td>
+              <td><a href="Live_Airspace" target="_self">KDCA, KIAD, KBWI, KADW departure / arrival / en route counts</a></td>
               <td><span class="mission-decision">Helps prioritize airport-level monitoring</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">4.</span><span class="mission-q">What phase of flight is most active?</span></td>
-              <td><a href="#airspace-ops">Departures, arrivals, en route, ground counts</a></td>
+              <td><a href="Live_Airspace" target="_self">Departures, arrivals, en route, ground counts</a></td>
               <td><span class="mission-decision">Shows demand by operational phase</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">5.</span><span class="mission-q">Are tracks stale, missing, or abnormal?</span></td>
-              <td><a href="#airport-health">Stale flags, altitude distribution, speed distribution</a></td>
+              <td><a href="Feed_Health" target="_self">Stale flags, altitude distribution, speed distribution</a></td>
               <td><span class="mission-decision">Detects data-quality or movement anomalies</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">6.</span><span class="mission-q">Is this isolated or sector-wide?</span></td>
-              <td><a href="#airport-health">Per-airport comparison across all PCT airports</a></td>
+              <td><a href="Feed_Health" target="_self">Per-airport comparison across all PCT airports</a></td>
               <td><span class="mission-decision">Supports escalation and root-cause triage</span></td>
             </tr>
             <tr>
               <td><span class="mission-num">7.</span><span class="mission-q">What should the operator do next?</span></td>
-              <td><a href="#critic-intel">AI Planner + AI Critic recommendation</a></td>
+              <td><a href="AI_Critic_and_Review" target="_self">AI Planner + AI Critic recommendation</a></td>
               <td><span class="mission-decision">Turns monitoring into action</span></td>
             </tr>
           </tbody>
@@ -458,7 +150,7 @@ st.caption(
 
 st.markdown("##### Mission Questions Answered")
 st.caption(
-    "Click any row's evidence to jump to the dashboard section that answers it. "
+    "Click any row's evidence to jump to the dashboard page that answers it. "
     "These seven questions are the contract between the dashboard and the "
     "operational decisions it supports."
 )
@@ -489,8 +181,8 @@ with st.expander("🤖 AI Planner — *What should the operator investigate or e
     if planner_run and planner_question.strip():
         with st.spinner("Analyzing NAS status ..."):
             agent = PlannerAgent()
-            pr = _run(agent.query(planner_question.strip()))
-            _run(save_planner_result(pr))
+            pr = run(agent.query(planner_question.strip()))
+            run(save_planner_result(pr))
 
         conf_val = pr.confidence if pr.confidence is not None else 0.0
         c1, c2 = st.columns(2)
@@ -516,11 +208,14 @@ with st.expander("🤖 AI Planner — *What should the operator investigate or e
             with st.expander(f"Evidence citations ({len(pr.citations)})"):
                 st.code(", ".join(pr.citations))
 
-    recent_briefs = _run(storage.get_recent_planner_results(limit=5))
+    recent_briefs = run(storage.get_recent_planner_results(limit=5))
     if recent_briefs:
         with st.expander("Recent planner briefs"):
             for brief in recent_briefs:
-                ts = brief.get("evaluated_at", "")[:19]
+                # evaluated_at comes back from storage as a real datetime
+                # (asyncpg TIMESTAMPTZ), not a string -- format_ts() handles
+                # both so this doesn't crash the moment there's real data.
+                ts = format_ts(brief.get("evaluated_at"))
                 q = brief.get("question", "")
                 conf = brief.get("confidence")
                 conf_str = f"{conf:.0%}" if conf is not None else "N/A"
@@ -541,24 +236,24 @@ st.caption(
     "and the escalation package (durable record)."
 )
 
-_wo_latest = _run(storage.get_latest_watch_officer_brief())
+_wo_latest = run(storage.get_latest_watch_officer_brief())
 
 if _wo_latest is None:
-    _wo_ctx = _run(build_watch_officer_context())
+    _wo_ctx = run(build_watch_officer_context())
     _wo_latest = generate_watch_officer_brief(_wo_ctx, use_llm=True)
-    _run(storage.save_watch_officer_brief(_wo_latest))
+    run(storage.save_watch_officer_brief(_wo_latest))
 
 _wo_b1, _wo_b2, _wo_b3 = st.columns([1, 1, 4])
 if _wo_b1.button("🔄 Refresh Brief", use_container_width=True):
-    _new_ctx = _run(build_watch_officer_context())
+    _new_ctx = run(build_watch_officer_context())
     _wo_latest = generate_watch_officer_brief(_new_ctx, use_llm=True)
-    _run(storage.save_watch_officer_brief(_wo_latest))
+    run(storage.save_watch_officer_brief(_wo_latest))
     st.rerun()
 if _wo_b2.button("⚙ Deterministic Only", use_container_width=True,
                  help="Force the rule-based fallback brief (skips LLM)"):
-    _new_ctx = _run(build_watch_officer_context())
+    _new_ctx = run(build_watch_officer_context())
     _wo_latest = generate_watch_officer_brief(_new_ctx, use_llm=False)
-    _run(storage.save_watch_officer_brief(_wo_latest))
+    run(storage.save_watch_officer_brief(_wo_latest))
     st.rerun()
 
 _POSTURE_COLOR = {"ACTION": "red", "ATTENTION": "orange", "NORMAL": "blue",
@@ -603,318 +298,16 @@ with st.container(border=True):
 
 st.divider()
 
-# ── Main Panel Computations (Reuse Parsed live_events) ───────────────────────
-alerts_raw = _run(storage.get_recent_alerts(limit=500))
-val_summary = _run(storage.get_validation_summary())
-lat_stats = _run(storage.get_latency_stats())
-rvr_rows = _run(storage.get_latest_rvr())
-
-events_df = pd.DataFrame(events_raw) if events_raw else pd.DataFrame()
-alerts_df = pd.DataFrame(alerts_raw) if alerts_raw else pd.DataFrame()
-
-# Reuse pre-parsed live_events instead of re-fetching and re-parsing
-health = compute_feed_health(live_events[:500]) if live_events else {
-    "airport_status": {}, "service_status": {}, "latency_stats": {}, "smes_counts": {}
-}
-
-# ── Live Airspace Operations (TAIS) ───────────────────────────────────────────
-st.markdown('<div id="airspace-ops"></div>', unsafe_allow_html=True)
-st.subheader("🛩 Live PCT Airspace Operations")
-st.caption(
-    "**Answers:** *Where is every aircraft in PCT airspace right now, and how "
-    "does flow break down by airport and phase?* "
-    "Source: FAA SWIM TAIS feed (live STARS track and flight-plan records). "
-    "Aircraft counts use a 15-minute window; live positions use the last 5 minutes."
-)
-
-active_aircraft = _run(storage.get_active_aircraft(window_minutes=5, limit=500))
-phase_counts = _run(storage.get_flight_phase_counts(window_minutes=15))
-altitude_dist = _run(storage.get_altitude_distribution(window_minutes=15))
-
-ap1, ap2, ap3, ap4, ap5 = st.columns(5)
-total_active = len(active_aircraft)
-total_dep = sum(c.get("DEPARTURE", 0) for c in phase_counts.values())
-total_arr = sum(c.get("ARRIVAL", 0) for c in phase_counts.values())
-total_enr = sum(c.get("ENROUTE", 0) for c in phase_counts.values())
-total_gnd = sum(c.get("GROUND", 0) for c in phase_counts.values())
-
-ap1.metric(
-    label="Are live aircraft positions being received?",
-    value=total_active,
-    delta="active in last 5 min" if total_active else "no live positions",
-    delta_color="off" if total_active else "inverse",
-    help="Distinct aircraft for which TAIS sent a position in the last 5 minutes.",
-)
-ap2.metric(
-    label="🛫 How many departure records were observed?",
-    value=total_dep,
-    delta="climbing out of PCT airports" if total_dep else "no departures detected",
-    delta_color="off",
-)
-ap3.metric(
-    label="🛬 How much arrival traffic is flowing through PCT?",
-    value=total_arr,
-    delta="descending into PCT airports" if total_arr else "no arrivals detected",
-    delta_color="off",
-)
-ap4.metric(
-    label="✈ How much transition / overflight traffic is active?",
-    value=total_enr,
-    delta="level flight through sector" if total_enr else "no enroute traffic",
-    delta_color="off",
-)
-ap5.metric(
-    label="🅿 Are surface / ground records present?",
-    value=total_gnd,
-    delta="on taxi/ramp/runway" if total_gnd else "no ground records",
-    delta_color="off",
-)
-
-PCT_AIRPORTS = {
-    "KDCA": {"name": "Reagan National",       "lat": 38.8521, "lon": -77.0377},
-    "KIAD": {"name": "Dulles International",  "lat": 38.9531, "lon": -77.4565},
-    "KBWI": {"name": "Baltimore-Washington",  "lat": 39.1754, "lon": -76.6683},
-    "KADW": {"name": "Joint Base Andrews",    "lat": 38.8108, "lon": -76.8669},
-}
-
-airport_layer_data = []
-for code, info in PCT_AIRPORTS.items():
-    overall = health["airport_status"].get(code, "NO DATA")
-    color = {
-        "OK":           [50, 200, 50, 200],
-        "STALE":        [255, 230, 0, 200],
-        "DEGRADED":     [255, 140, 0, 220],
-        "UNAVAILABLE":  [255, 0, 0, 240],
-        "DISCONNECTED": [255, 0, 0, 255],
-        "NO DATA":      [120, 120, 120, 180],
-    }.get(overall, [120, 120, 120, 180])
-    airport_layer_data.append({
-        "code": code,
-        "name": info["name"],
-        "lat": info["lat"],
-        "lon": info["lon"],
-        "status": overall,
-        "color": color,
-        "label": f"{code} · {overall}",
-    })
-
-aircraft_layer_data = []
-for ac in active_aircraft:
-    if ac.get("lat") is None or ac.get("lon") is None:
-        continue
-    phase = ac.get("flight_phase") or "UNKNOWN"
-    color = {
-        "DEPARTURE": [30, 144, 255, 220],
-        "ARRIVAL":   [255, 100, 30, 220],
-        "ENROUTE":   [144, 238, 144, 200],
-        "GROUND":    [180, 180, 180, 200],
-        "UNKNOWN":   [220, 220, 220, 180],
-    }.get(phase, [220, 220, 220, 180])
-    aircraft_layer_data.append({
-        "aircraft_id": ac.get("aircraft_id") or "—",
-        "lat":   float(ac["lat"]),
-        "lon":   float(ac["lon"]),
-        "alt":   ac.get("altitude_ft") or 0,
-        "speed": ac.get("ground_speed_kt") or 0,
-        "phase": phase,
-        "airport": ac.get("airport_code") or "—",
-        "runway":  ac.get("runway") or "—",
-        "color":   color,
-        "label":   f"{ac.get('aircraft_id','?')} {phase} {ac.get('altitude_ft', 0)}ft",
-    })
-
-map_col, ops_col = st.columns([3, 2])
-
-with map_col:
-    st.markdown("**Airspace Map — *Where are aircraft visible in the PCT sector?***")
-    if airport_layer_data or aircraft_layer_data:
-        layers = []
-        if airport_layer_data:
-            layers.append(pdk.Layer(
-                "ScatterplotLayer",
-                data=airport_layer_data,
-                get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius=4000,
-                radius_min_pixels=10,
-                radius_max_pixels=22,
-                pickable=True,
-            ))
-            layers.append(pdk.Layer(
-                "TextLayer",
-                data=airport_layer_data,
-                get_position="[lon, lat]",
-                get_text="label",
-                get_color=[20, 20, 20, 240],
-                get_size=14,
-                get_alignment_baseline="'top'",
-                get_pixel_offset=[0, 12],
-            ))
-        if aircraft_layer_data:
-            layers.append(pdk.Layer(
-                "ScatterplotLayer",
-                data=aircraft_layer_data,
-                get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius=600,
-                radius_min_pixels=3,
-                radius_max_pixels=7,
-                pickable=True,
-            ))
-
-        view_state = pdk.ViewState(
-            latitude=38.92,
-            longitude=-77.05,
-            zoom=8.4,
-            pitch=30,
-            bearing=0,
-        )
-        st.pydeck_chart(pdk.Deck(
-            map_style=None,
-            initial_view_state=view_state,
-            layers=layers,
-            tooltip={
-                "html": "<b>{label}</b><br/>"
-                        "Airport: {airport} · Runway: {runway}<br/>"
-                        "Alt: {alt} ft · GS: {speed} kt",
-                "style": {"backgroundColor": "#0e1117", "color": "white"},
-            },
-        ))
-        st.caption(
-            f"Showing {len(aircraft_layer_data)} live aircraft positions over "
-            f"{len(airport_layer_data)} PCT primary airports. "
-            "🟢 OK · 🟡 STALE · 🟠 DEGRADED · 🔴 UNAVAILABLE · "
-            "🔵 Departure · 🟠 Arrival · 🟢 Enroute · ⚪ Ground."
-        )
-    else:
-        st.info("No aircraft positions in window. Verify TAIS feed is flowing.")
-
-with ops_col:
-    st.markdown("**Per-Airport Activity — *Which airport has healthy, stale, or missing data?***")
-    rows = []
-    for code, info in PCT_AIRPORTS.items():
-        pc = phase_counts.get(code, {})
-        rows.append({
-            "Airport": code,
-            "Status": _status_label(health["airport_status"].get(code, "NO DATA")),
-            "🛫 Dep": pc.get("DEPARTURE", 0),
-            "🛬 Arr": pc.get("ARRIVAL", 0),
-            "✈ Enr":  pc.get("ENROUTE", 0),
-            "🅿 Gnd":  pc.get("GROUND", 0),
-        })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-    if active_aircraft:
-        st.markdown("**Live Flight Matrix** (most recent)")
-        fm_rows = []
-        for ac in active_aircraft[:20]:
-            fm_rows.append({
-                "Flight": ac.get("aircraft_id") or "—",
-                "Airport": ac.get("airport_code"),
-                "Phase": ac.get("flight_phase") or "—",
-                "Alt (ft)": ac.get("altitude_ft"),
-                "GS (kt)": ac.get("ground_speed_kt"),
-                "Runway": ac.get("runway") or "—",
-                "Rules": ac.get("flight_rules") or "—",
-            })
-        st.dataframe(pd.DataFrame(fm_rows), hide_index=True, use_container_width=True, height=300)
-
-if altitude_dist:
-    dist_df = pd.DataFrame(altitude_dist)
-    alt_col, gs_col = st.columns(2)
-
-    with alt_col:
-        st.markdown("**Altitude Distribution — *Are aircraft appearing in expected altitude bands?***")
-        alt_chart = alt.Chart(dist_df).mark_bar(opacity=0.85).encode(
-            alt.X("altitude_ft:Q", bin=alt.Bin(maxbins=20), title="Altitude (ft)"),
-            alt.Y("count()", title="Aircraft"),
-            alt.Color("airport_code:N", title="Airport"),
-            tooltip=["airport_code", "count()"],
-        ).properties(height=240)
-        st.altair_chart(alt_chart, use_container_width=True)
-
-    with gs_col:
-        st.markdown("**Ground Speed Distribution — *Do speed patterns look normal by airport?***")
-        gs_df = dist_df[dist_df["ground_speed_kt"].notna()]
-        if not gs_df.empty:
-            gs_chart = alt.Chart(gs_df).mark_bar(opacity=0.85).encode(
-                alt.X("ground_speed_kt:Q", bin=alt.Bin(maxbins=20), title="Ground speed (kt)"),
-                alt.Y("count()", title="Aircraft"),
-                alt.Color("airport_code:N", title="Airport"),
-                tooltip=["airport_code", "count()"],
-            ).properties(height=240)
-            st.altair_chart(gs_chart, use_container_width=True)
-        else:
-            st.info("No ground-speed samples in window.")
-
-st.divider()
-
-# ── Sidebar Controls ──────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("⚙ Controls")
-
-    gen_count = st.slider("Sample events to generate", min_value=10, max_value=500,
-                          value=100, step=10)
-
-    if st.button("Generate & Ingest Sample Data", use_container_width=True, type="primary"):
-        with st.spinner("Generating …"):
-            events = generate_sample_batch(gen_count)
-            for e in events:
-                r = validate_event(e)
-                e.validation_status = "PASSED" if r.passed else "FAILED"
-                e.validation_errors = r.errors
-            _run(save_events(events))
-            alerts = check_alerts(events)
-            _run(save_alerts(alerts))
-        st.success(f"Ingested {len(events)} events · {len(alerts)} alerts triggered.")
-
-    st.divider()
-
-    st.subheader("Replay")
-    replay_files = list(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
-    st.caption(f"{len(replay_files)} file(s) in data/raw/")
-    if st.button("Run Replay from data/raw", use_container_width=True,
-                 disabled=len(replay_files) == 0):
-        with st.spinner("Replaying …"):
-            r_events, r_errors = replay_from_directory()
-            for e in r_events:
-                res = validate_event(e)
-                e.validation_status = "PASSED" if res.passed else "FAILED"
-                e.validation_errors = res.errors
-            _run(save_events(r_events))
-            r_alerts = check_alerts(r_events)
-            _run(save_alerts(r_alerts))
-        if r_errors:
-            st.warning(f"{len(r_errors)} parse error(s). Check console.")
-        st.success(
-            f"Replay complete · {len(r_events)} events · {len(r_alerts)} alerts."
-        )
-
-    st.divider()
-    st.subheader("Kit Log Maintenance")
-    cleanup_minutes = st.number_input(
-        "Purge files older than (minutes)",
-        min_value=1, max_value=60, value=5, step=1,
-    )
-    if st.button("Clean Kit log now", use_container_width=True):
-        removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
-        st.success(f"Removed {removed} file(s). {remaining} remain in Kit log.")
-
-    st.divider()
-    st.caption(f"DB: `{config.DB_PATH}`")
-    st.caption(f"Refreshed: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
-    if st.button("Refresh dashboard (auto-cleanup)", use_container_width=True, type="primary"):
-        removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
-        if removed > 0:
-            st.toast(f"Cleaned {removed} Kit file(s) older than {cleanup_minutes} min")
-        st.rerun()
-
 # ── Operational Readiness Snapshot ────────────────────────────────────────────
 st.subheader("🎯 PCT TRACON Operational Readiness")
 st.caption(
     "**Answers:** *Can the duty manager trust the SWIM feed right now to make "
     "safe, real-time operational decisions for KDCA, KIAD, KBWI, and KADW?*"
 )
+
+val_summary = run(storage.get_validation_summary())
+lat_stats = run(storage.get_latency_stats())
+alerts_raw = run(storage.get_recent_alerts(limit=500))
 
 total = val_summary.get("total", 0)
 passed = val_summary.get("passed", 0) or 0
@@ -923,22 +316,6 @@ pass_rate_pct = (passed / total * 100) if total else None
 avg_lat = lat_stats.get("avg_ms")
 critical_alerts = sum(1 for a in alerts_raw if a.get("severity") == "CRITICAL")
 warning_alerts = sum(1 for a in alerts_raw if a.get("severity") == "WARNING")
-
-
-def _readiness_label(value, good_if, warn_if, bad_if, lower_is_better=False):
-    """Return (emoji, status_text) based on thresholds."""
-    if value is None:
-        return ("⚪", "no data")
-    if lower_is_better:
-        if value <= good_if: return ("🟢", "healthy")
-        if value <= warn_if: return ("🟡", "watch")
-        if value <= bad_if:  return ("🟠", "degraded")
-        return ("🔴", "critical")
-    if value >= good_if: return ("🟢", "healthy")
-    if value >= warn_if: return ("🟡", "watch")
-    if value >= bad_if:  return ("🟠", "degraded")
-    return ("🔴", "critical")
-
 
 k1, k2, k3, k4 = st.columns(4)
 
@@ -949,7 +326,7 @@ k1.metric(
     delta_color="off",
 )
 
-emoji_pass, status_pass = _readiness_label(pass_rate_pct, good_if=95, warn_if=85, bad_if=70)
+emoji_pass, status_pass = readiness_label(pass_rate_pct, good_if=95, warn_if=85, bad_if=70)
 pass_display = f"{pass_rate_pct:.1f}%" if pass_rate_pct is not None else "—"
 k2.metric(
     label=f"{emoji_pass} Schema Conformance",
@@ -959,7 +336,7 @@ k2.metric(
 )
 
 total_alerts = len(alerts_raw)
-emoji_alert, status_alert = _readiness_label(
+emoji_alert, status_alert = readiness_label(
     total_alerts, good_if=0, warn_if=10, bad_if=50, lower_is_better=True
 )
 k3.metric(
@@ -969,7 +346,7 @@ k3.metric(
     delta_color="inverse" if critical_alerts > 0 else "off",
 )
 
-emoji_lat, status_lat = _readiness_label(
+emoji_lat, status_lat = readiness_label(
     avg_lat or 0, good_if=5_000, warn_if=30_000, bad_if=300_000, lower_is_better=True
 )
 if avg_lat is None:
@@ -1001,482 +378,6 @@ if pass_rate_pct is not None and avg_lat is not None:
             "**Operational status: AMBER** — feed is functional but degraded. "
             "Review individual metrics below and the Critic intelligence panel for context."
         )
-
-st.divider()
-
-# ── Airport & Service Status ──────────────────────────────────────────────────
-col_left, col_right = st.columns(2)
-
-st.markdown('<div id="airport-health"></div>', unsafe_allow_html=True)
-with col_left:
-    st.subheader("🏢 Airport Feed Health")
-    st.caption(
-        "**Answers:** *Which airports have a SWIM feed I can trust right now?* "
-        "🟢 OK · 🟡 STALE · 🟠 DEGRADED · 🔴 UNAVAILABLE/DISCONNECTED."
-    )
-    if health["airport_status"]:
-        airport_rows = [
-            {
-                "Airport": ap,
-                "Status": _status_label(health["airport_status"].get(ap, "NO DATA")),
-            }
-            for ap in sorted(config.SUPPORTED_AIRPORTS)
-        ]
-        st.dataframe(pd.DataFrame(airport_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info("No data yet. Generate sample events using the sidebar.")
-
-with col_right:
-    st.subheader("📡 Service Health by Airport")
-    st.caption(
-        "**Answers:** *Which specific SWIM service at which specific airport is "
-        "the problem?*"
-    )
-    svc_rows = []
-    for service, airport_map in health.get("service_status", {}).items():
-        for airport, status in sorted(airport_map.items()):
-            svc_rows.append({
-                "Service": service,
-                "Airport": airport,
-                "Status": _status_label(status),
-            })
-    if svc_rows:
-        st.dataframe(pd.DataFrame(svc_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info("No service health data yet.")
-
-st.divider()
-
-# ── Latest RVR Table ──────────────────────────────────────────────────────────
-st.markdown('<div id="rvr-section"></div>', unsafe_allow_html=True)
-st.subheader("👁 Runway Visual Range (RVR)")
-st.caption(
-    "**Answers:** *Is the visibility on each runway safe for normal instrument "
-    "approach procedures?* RVR below **1,200 ft** triggers low-visibility ops procedures."
-)
-if rvr_rows:
-    rvr_df = pd.DataFrame(rvr_rows)[[
-        "airport_code", "runway", "rvr_touchdown",
-        "rvr_midpoint", "rvr_rollout", "event_time_utc",
-    ]].rename(columns={
-        "airport_code": "Airport",
-        "runway": "Runway",
-        "rvr_touchdown": "Touchdown (ft)",
-        "rvr_midpoint": "Midpoint (ft)",
-        "rvr_rollout": "Rollout (ft)",
-        "event_time_utc": "Event Time (UTC)",
-    })
-
-    def _highlight_rvr(val):
-        try:
-            if val is not None and float(val) < config.RVR_LOW_THRESHOLD_FT:
-                return "background-color: #FF4B4B; color: white;"
-        except (TypeError, ValueError):
-            pass
-        return ""
-
-    st.dataframe(
-        rvr_df.style.applymap(
-            _highlight_rvr,
-            subset=["Touchdown (ft)", "Midpoint (ft)", "Rollout (ft)"],
-        ),
-        hide_index=True,
-        use_container_width=True,
-    )
-    st.caption(f"Red cells indicate RVR < {config.RVR_LOW_THRESHOLD_FT} ft.")
-else:
-    st.info("No RVR data yet.")
-
-st.divider()
-
-# ── SMES Counts & Latency Metrics ─────────────────────────────────────────────
-col_smes, col_lat = st.columns(2)
-
-with col_smes:
-    st.subheader("🛬 Surface Movement Volume")
-    st.caption(
-        "**Answers:** *How busy is the airport surface at each facility?*"
-    )
-    smes = health.get("smes_counts", {})
-    if smes:
-        smes_df = pd.DataFrame(
-            [{"Airport": k, "SMES Events": v} for k, v in sorted(smes.items())]
-        )
-        st.dataframe(smes_df, hide_index=True, use_container_width=True)
-        st.bar_chart(smes_df.set_index("Airport"))
-    else:
-        st.info("No SMES events recorded yet.")
-
-st.markdown('<div id="latency-section"></div>', unsafe_allow_html=True)
-with col_lat:
-    st.subheader("⏱ Delivery Latency by Service")
-    st.caption(
-        "**Answers:** *Is each SWIM service delivering messages fast enough to support real-time decisions?*"
-    )
-    lat_rows = []
-    for svc, stats in sorted(health.get("latency_stats", {}).items()):
-        lat_rows.append({
-            "Service": svc,
-            "Avg (ms)": f"{stats['avg_ms']:,.0f}",
-            "Min (ms)": f"{stats['min_ms']:,.0f}",
-            "Max (ms)": f"{stats['max_ms']:,.0f}",
-            "Count": stats["count"],
-        })
-    if lat_rows:
-        st.dataframe(pd.DataFrame(lat_rows), hide_index=True, use_container_width=True)
-        st.caption(f"High-latency alert threshold: {config.LATENCY_ALERT_MS:,} ms")
-    else:
-        st.info("No latency data yet.")
-
-st.divider()
-
-# ── Validation Summary ────────────────────────────────────────────────────────
-st.subheader("✅ Data Quality Posture (Schema Validation)")
-st.caption(
-    "**Answers:** *Are upstream FAA systems sending us well-formed data?*"
-)
-v1, v2, v3 = st.columns(3)
-v1.metric("Total Validated", f"{total:,}")
-v2.metric("Passed ✅", f"{passed:,}")
-v3.metric("Failed ❌", f"{failed:,}")
-
-if not events_df.empty and "validation_status" in events_df.columns:
-    val_by_service = (
-        events_df.groupby(["service_name", "validation_status"])
-        .size()
-        .reset_index(name="count")
-        .pivot(index="service_name", columns="validation_status", values="count")
-        .fillna(0)
-        .astype(int)
-        .reset_index()
-    )
-    val_by_service.columns.name = None
-    st.dataframe(val_by_service, hide_index=True, use_container_width=True)
-
-st.divider()
-
-# ── AI Critic Intelligence ───────────────────────────────────────────────────
-st.markdown('<div id="critic-intel"></div>', unsafe_allow_html=True)
-st.subheader("🤖 AI Critic — *Should we escalate?*")
-st.caption(
-    "**Answers:** *Which CRITICAL alerts are genuinely safety-significant vs which are data artifacts?*"
-)
-
-_critic_rows_all = _run(storage.get_recent_critic_results(limit=50))
-
-_cri_total = len(_critic_rows_all)
-_cri_escalate = sum(1 for r in _critic_rows_all if r.get("escalate"))
-_cri_cascade = sum(1 for r in _critic_rows_all if r.get("pattern") == "CASCADE_FAILURE")
-_cri_isolated = sum(1 for r in _critic_rows_all if r.get("pattern") == "ISOLATED_FAULT")
-_cri_avg_conf = (sum(r.get("confidence", 0) or 0 for r in _critic_rows_all) / _cri_total) if _cri_total else None
-
-ck1, ck2, ck3, ck4, ck5 = st.columns(5)
-ck1.metric("Alerts Evaluated", f"{_cri_total:,}")
-ck2.metric("🔺 Escalations Suggested", _cri_escalate, delta_color="inverse" if _cri_escalate else "off")
-ck3.metric("Mean Confidence", f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—")
-ck4.metric("Cascade Failures", _cri_cascade, delta_color="inverse" if _cri_cascade else "off")
-ck5.metric("Isolated Faults", _cri_isolated)
-
-if not _critic_rows_all:
-    st.info("No Critic verdicts yet. Configure `LLM_PROVIDER` and trigger a CRITICAL alert to populate.")
-else:
-    _alert_id_to_row = {a.get("alert_id"): a for a in alerts_raw}
-    _SEV_PATTERN_COLOR = {
-        "CASCADE_FAILURE":    "red",
-        "ISOLATED_FAULT":     "orange",
-        "WEATHER_CORRELATED": "orange",
-        "DATA_ANOMALY":       "blue",
-        "TRANSIENT":          "grey",
-        "UNKNOWN":            "grey",
-    }
-    for cr in _critic_rows_all[:10]:
-        alert_row = _alert_id_to_row.get(cr.get("alert_id"), {})
-        conf = cr.get("confidence")
-        conf_str = f"{conf:.0%}" if conf is not None else "N/A"
-        conf_color = "red" if (conf or 0) >= 0.7 else ("orange" if (conf or 0) >= 0.5 else "grey")
-        pattern = cr.get("pattern", "UNKNOWN")
-        pattern_color = _SEV_PATTERN_COLOR.get(pattern, "grey")
-        escalate = bool(cr.get("escalate"))
-        escalate_badge = "🔺 ESCALATE TO SUPERVISOR" if escalate else "—"
-        reasoning = cr.get("reasoning", "")
-        alert_type = alert_row.get("alert_type", "—")
-        airport = alert_row.get("airport_code", "—")
-        service = alert_row.get("service_name", "—")
-
-        with st.container(border=True):
-            h1, h2, h3, h4 = st.columns([3, 1, 2, 2])
-            h1.markdown(f"**{alert_type}** · `{airport}` · `{service}`")
-            h2.markdown(f"confidence: :{conf_color}[**{conf_str}**]")
-            h3.markdown(f"pattern: :{pattern_color}[**{pattern}**]")
-            h4.markdown(f":red[**{escalate_badge}**]" if escalate else escalate_badge)
-            st.markdown(reasoning if reasoning else "_No reasoning recorded._")
-            cits_raw = cr.get("citations", "[]")
-            cits = _parse_json_str_list(cits_raw, "citations")
-            if cits:
-                st.caption(f"Evidence event_ids: `{', '.join(cits[:6])}`")
-
-st.divider()
-
-# ── Human Review Queue (HITL Execution Gate) ─────────────────────────────────
-st.markdown('<div id="hitl-queue"></div>', unsafe_allow_html=True)
-st.subheader("🧑‍✈️ Human Review Queue — *What needs operator approval?*")
-st.caption(
-    "**Answers:** *Which CRITICAL alerts are staged as PENDING actions that cannot execute until a human approves them?*"
-)
-
-_pending_actions = _run(get_pending_staged_actions())
-
-if not _pending_actions:
-    st.success("✅ **No pending actions.** All staged actions have been reviewed or no CRITICAL alerts are active.")
-else:
-    st.warning(f"⚠️ **{len(_pending_actions)} staged action(s) await operator approval.**")
-    for _action in _pending_actions:
-        _ticket = _run(get_ticket_by_action_id(_action.action_id))
-        with st.container(border=True):
-            title = (_ticket.title if _ticket else f"{_action.alert_type} at {_action.airport_code or '—'}")
-            h1, h2, h3 = st.columns([3, 1, 2])
-            h1.markdown(f"### {title}")
-            conf_str = f"{_action.critic_confidence:.0%}" if _action.critic_confidence is not None else "—"
-            h2.markdown(f"AI conf: **{conf_str}**")
-            posture = _ticket.posture if _ticket else "ACTION"
-            posture_color = {"ACTION": "red", "ATTENTION": "orange", "NORMAL": "blue", "GOOD": "green"}.get(posture, "grey")
-            h3.markdown(f"posture: :{posture_color}[**{posture}**]")
-
-            if _ticket and _ticket.summary:
-                st.markdown(f"**Summary:** {_ticket.summary}")
-            else:
-                st.markdown(f"**Recommended action:** {_action.recommended_action}")
-
-            if _ticket:
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    if _ticket.what_changed:
-                        st.markdown("**📋 What changed**")
-                        for it in _ticket.what_changed[:4]:
-                            st.markdown(f"- {it}")
-                    if _ticket.recommended_review:
-                        st.markdown("**👀 Recommended review**")
-                        for it in _ticket.recommended_review[:4]:
-                            st.markdown(f"- {it}")
-                with pc2:
-                    if _ticket.why_it_matters:
-                        st.markdown("**🎯 Why it matters**")
-                        for it in _ticket.why_it_matters[:4]:
-                            st.markdown(f"- {it}")
-                    if _ticket.evidence:
-                        st.markdown("**🔬 Evidence**")
-                        for it in _ticket.evidence[:4]:
-                            st.markdown(f"- {it}")
-
-                if _ticket.critic_rationale:
-                    with st.expander("🤖 AI Critic rationale"):
-                        st.markdown(_ticket.critic_rationale)
-
-                st.caption(
-                    f"ticket_id: `{_ticket.ticket_id[:18]}` · "
-                    f"action_id: `{_action.action_id[:18]}` · "
-                    f"brief_id: `{(_ticket.brief_id or '')[:18]}` · "
-                    f"status: `{_ticket.status}` · "
-                    f"drafted: {_ticket.generated_at.strftime('%H:%M:%S')} UTC"
-                )
-
-            _active_actor = (
-                f"{st.session_state.get('operator_id', 'watch_officer_primary')}"
-                f" ({st.session_state.get('operator_role', 'Watch Officer')})"
-            )
-            st.caption(f"🛡 Decisions will be signed & attributed in audit log as: **{_active_actor}**")
-
-            note_key = f"note_{_action.action_id}"
-            ap_key = f"approve_{_action.action_id}"
-            mo_key = f"monitor_{_action.action_id}"
-            rj_key = f"reject_{_action.action_id}"
-
-            note = st.text_input(
-                "Decision note (will be recorded in audit trail)",
-                key=note_key,
-                placeholder="e.g., verified vs STARS console, contacting KDCA tower",
-            )
-            b1, b2, b3, _sp = st.columns([1.4, 1.4, 1.4, 2])
-            
-            if b1.button("✅ Approve Escalation", key=ap_key, type="primary", use_container_width=True):
-                _run(gate_approve(_action.action_id, actor=_active_actor, note=note or ""))
-                if _ticket:
-                    _run(approve_operational_ticket(_ticket.ticket_id, actor=_active_actor, note=note or ""))
-                st.toast(f"Escalation APPROVED for {_action.action_id[:8]} by {_active_actor}", icon="✅")
-                st.rerun()
-                
-            if b2.button("👁 Continue Monitoring", key=mo_key, use_container_width=True,
-                         help="Keep staged action PENDING; mark ticket MONITORING"):
-                if _ticket:
-                    _run(mark_operational_ticket_monitoring(_ticket.ticket_id, actor=_active_actor, note=note or ""))
-                    st.toast(f"Ticket {_ticket.ticket_id[:8]} -> MONITORING by {_active_actor}", icon="👁")
-                else:
-                    st.warning("No ticket linked to this action; cannot mark monitoring.")
-                st.rerun()
-                
-            if b3.button("❌ Reject", key=rj_key, use_container_width=True):
-                _run(gate_reject(_action.action_id, actor=_active_actor, note=note or ""))
-                if _ticket:
-                    _run(reject_operational_ticket(_ticket.ticket_id, actor=_active_actor, note=note or ""))
-                st.toast(f"Action {_action.action_id[:8]} REJECTED by {_active_actor}", icon="❌")
-                st.rerun()
-
-# ── Decision Audit Trail ──────────────────────────────────────────────────────
-st.markdown('<div id="audit-trail"></div>', unsafe_allow_html=True)
-st.subheader("🗂 Decision Audit Trail")
-st.caption(
-    "**Answers:** *Who approved or rejected which action, when, and why?* "
-    "Immutable append-only log sourced from `action_audit_log`."
-)
-
-_audit_rows = _run(get_action_audit_log(limit=50))
-_recent_actions = _run(get_recent_staged_actions(limit=50))
-_action_map = {a.action_id: a for a in _recent_actions}
-
-if not _audit_rows:
-    st.info("No staged actions have been decided yet.")
-else:
-    audit_display = []
-    for r in _audit_rows:
-        act = _action_map.get(r.get("action_id"))
-        audit_display.append({
-            "Decided (UTC)":   r.get("created_at", "")[:19].replace("T", " "),
-            "Action":          (r.get("action_id") or "")[:18] + "…",
-            "Airport":         act.airport_code if act else "—",
-            "Alert Type":      act.alert_type if act else "—",
-            "From → To":       f"{r.get('previous_status','?')} → {r.get('new_status','?')}",
-            "Actor":           r.get("actor", "—"),
-            "Note":            r.get("note", "") or "—",
-        })
-    st.dataframe(
-        pd.DataFrame(audit_display),
-        hide_index=True,
-        use_container_width=True,
-        height=240,
-    )
-
-st.divider()
-
-# ── Alert Log ─────────────────────────────────────────────────────────────────
-st.markdown('<div id="alert-log"></div>', unsafe_allow_html=True)
-st.subheader("🚨 Operational Alert Log")
-st.caption(
-    "**Answers:** *What does the duty manager need to act on?*"
-)
-if not alerts_df.empty:
-    display_cols = [c for c in
-                    ["triggered_at", "severity", "alert_type",
-                     "airport_code", "service_name", "description"]
-                    if c in alerts_df.columns]
-    disp = alerts_df[display_cols].copy()
-    disp["severity"] = disp["severity"].apply(
-        lambda s: f"{SEVERITY_EMOJI.get(s, '')} {s}"
-    )
-    st.dataframe(
-        disp.rename(columns={
-            "triggered_at": "Triggered (UTC)",
-            "severity": "Severity",
-            "alert_type": "Alert Type",
-            "airport_code": "Airport",
-            "service_name": "Service",
-            "description": "Description",
-        }),
-        hide_index=True,
-        use_container_width=True,
-    )
-
-    with st.expander("Alert type breakdown"):
-        type_counts = alerts_df["alert_type"].value_counts().reset_index()
-        type_counts.columns = ["Alert Type", "Count"]
-        st.dataframe(type_counts, hide_index=True, use_container_width=True)
-        st.bar_chart(type_counts.set_index("Alert Type"))
-else:
-    st.success("No alerts in the log. System appears healthy.")
-
-st.divider()
-
-# ── Replay Test Results Panel ─────────────────────────────────────────────────
-st.subheader("Replay Test Results")
-replay_files_list = sorted(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
-if replay_files_list:
-    file_data = [
-        {"File": f.name, "Size": f"{f.stat().st_size:,} bytes"}
-        for f in replay_files_list
-    ]
-    st.dataframe(pd.DataFrame(file_data), hide_index=True, use_container_width=True)
-    st.caption("Click 'Run Replay from data/raw' in the sidebar to process these files.")
-else:
-    st.info(
-        "No replay files found in data/raw/. "
-        "Generate some first: `python -m src.main --mode sample`"
-    )
-
-st.divider()
-
-# ── Live SWIM Folder Status Panel ─────────────────────────────────────────────
-st.subheader("Live SWIM Folder Status")
-st.caption(
-    "This panel reflects the output folder written by the FAA SCDS Jumpstart JMS consumer."
-)
-
-swim_live_dir = config.SWIM_RAW_FOLDER
-failed_dir = config.DATA_DIR / "failed"
-processed_dir = config.PROCESSED_DIR
-
-sf1, sf2, sf3, sf4 = st.columns(4)
-
-pending_files = list([p for p in swim_live_dir.iterdir() if p.is_file()]) if swim_live_dir.exists() else []
-processed_files = list([p for p in processed_dir.iterdir() if p.is_file()]) if processed_dir.exists() else []
-processed_files = [f for f in processed_files if f.name != "ingest_log.jsonl"]
-failed_files = list([p for p in failed_dir.iterdir() if p.is_file()]) if failed_dir.exists() else []
-
-sf1.metric("Pending Files", len(pending_files), help="Files waiting in swim_live/")
-sf2.metric("Processed Files", len(processed_files), help="Successfully ingested")
-sf3.metric("Failed Files", len(failed_files), help="Parse or normalisation errors")
-
-ingest_log_entries = read_ingest_log(limit=50)
-processed_entries = [e for e in ingest_log_entries if e.get("status") == "processed"]
-if processed_entries:
-    latest_ts = processed_entries[0].get("timestamp", "")
-    latest_svc = processed_entries[0].get("services", [])
-    sf4.metric("Latest Ingest", latest_ts[11:19] + " UTC" if latest_ts else "--")
-    st.caption(f"Latest service(s) detected: {', '.join(latest_svc) if latest_svc else '--'}")
-else:
-    sf4.metric("Latest Ingest", "--")
-
-col_ingest, col_hint = st.columns([1, 2])
-with col_ingest:
-    if st.button("Scan swim_live/ Now", use_container_width=True,
-                 disabled=len(pending_files) == 0):
-        with st.spinner("Scanning swim_live/ ..."):
-            sw_events, sw_stats = scan_swim_folder(swim_live_dir)
-            for e in sw_events:
-                res = validate_event(e)
-                e.validation_status = "PASSED" if res.passed else "FAILED"
-                e.validation_errors = res.errors
-            _run(save_events(sw_events))
-            sw_alerts = check_alerts(sw_events)
-            _run(save_alerts(sw_alerts))
-        st.success(
-            f"Ingested {sw_stats.events_parsed} events from "
-            f"{sw_stats.files_processed} file(s). "
-            f"{sw_stats.files_failed} failed. "
-            f"{len(sw_alerts)} alert(s) triggered."
-        )
-        st.rerun()
-
-with col_hint:
-    if len(pending_files) == 0:
-        st.info(
-            "No files in `data/raw/swim_live/`. "
-            "Drop .json / .xml / .txt STDDS messages here, or "
-            "configure the FAA SCDS Jumpstart Kit to write to this folder."
-        )
-
-if ingest_log_entries:
-    with st.expander("Ingest audit log (latest 50 entries)"):
-        log_df = pd.DataFrame(ingest_log_entries)
-        st.dataframe(log_df, hide_index=True, use_container_width=True)
 
 st.divider()
 st.caption(

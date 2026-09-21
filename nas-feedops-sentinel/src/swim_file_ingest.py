@@ -13,15 +13,22 @@ Architecture:
         v
   data/processed/               (successfully ingested files)
   data/failed/                  (files that could not be parsed)
-  data/processed/ingest_log.jsonl  (audit trail of every file processed)
+  ingest_log (Postgres table)   (audit trail of every file processed)
 
 Supported raw file formats:
   .json  -- JSON dict or list of dicts (same shape as replay files)
   .xml   -- FIXM/AIXM-style XML; fields extracted by tag name matching
   .txt   -- one JSON object per line (newline-delimited JSON)
 
-Already-processed files are tracked via ingest_log.jsonl, so repeated
-scans of the same folder are idempotent.
+Already-processed files are tracked in the ingest_log table (see
+src/storage/repositories/ingest_log_repo.py), so repeated scans of the same
+folder are idempotent. This used to be a plain append-only
+data/processed/ingest_log.jsonl file that a long-running `--watch` process
+grew forever and fully re-read on every scan pass just to answer "have I
+seen this file name before?" -- the DB-backed version answers that with a
+single indexed, bounded query per scan instead, and the table itself stays
+bounded (see MAX_ROWS in ingest_log_repo.py) rather than growing without
+limit over the life of a long-running deployment.
 """
 from __future__ import annotations
 
@@ -39,7 +46,8 @@ from typing import Any
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from src import config
+from src import config, storage
+from src.async_bridge import run_async
 from src.models import NASEvent
 from dataclasses import dataclass
 from src.logging_config import get_logger
@@ -63,7 +71,6 @@ def shutdown_requested() -> bool:
 
 PROCESSED_DIR: Path = config.PROCESSED_DIR
 FAILED_DIR: Path = config.DATA_DIR / "failed"
-INGEST_LOG: Path = PROCESSED_DIR / "ingest_log.jsonl"
 
 # Accept .json/.xml/.txt AND extension-less files (Kit's MessageFileOutput
 # writes one file per JMS message named by epoch millis, no extension).
@@ -97,30 +104,29 @@ _XML_FIELD_MAP: dict[str, str] = {
 
 #  Ingest log helpers   
 
-def _load_processed_filenames() -> set[str]:
-    """Return the set of file names already recorded in ingest_log.jsonl."""
-    if not INGEST_LOG.exists():
-        return set()
-    seen: set[str] = set()
-    for line in INGEST_LOG.read_text(encoding="utf-8").splitlines():
-        try:
-            entry = json.loads(line)
-            seen.add(entry.get("file", ""))
-        except json.JSONDecodeError:
-            pass
-    return seen
+def _get_already_processed(candidate_names: list[str]) -> set[str]:
+    """
+    Return the subset of candidate_names already recorded in the ingest_log table.
+
+    Deliberately bounded to the file names currently sitting in the watched folder
+    (small, and further capped by scan_swim_folder's max_files) rather than loading
+    every file name ever processed -- see ingest_log_repo.py's docstring for why that
+    distinction matters for a long-running --watch deployment.
+    """
+    return run_async(storage.get_ingested_file_names(candidate_names))
 
 
 def _append_log_entry(entry: dict) -> None:
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    with INGEST_LOG.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    run_async(storage.record_ingest_log_entry(entry))
 
 
 #   File parsers  
 
 def _parse_json_file(path: Path) -> list[dict]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    # utf-8-sig: strips a leading BOM if present, identical to utf-8 if not.
+    # A BOM left in place surfaces as \ufeff and breaks json.loads on a
+    # perfectly valid message -- Windows tooling emits them routinely.
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
@@ -131,7 +137,7 @@ def _parse_json_file(path: Path) -> list[dict]:
 def _parse_txt_file(path: Path) -> list[dict]:
     """Newline-delimited JSON (one object per line)."""
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if line:
             records.append(json.loads(line))
@@ -202,7 +208,7 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
     (TAIS messages typically contain many records). Headers are merged
     into each record so downstream knows tracon, msgType, timestamp, etc.
     """
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
 
     headers: dict[str, str] = {}
     body_lines: list[str] = []
@@ -233,7 +239,40 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
     except json.JSONDecodeError:
         return [_jms_headers_only_record(headers, path)]
 
-    return _extract_records(headers, body, path)
+    records, recognised = _extract_records(headers, body, path)
+    if records:
+        return records
+
+    # No records. Whether that is fine depends entirely on WHY.
+    #
+    #   recognised=True  -- we understand this feed and it simply had nothing
+    #       for us: no PCT-primary traffic in this TAIS message, an RVR update
+    #       for an airport outside scope, a departure from elsewhere. Normal.
+    #
+    #   recognised=False -- we do not understand this payload shape at all.
+    #       Before this distinction existed, such a file took neither failure
+    #       branch in scan_swim_folder(): it was moved to data/processed/ and
+    #       logged status=processed with event_count=0. Three of the four feeds
+    #       on the live subscription (TDES, APDS, SMES) hit that path, so most
+    #       of the feed was discarded while the ingest counters and dashboard
+    #       both showed healthy.
+    #
+    # Raising routes the file to data/failed/ with a diagnostic naming the feed
+    # and the real payload root -- which is what tells you what to write next.
+    if recognised:
+        return []
+
+    root_name, _ = _drill_payload(body)
+    shape = (
+        list(body.keys())[:6] if isinstance(body, dict)
+        else type(body).__name__
+    )
+    raise ValueError(
+        f"Unrecognised STDDS payload shape (mex={headers.get('mex', '?')}, "
+        f"msgType={headers.get('msgType', '?')}): root={root_name or 'unknown'}, "
+        f"top-level keys={shape}. No extractor handles this feed yet -- "
+        f"see _extract_records() in src/swim_file_ingest.py."
+    )
 
 
 def _jms_headers_only_record(headers: dict[str, str], path: Path) -> dict:
@@ -259,6 +298,12 @@ def _service_from_mex(mex: str) -> str:
         "APDS_RVR": "APDS_RVR",
         "ISMC": "ISMC",
         "TFDM": "TOWER_DEPARTURE",
+        # The live STDDS subscription sends TDES (Tower Data Exchange /
+        # TDLS), not TFDM. Without this it fell through to the
+        # TERMINAL_AUTO default, mislabelling every departure-clearance
+        # message as terminal-automation data. Confirmed against real
+        # captured messages: mex=TDES, root ns5:TowerDepartureEventMessage.
+        "TDES": "TOWER_DEPARTURE",
     }.get(mex_up, "TERMINAL_AUTO")
 
 
@@ -310,58 +355,268 @@ def _normalise_icao(code: str | None) -> str:
     return c
 
 
-def _extract_records(headers: dict[str, str], body: dict, path: Path) -> list[dict]:
+def _drill_payload(body: dict) -> tuple[str, dict]:
     """
-    Extract per-aircraft NASEvent dicts from a TAIS payload.
+    Strip the namespace-prefixed root element and return (root_name, payload).
 
-    TAIS shape: { "ns2:TATrackAndFlightPlan": { "record": [ {...}, {...} ] } }
-    Each record carries a flightPlan (with airport, runway, acid) and a track
-    (lat/lon, altitude). We emit one dict per record whose airport falls
-    within PCT TRACON primary scope.
+    Every STDDS message arrives as a single-key object whose key names the
+    message type, e.g. "ns2:RVRDataUpdateMessage" -> the RVR payload. The root
+    name is the most reliable discriminator between feeds, so unlike the
+    previous drill-and-discard it is kept.
     """
-    # Drill past the namespace-prefixed root if present (TAIS / TFDM convention)
-    payload = body
-    if isinstance(payload, dict) and len(payload) == 1:
-        inner = next(iter(payload.values()))
+    if isinstance(body, dict) and len(body) == 1:
+        root_name = next(iter(body.keys()))
+        inner = body[root_name]
         if isinstance(inner, dict):
-            payload = inner
+            return root_name, inner
+    return "", body if isinstance(body, dict) else {}
+
+
+def _pct_primary_from(*candidates: str | None) -> str | None:
+    """
+    Return the first candidate identifier that is a PCT primary airport.
+
+    Deliberately checks EVERY candidate rather than normalising the first
+    non-empty one and then testing it. A flight from HGR into KDCA carries
+    flightPlan.airport="HGR" (its origin) alongside
+    enhancedData.destinationAirport="KDCA"; first-wins logic normalised "HGR"
+    to "KHGR", failed the primary-airport test, and dropped an arrival into
+    National.
+    """
+    for candidate in candidates:
+        if not candidate:
+            continue
+        code = _normalise_icao(candidate)
+        if code in _PCT_PRIMARY_AIRPORTS:
+            return code
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    """STDDS uses "" for an unavailable numeric field; treat that as absent."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_records(
+    headers: dict[str, str],
+    body: dict,
+    path: Path,
+) -> tuple[list[dict], bool]:
+    """
+    Turn one STDDS message into NASEvent dicts.
+
+    Returns (records, recognised). The second element matters: an empty list
+    from a feed we understand (no PCT-primary traffic in this message) is a
+    normal outcome, while an empty list from a shape we do not understand is
+    silent data loss and must be surfaced by the caller.
+    """
+    root_name, payload = _drill_payload(body)
+
+    if "TATrackAndFlightPlan" in root_name or "record" in payload:
+        return _extract_tais(headers, payload), True
+
+    if "RVRDataUpdateMessage" in root_name or "runwayData" in payload:
+        return _extract_apds_rvr(headers, payload), True
+
+    if "TowerDepartureEventMessage" in root_name or "departureAirport" in payload:
+        return _extract_tdes(headers, payload), True
+
+    return [], False
+
+
+def _common_fields(headers: dict[str, str]) -> tuple[str, str, str | None]:
+    """tracon, service_name and the header-derived timestamp shared by all feeds."""
+    return (
+        headers.get("tracon") or headers.get("srcTracon") or "PCT",
+        _service_from_mex(headers.get("mex", "")),
+        headers.get("safaRcvTimestamp") or headers.get("timestamp"),
+    )
+
+
+# ── APDS -- runway visual range ───────────────────────────────────────────────
+
+def _extract_apds_rvr(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:RVRDataUpdateMessage -> one event per runway.
+
+    Shape (confirmed against tests/fixtures/swim_kit/apds_sample, a real
+    captured message):
+
+        { "airport": "KBWI",
+          "runwayData": [ { "runwayID": {"numericRunwayID": 15,
+                                         "runwaySubID": "L"},
+                            "touchdownVisualRange": 60,
+                            "midpointVisualRange": 60,
+                            "rolloutVisualRange": 60, ... } ] }
+
+    One event per runway rather than per message, because NASEvent carries a
+    single runway plus its three RVR readings, and ALERT_LOW_RVR needs to
+    name the affected runway.
+    """
+    tracon, service_name, event_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "RR")
+
+    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    if airport is None:
+        return []
+
+    runways = payload.get("runwayData") or []
+    if isinstance(runways, dict):
+        runways = [runways]
+
+    out: list[dict] = []
+    for rw in runways:
+        if not isinstance(rw, dict):
+            continue
+
+        rw_id = rw.get("runwayID") or {}
+        number = _coerce_int(rw_id.get("numericRunwayID"))
+        if number is None:
+            continue
+        runway = f"{number:02d}{(rw_id.get('runwaySubID') or '').strip().upper()}"
+
+        touchdown = _scale_rvr(rw.get("touchdownVisualRange"))
+        midpoint = _scale_rvr(rw.get("midpointVisualRange"))
+        rollout = _scale_rvr(rw.get("rolloutVisualRange"))
+
+        # A runway reporting no RVR at all carries no signal -- emitting it
+        # would just create events that can never trigger or clear an alert.
+        if touchdown is None and midpoint is None and rollout is None:
+            continue
+
+        out.append({
+            "airport_code": airport,
+            "tracon": tracon,
+            "service_name": service_name,
+            "message_type": f"APDS_{msg_type}",
+            "event_time_utc": event_ts,
+            "runway": runway,
+            "rvr_touchdown": touchdown,
+            "rvr_midpoint": midpoint,
+            "rvr_rollout": rollout,
+            "feed_status": "operational",
+        })
+
+    return out
+
+
+def _scale_rvr(value: Any) -> int | None:
+    """
+    Convert a wire RVR reading to feet via config.APDS_RVR_SCALE_FT.
+
+    THE SCALE FACTOR IS AN ASSUMPTION AND IS NOT YET CONFIRMED AGAINST THE
+    APDS ICD. See the comment on APDS_RVR_SCALE_FT in src/config.py for the
+    evidence behind the current default and why getting it wrong matters in
+    both directions. It is a single config value precisely so that confirming
+    it is a one-line change.
+    """
+    raw = _coerce_int(value)
+    if raw is None:
+        return None
+    return raw * config.APDS_RVR_SCALE_FT
+
+
+# ── TDES -- tower departure / TDLS clearance events ───────────────────────────
+
+def _extract_tdes(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns5:TowerDepartureEventMessage -> one departure event.
+
+    Shape (confirmed against tests/fixtures/swim_kit/tdes_sample):
+
+        { "departureAirport": "KDCA", "aircraftID": "JIA5567",
+          "aircraftType": "CRJ7", "beaconCode": 3755, "parkingGate": "G",
+          "flightID": "...", "eventTime": "2026-08-27T20:42:16.000Z",
+          "clearanceDeliveryTime": "...",
+          "enhancedData": { "destinationAirport": "KCRW", ... } }
+
+    eventTime is the facility's own timestamp for the event and is preferred
+    over the JMS receipt header, because latency_ms is derived from it and
+    drives ALERT_HIGH_LATENCY -- using the receipt time would measure this
+    system's own clock against itself and report zero latency always.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "DE")
+    enhanced = payload.get("enhancedData") or {}
+
+    airport = _pct_primary_from(
+        payload.get("departureAirport"),
+        headers.get("airport"),
+        enhanced.get("destinationAirport"),
+    )
+    if airport is None:
+        return []
+
+    beacon = payload.get("beaconCode")
+
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"TDES_{msg_type}",
+        "event_time_utc": payload.get("eventTime") or header_ts,
+        "aircraft_id": payload.get("aircraftID") or payload.get("flightID"),
+        "beacon_code": str(beacon) if beacon not in (None, "") else None,
+        # A tower departure event is by definition a departure, and the
+        # aircraft is still on the surface at clearance delivery.
+        "flight_phase": "DEPARTURE",
+        "surface_event_type": f"DEPARTURE_{msg_type}",
+        "feed_status": "operational",
+    }]
+
+
+# ── TAIS -- terminal automation tracks ────────────────────────────────────────
+
+def _extract_tais(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:TATrackAndFlightPlan -> one event per track associated with a PCT
+    primary airport.
+
+    Most records in a TAIS message are simply aircraft inside PCT airspace
+    with no airport association at all, and NASEvent.airport_code is a
+    Literal of the four PCT primaries -- so those genuinely cannot become
+    events and are dropped. That is correct, not a gap.
+
+    What was a gap: airport selection took the first non-empty identifier and
+    then tested it, so an arrival into KDCA whose flightPlan.airport named its
+    origin was discarded. _pct_primary_from() now tests every candidate.
+    """
+    tracon, service_name, event_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "track")
 
     records = payload.get("record") or []
     if isinstance(records, dict):
         records = [records]
 
-    tracon = headers.get("tracon", "PCT")
-    service_name = _service_from_mex(headers.get("mex", ""))
-    msg_type = headers.get("msgType", "track")
-    event_ts = headers.get("safaRcvTimestamp") or headers.get("timestamp")
-
     out: list[dict] = []
     for rec in records:
         if not isinstance(rec, dict):
             continue
+
         fp = rec.get("flightPlan") or {}
         enhanced = rec.get("enhancedData") or {}
         track = rec.get("track") or {}
 
-        # Pick the most specific airport identifier we can find
-        airport_raw = (
-            fp.get("airport")
-            or enhanced.get("destinationAirport")
-            or enhanced.get("departureAirport")
+        airport = _pct_primary_from(
+            enhanced.get("destinationAirport"),
+            enhanced.get("departureAirport"),
+            fp.get("airport"),
         )
-        airport = _normalise_icao(airport_raw)
-
-        # Filter to PCT primary airports â€” keep volume sane and stay in demo scope
-        if airport not in _PCT_PRIMARY_AIRPORTS:
+        if airport is None:
             continue
 
-        # Spatial fields from track
         lat = track.get("lat")
         lon = track.get("lon")
-        altitude_ft = track.get("reportedAltitude")
+        altitude_ft = _coerce_int(track.get("reportedAltitude"))
         vx = track.get("vx")
         vy = track.get("vy")
-        v_vert = track.get("vVert")
+        v_vert = _coerce_int(track.get("vVert"))
+
         ground_speed_kt = None
         if vx is not None and vy is not None:
             try:
@@ -369,38 +624,42 @@ def _extract_records(headers: dict[str, str], body: dict, path: Path) -> list[di
             except (TypeError, ValueError):
                 pass
 
-        # Derive flight phase from altitude + vertical speed + airport context
-        dep_airport = _normalise_icao(enhanced.get("departureAirport"))
-        dst_airport = _normalise_icao(enhanced.get("destinationAirport"))
         flight_phase = _derive_flight_phase(
             altitude_ft=altitude_ft,
             v_vert=v_vert,
             this_airport=airport,
-            departure=dep_airport,
-            destination=dst_airport,
+            departure=_normalise_icao(enhanced.get("departureAirport")),
+            destination=_normalise_icao(enhanced.get("destinationAirport")),
         )
+
+        # STARS uses "NNNN" as its unassigned-runway sentinel; it is not a runway.
+        runway_raw = (fp.get("runway") or "").strip().upper()
+        runway = None if runway_raw in ("", "NNNN") else runway_raw
+
+        beacon = fp.get("assignedBeaconCode") or track.get("reportedBeaconCode")
 
         out.append({
             "airport_code": airport,
             "tracon": tracon,
             "service_name": service_name,
             "message_type": f"TAIS_{msg_type}",
-            "event_time_utc": event_ts,
+            # The per-record receipt time beats the message-level header:
+            # one TAIS message carries many tracks sampled at different times.
+            "event_time_utc": rec.get("recSAFAReceiptTime") or event_ts,
             "aircraft_id": fp.get("acid") or track.get("acAddress"),
             "track_id": str(track.get("trackNum")) if track.get("trackNum") is not None else None,
-            "runway": (fp.get("runway") or "").upper() or None,
+            "runway": runway,
             "lat": float(lat) if lat is not None else None,
             "lon": float(lon) if lon is not None else None,
-            "altitude_ft": int(altitude_ft) if altitude_ft is not None else None,
+            "altitude_ft": altitude_ft,
             "ground_speed_kt": ground_speed_kt,
-            "vertical_speed_fpm": int(v_vert) if v_vert is not None else None,
+            "vertical_speed_fpm": v_vert,
             "flight_phase": flight_phase,
             "flight_rules": fp.get("flightRules"),
-            "beacon_code": str(fp.get("assignedBeaconCode") or track.get("reportedBeaconCode") or "") or None,
+            "beacon_code": str(beacon) if beacon not in (None, "") else None,
+            "feed_status": "operational",
         })
 
-    # If no records fall within PCT primary scope, return empty list rather
-    # than emitting a noisy "PCT" placeholder that would fail ICAO validation.
     return out
 
 
@@ -438,7 +697,17 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
     for ts_field in ("event_time_utc", "received_time_utc"):
         if ts_field in raw and isinstance(raw[ts_field], str):
             try:
-                parsed = datetime.fromisoformat(raw[ts_field])
+                # STDDS timestamps are Zulu-suffixed (2026-08-27T20:42:16.000Z).
+                # datetime.fromisoformat() only learned to accept a trailing Z in
+                # Python 3.11; on 3.10 it raises ValueError, and because
+                # event_time_utc is load-bearing that rejected EVERY timestamped
+                # STDDS message. The container runs 3.12 so it happened to work
+                # there, but a local run on 3.10 silently dropped the entire feed.
+                # Normalising the suffix makes the parse version-independent.
+                ts_text = raw[ts_field].strip()
+                if ts_text.endswith(("Z", "z")):
+                    ts_text = ts_text[:-1] + "+00:00"
+                parsed = datetime.fromisoformat(ts_text)
                 # Replace timezone-aware datetime with its naive UTC equivalent
                 if parsed.tzinfo is not None:
                     parsed = parsed.utctimetuple()
@@ -516,20 +785,32 @@ class IngestStats:
 def scan_swim_folder(
     source_dir: Path | None = None,
     max_files: int = 500,
+    processed_dir: Path | None = None,
+    failed_dir: Path | None = None,
 ) -> tuple[list[NASEvent], IngestStats]:
     """
     Scan source_dir for new STDDS message files, parse them, and return
     NASEvents ready for the validation + alert pipeline.
 
-    Files are moved to data/processed/ on success or data/failed/ on error.
-    The ingest_log.jsonl is updated with every file touched.
-    Already-processed files (tracked by name in ingest_log.jsonl) are skipped.
+    Files are moved to processed_dir on success or failed_dir on error.
+    The ingest_log table is updated with every file touched.
+    Already-processed files (tracked by name in ingest_log) are skipped.
+
+    processed_dir/failed_dir default to the module-level PROCESSED_DIR and
+    FAILED_DIR (i.e. data/processed and data/failed). They are parameters
+    rather than hardcoded globals so a caller -- in practice a test -- can
+    point them at a tmp_path and get real isolation. Reading them from
+    globals meant every test shared data/processed/, so runs polluted the
+    repo and interfered with each other; the tests in
+    tests/test_swim_file_ingest.py were written against this signature
+    before it existed.
     """
     source_dir = source_dir or (config.DATA_DIR / "raw" / "swim_live")
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    FAILED_DIR.mkdir(parents=True, exist_ok=True)
+    processed_dir = processed_dir or PROCESSED_DIR
+    failed_dir = failed_dir or FAILED_DIR
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    failed_dir.mkdir(parents=True, exist_ok=True)
 
-    already_processed = _load_processed_filenames()
     stats = IngestStats()
     all_events: list[NASEvent] = []
 
@@ -538,6 +819,8 @@ def scan_swim_folder(
         if f.is_file() and f.suffix.lower() in SCAN_EXTENSIONS
     ]
     stats.files_detected = len(all_candidates)
+
+    already_processed = _get_already_processed([f.name for f in all_candidates])
 
     # Separate already-processed files and account for them in skipped stats
     unprocessed = [f for f in all_candidates if f.name not in already_processed]
@@ -575,7 +858,7 @@ def scan_swim_folder(
         raw_records, parse_error = _parse_file(path)
 
         if parse_error and not raw_records:
-            _move_to_failed(path, parse_error)
+            _move_to_failed(path, parse_error, failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -597,7 +880,7 @@ def scan_swim_folder(
                 errors.append(err or "Unknown normalisation error")
 
         if not events and errors:
-            _move_to_failed(path, "; ".join(errors))
+            _move_to_failed(path, "; ".join(errors), failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -608,10 +891,32 @@ def scan_swim_folder(
             continue
 
         # Move to processed
-        dest = PROCESSED_DIR / path.name
+        dest = processed_dir / path.name
         if dest.exists():
-            dest = PROCESSED_DIR / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
-        shutil.move(str(path), str(dest))
+            dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
+        try:
+            shutil.move(str(path), str(dest))
+        except OSError as exc:
+            # The file parsed fine; only the archival move failed. That is the
+            # normal case on a read-only ingest mount (a :ro volume, or a
+            # network share the container cannot write to), and it must not
+            # abort the scan or discard events we already extracted.
+            #
+            # _move_to_failed() has always caught this; the success path did
+            # not, so one unwritable mount raised OSError straight out of
+            # scan_swim_folder and killed the whole pass.
+            #
+            # The file stays where it is. The ingest_log entry written below
+            # is what stops it being reprocessed on the next scan, so
+            # leaving it in place is safe rather than a duplicate-ingest risk.
+            _log.warning(
+                "swim_ingest_archive_move_failed",
+                extra={
+                    "file_name": path.name,
+                    "destination": str(dest),
+                    "error": str(exc),
+                },
+            )
 
         services = list({e.service_name for e in events if e.service_name})
         _append_log_entry({
@@ -754,25 +1059,15 @@ def watch_swim_folder(
 
 def read_ingest_log(limit: int = 100) -> list[dict]:
     """Return the most recent ingest log entries (newest first)."""
-    if not INGEST_LOG.exists():
-        return []
-    lines = INGEST_LOG.read_text(encoding="utf-8").splitlines()
-    entries = []
-    for line in reversed(lines):
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
-        if len(entries) >= limit:
-            break
-    return entries
+    return run_async(storage.get_recent_ingest_log(limit))
 
 
-def _move_to_failed(path: Path, reason: str) -> None:
-    FAILED_DIR.mkdir(parents=True, exist_ok=True)
-    dest = FAILED_DIR / path.name
+def _move_to_failed(path: Path, reason: str, failed_dir: Path | None = None) -> None:
+    failed_dir = failed_dir or FAILED_DIR
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    dest = failed_dir / path.name
     if dest.exists():
-        dest = FAILED_DIR / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
+        dest = failed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
     try:
         shutil.move(str(path), str(dest))
         _log.warning(

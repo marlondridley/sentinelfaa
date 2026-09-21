@@ -96,7 +96,7 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
                 agent=critic_agent,
                 output_pydantic=CriticResult
             )
-            crew = Crew(agents=[critic_agent], tasks=[task], verbose=False, memory=False)
+            crew = Crew(agents=[critic_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
             crew_output = crew.kickoff()
             result = crew_output.pydantic
             
@@ -138,7 +138,7 @@ def run_demo() -> None:
         agent=planner_agent,
         output_pydantic=PlannerResult
     )
-    crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False)
+    crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
     crew_output = crew.kickoff()
     result = crew_output.pydantic
     

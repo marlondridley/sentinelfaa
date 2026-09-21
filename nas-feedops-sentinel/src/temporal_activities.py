@@ -1,6 +1,7 @@
 """Temporal activity definitions."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,19 @@ async def ingest_folder_activity(
     # replay mode and the dashboard rely on -- so we don't duplicate that
     # default here.
     source = Path(source_dir) if source_dir else None
-    events, stats = scan_swim_folder(source)
+
+    # scan_swim_folder() is synchronous and reaches storage through
+    # src/async_bridge.run_async(), which drives its own long-lived event loop
+    # with run_until_complete(). Called directly from here -- inside the
+    # Temporal worker's running loop -- that raised "Cannot run the event
+    # loop while another loop is running" on the first file, and because
+    # RuntimeError is not in _PERMANENT_DATA_ERRORS the workflow retried it
+    # to exhaustion. A worker thread has no running loop, so the bridge works
+    # there; it also keeps blocking file I/O off the worker's loop, which
+    # Temporal requires of async activities anyway. (The storage pool is
+    # per-loop -- see src/storage/pool.py -- so the scan's writes on the
+    # bridge loop and run_pipeline's on this one no longer collide.)
+    events, stats = await asyncio.to_thread(scan_swim_folder, source)
     summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
     _log.info(
         "ingest_folder_complete",

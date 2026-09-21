@@ -1,10 +1,10 @@
 """
-Central configuration for NAS FeedOps Sentinel[cite: 4].
+Central configuration for NAS FeedOps Sentinel.
 
-All tunables are environment-overridable via a Pydantic Settings object[cite: 4].
+All tunables are environment-overridable via a Pydantic Settings object.
 
-The application uses LiteLLM as its single LLM gateway[cite: 4]. Provider-specific
-models and failover are managed by LiteLLM, not by the NAS application[cite: 4].
+The application uses LiteLLM as its single LLM gateway. Provider-specific
+models and failover are managed by LiteLLM, not by the NAS application.
 """
 
 from __future__ import annotations
@@ -24,11 +24,35 @@ PROCESSED_DIR: Path = DATA_DIR / "processed"
 FAILED_DIR: Path = DATA_DIR / "failed"
 
 
-# Clear empty environment variables before Settings loads .env[cite: 4].
-# This prevents a stale FOO="" in the shell from shadowing .env values[cite: 4].
-for _k in list(os.environ):
-    if os.environ[_k] == "":
-        del os.environ[_k]
+# NOTE: this module deliberately does NOT strip empty environment variables.
+#
+# It used to. Five lines here deleted every os.environ entry whose value was
+# the empty string, on the theory that a stale FOO="" in a shell should not
+# shadow .env. That trade was wrong three ways:
+#
+#   1. An empty value is the only way to say "ignore .env, use the computed
+#      default" from a container's environment, and deleting it made every
+#      such override do the exact opposite of what was asked -- silently.
+#      `docker run -e DATABASE_URL= -e POSTGRES_DB=sentinel_test ...`, the
+#      documented way to aim the suite at a throwaway database, resolved to
+#      .env's nas-pgbouncer:6432/sentinel_db instead: the live database.
+#      Only the current_database() check in src/storage/test_support.py kept
+#      a full-suite run from TRUNCATE-ing production data, audit trail
+#      included.
+#   2. For the same reason `-e VAULT_ADDR= -e VAULT_TOKEN=` could not turn
+#      the Vault settings source off. VaultSettingsSource short-circuits on
+#      an empty address or token (src/vault_config.py), but both variables
+#      were deleted before it ever ran, so .env's values were used and Vault
+#      kept injecting POSTGRES_* above the environment.
+#   3. It mutated global process state as an import side effect, across every
+#      variable in the environment -- including ones this application does
+#      not own (NO_PROXY="", PYTHONWARNINGS="", ...) and that other libraries
+#      in the same process read.
+#
+# So: empty means empty. Both places where that matters already handle it --
+# VaultSettingsSource returns {} on an empty address or token, and
+# _defaults() below rebuilds DATABASE_URL from the POSTGRES_* settings
+# whenever DATABASE_URL is empty.
 
 
 class Settings(BaseSettings):
@@ -40,14 +64,14 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # ── Credentials (Will be populated by Vault if active, else .env) ──[cite: 4]
+    # ── Credentials (Will be populated by Vault if active, else .env) ──
     LITELLM_API_KEY: str | None = None
     LITELLM_MASTER_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     DEEPSEEK_API_KEY: str | None = None
 
-    # ── Postgres and DB Configuration ──────────────────────────────────────[cite: 4]
+    # ── Postgres and DB Configuration ──────────────────────────────────────
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str | None = None
     POSTGRES_DB: str | None = None
@@ -55,16 +79,16 @@ class Settings(BaseSettings):
     DB_PASSWORD: str | None = None
     DB_NAME: str | None = None
 
-    # ── Paths ────────────────────────────────────────────────────────────────[cite: 4]
+    # ── Paths ────────────────────────────────────────────────────────────────
     INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
 
-    # ── Database / PgBouncer ────────────────────────────────────────────────[cite: 4]
+    # ── Database / PgBouncer ────────────────────────────────────────────────
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 6432
     DATABASE_URL: str = ""
 
-    # ── NAS domain constants ────────────────────────────────────────────────[cite: 4]
+    # ── NAS domain constants ────────────────────────────────────────────────
     SUPPORTED_AIRPORTS: set[str] = Field(
         default_factory=lambda: {
             "KDCA",
@@ -86,30 +110,105 @@ class Settings(BaseSettings):
         }
     )
 
-    # ── Alert thresholds ─────────────────────────────────────────────────────[cite: 4]
+    # ── Alert thresholds ─────────────────────────────────────────────────────
+    #
+    # PROVENANCE. These values decide what the system calls an operational
+    # fact, so where each one comes from matters as much as what it is.
+    # Two different kinds are mixed here and they should not be defended
+    # the same way:
+    #
+    #   DOMAIN-DERIVED -- traceable to an external aviation authority.
+    #   Must not be changed casually, and must carry a citation.
+    #
+    #   ENGINEERING-CHOSEN -- our own SLO/heuristic for feed health.
+    #   Legitimate to tune, but must be defended as an engineering
+    #   judgement rather than presented as though an authority set it.
+    #
+    # RVR_LOW_THRESHOLD_FT = 1200
+    #   DOMAIN-DERIVED -- CITATION STILL REQUIRED.
+    #   1200 ft is one of the standard reported RVR steps and sits in the
+    #   low-visibility band where approach/landing minima begin to bind.
+    #   It is NOT a universal constant: the figure that actually governs
+    #   is the minimum published for the specific approach in use on the
+    #   specific runway. Before this is presented as authoritative it must
+    #   be reconciled against the approach minima in effect for the
+    #   runways in scope (KDCA / KIAD / KBWI / KADW) and the citation
+    #   recorded here. Until then it is a defensible screening threshold
+    #   for 'visibility low enough that a human should look' -- not a
+    #   regulatory determination, and it should not be described as one.
+    #
+    # STALE_FEED_SECONDS = 300
+    #   ENGINEERING-CHOSEN. Five minutes of silence is treated as possible
+    #   silent feed failure. Known weakness: applied uniformly to every
+    #   service in SWIM_SERVICES, but those feeds do not share a
+    #   publication cadence -- a steady high-rate surface feed (SMES) and
+    #   a low-rate status feed (ISMC) cannot both be well served by one
+    #   number. The defensible version is per-service, derived from each
+    #   feed's observed inter-message interval. Treat this single global
+    #   value as a known simplification, not a measured threshold.
+    #
+    # LATENCY_ALERT_MS = 30000
+    #   ENGINEERING-CHOSEN. Delivery-latency SLO for the ingest path.
+    #   Same per-service caveat as STALE_FEED_SECONDS.
+    #
+    # SURFACE_SPIKE_COUNT = 10 / SURFACE_SPIKE_WINDOW_SECONDS = 60
+    #   ENGINEERING-CHOSEN heuristic for a data loop or a genuine surface
+    #   incident: >10 SMES events in 60 s. Not calibrated against a
+    #   measured baseline of normal PCT surface-event rates; calibrating
+    #   it against real traffic is what would make it defensible.
+    #
     LATENCY_ALERT_MS: int = 30000
     STALE_FEED_SECONDS: int = 300
     SURFACE_SPIKE_COUNT: int = 10
     SURFACE_SPIKE_WINDOW_SECONDS: int = 60
     RVR_LOW_THRESHOLD_FT: int = 1200
 
-    # ── Agents / LLM ─────────────────────────────────────────────────────────[cite: 4]
+    # APDS_RVR_SCALE_FT -- multiplier converting a wire RVR reading to feet.
+    #
+    # UNCONFIRMED ASSUMPTION. This is the one value in the ingest path not
+    # verified against either a varied real sample or an ICD, and it is
+    # safety-adjacent, so it is called out here rather than buried in code.
+    #
+    # Evidence available: exactly one real APDS message was captured
+    # (tests/fixtures/swim_kit/apds_sample). Every one of KBWI's six runway
+    # ends reports touchdown/midpoint/rollout = 60, all with a rising trend.
+    #
+    # Read as feet, 60 ft RVR is far below any landing minimum -- six runway
+    # ends simultaneously at 60 ft would mean the airport was closed, not
+    # operating normally. Read as hundreds of feet, 60 becomes 6000 ft,
+    # which is the standard maximum reportable RVR and is exactly what a
+    # clear day looks like. Only the second reading is consistent with the
+    # capture, hence the default of 100.
+    #
+    # Both error directions are costly, which is why this needs confirming:
+    #   too high -- a genuine low-RVR event reads as 120,000 ft and
+    #               ALERT_LOW_RVR never fires. A missed safety signal.
+    #   too low  -- every routine message reads below RVR_LOW_THRESHOLD_FT
+    #               and ALERT_LOW_RVR fires constantly. Alarm fatigue makes
+    #               the alert worthless, which is a missed signal too.
+    #
+    # Confirm against the APDS RVRDataUpdateMessage ICD, or against a
+    # capture taken in genuinely low visibility, then set this and remove
+    # this caveat.
+    APDS_RVR_SCALE_FT: int = 100
+
+    # ── Agents / LLM ─────────────────────────────────────────────────────────
     CRITIC_ENABLED: bool = True
     AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
-    # This is an APPLICATION-FACING LiteLLM alias[cite: 4].
+    # This is an APPLICATION-FACING LiteLLM alias.
     LLM_MODEL: str = "openai/primary-model"
 
-    # Optional role-specific aliases[cite: 4].
+    # Optional role-specific aliases.
     CRITIC_MODEL: str = ""
     PLANNER_MODEL: str = ""
     WATCH_OFFICER_MODEL: str = ""
 
     MAX_CRITIC_PER_PASS: int = 5
 
-    # ── LiteLLM Proxy ────────────────────────────────────────────────────────[cite: 4]
+    # ── LiteLLM Proxy ────────────────────────────────────────────────────────
     LITELLM_PROXY_URL: str = "http://localhost:4000/v1"
 
-    # ── Temporal ─────────────────────────────────────────────────────────────[cite: 4]
+    # ── Temporal ─────────────────────────────────────────────────────────────
     TEMPORAL_HOST: str = "localhost:7233"
     TEMPORAL_NAMESPACE: str = "default"
     TEMPORAL_TASK_QUEUE: str = "nas-feedops-queue"
@@ -117,14 +216,27 @@ class Settings(BaseSettings):
     TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES: int = 20
     TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS: int = 100
 
-    # ── Observability ────────────────────────────────────────────────────────[cite: 4]
+    # ── Observability ────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     METRICS_PORT: int = 9108
 
+    # Disabled by default: no OTel collector is wired into docker-compose.yml
+    # yet (Grafana only has a Prometheus datasource provisioned, no Tempo/Jaeger),
+    # so leaving this True with nothing listening on OTEL_EXPORTER_OTLP_ENDPOINT
+    # just means every crewai/Flow span export batch times out against a dead
+    # address on every run. Flip to True once a real trace backend is added.
+    OTEL_TRACING_ENABLED: bool = False
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
 
     # ── Security & API ───────────────────────────────────────────────────────
+    # API_KEY is the legacy single shared secret, kept for backwards compatibility:
+    # any caller presenting it authenticates as the "legacy_api_key" principal.
+    # API_KEYS (optional) maps distinct secrets to named principals -- e.g.
+    #   API_KEYS={"abc123...": "ingest-service", "def456...": "ops-cron"}
+    # -- so the audit trail can say *which* caller ingested/acted, not just "someone
+    # with the key". Set as a JSON object string in the environment/.env.
     API_KEY: str | None = None
+    API_KEYS: dict[str, str] = Field(default_factory=dict)
     CORS_ALLOWED_ORIGINS: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:8501",
@@ -134,7 +246,7 @@ class Settings(BaseSettings):
         ]
     )
 
-    # ── Vault ────────────────────────────────────────────────────────────────[cite: 4]
+    # ── Vault ────────────────────────────────────────────────────────────────
     VAULT_ADDR: str = "http://localhost:8200"
     VAULT_TOKEN: str = ""
 
@@ -154,6 +266,21 @@ class Settings(BaseSettings):
             env_settings,
             dotenv_settings,
         )
+
+    @field_validator("API_KEYS", mode="before")
+    @classmethod
+    def _parse_api_keys(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            import json as _json
+
+            parsed = _json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("API_KEYS must be a JSON object mapping key -> principal name")
+            return parsed
+        return value
 
     @field_validator("CRITIC_ENABLED", mode="before")
     @classmethod
@@ -188,6 +315,14 @@ class Settings(BaseSettings):
 
         if not self.WATCH_OFFICER_MODEL:
             self.WATCH_OFFICER_MODEL = self.LLM_MODEL
+
+        if self.CRITIC_ENABLED and not self.CRITIC_MODEL and not self.LLM_MODEL:
+            raise ValueError(
+                "CRITIC_ENABLED is true but no model is configured: both "
+                "CRITIC_MODEL and LLM_MODEL resolve to an empty string. Set "
+                "LLM_MODEL (or CRITIC_MODEL specifically) in the environment, "
+                "or set CRITIC_ENABLED=false to disable the critic agent."
+            )
 
         return self
 

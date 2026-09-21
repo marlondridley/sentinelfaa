@@ -68,8 +68,8 @@ def _gen_clean_state() -> list[NASEvent]:
                 airport_code=airport,
                 service_name="APDS_RVR",
                 message_type="rvr_reading",
-                rvr_feet=4500,
-                runway_id="01",
+                runway="01",
+                rvr_touchdown=4500,
                 latency_ms=150.0,
                 event_time_utc=now,
                 received_time_utc=now,
@@ -160,7 +160,7 @@ class AgentEvaluator:
             agent=planner_agent,
             output_pydantic=PlannerResult,
         )
-        crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False)
+        crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
         crew_output = crew.kickoff()
         result = crew_output.pydantic
 

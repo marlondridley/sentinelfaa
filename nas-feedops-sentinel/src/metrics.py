@@ -64,7 +64,7 @@ LLM_CALL_LATENCY = Histogram(
 LLM_CALLS = Counter(
     "nas_llm_calls_total",
     "Total LLM calls by outcome.",
-    ["agent", "outcome"],  # outcome: success | error | disabled
+    ["agent", "outcome"],  # outcome: success | error | disabled | guardrail_rejected
 )
 
 
