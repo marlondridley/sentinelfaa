@@ -24,24 +24,36 @@ config/*secret*
 # ── FAA SWIM / SCDS Jumpstart Kit output ─────────────────────────────────────
 # Raw STDDS messages from the Jumpstart consumer are operational data.
 # They may contain sensitive NAS traffic information.
-data/raw/swim_live/*
-!data/raw/swim_live/.gitkeep
+# The app's data dirs live under nas-feedops-sentinel/, and a pattern with a
+# slash in it is anchored to this file's directory -- so these rules used to
+# match only a (nonexistent) top-level data/, and every live FAA SWIM capture,
+# processed file and SQLite db under nas-feedops-sentinel/data/ was committable.
+# The **/ prefix makes them match at any depth.
+**/data/raw/swim_live/*
+!**/data/raw/swim_live/.gitkeep
+!**/data/raw/swim_live/log/
+**/data/raw/swim_live/log/*
+!**/data/raw/swim_live/log/.gitkeep
 instraclustr/temporal_binary/temporal.exe
 instraclustr/jars/kafka-connect-elastic6-1.2.3-2.1.0-all.tar.gz
 instraclustr/cassandra-kafka-elasticsearch-open-source/plugins/*
+# Vault operator-init output (root token + unseal key) -- see
+# instraclustr/vault-unseal-and-seed.bash. Whoever holds this file can
+# unseal Vault and read every secret in it; it must never be committed.
+instraclustr/vault-init-data/*
 # ── Processed and failed ingest files ────────────────────────────────────────
-data/processed/*
-!data/processed/.gitkeep
-data/failed/*
-!data/failed/.gitkeep
+**/data/processed/*
+!**/data/processed/.gitkeep
+**/data/failed/*
+!**/data/failed/.gitkeep
 
 # ── SQLite database ───────────────────────────────────────────────────────────
-data/feedops.db
-data/*.db
+**/data/feedops.db
+**/data/*.db
 
 # ── Replay files (generated; not source) ─────────────────────────────────────
 # Comment this out if you want to commit specific replay fixtures.
-data/raw/sample_*.json
+**/data/raw/sample_*.json
 
 # ── IDE and OS files ──────────────────────────────────────────────────────────
 .idea/
@@ -58,7 +70,16 @@ htmlcov/
 coverage.xml
 
 # ── Streamlit cache ───────────────────────────────────────────────────────────
-.streamlit/
+# Ignore everything under any .streamlit/ dir at any depth (real
+# secrets.toml lives there) EXCEPT the checked-in sanitized example
+# template, so operators spinning up the dashboard locally can find the
+# expected file shape. Must use **/ (not a bare leading slash) so this
+# still matches nas-feedops-sentinel/.streamlit/, not just a top-level
+# .streamlit/ in the repo root -- a plain "middle-slash" pattern like
+# ".streamlit/*" is anchored to this .gitignore's own directory and
+# would silently stop matching the nested one.
+**/.streamlit/*
+!**/.streamlit/secrets.toml.example
 datarawswim_live/
 jumpstart-latest/
 *.zip
