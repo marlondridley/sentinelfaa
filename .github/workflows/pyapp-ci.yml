@@ -1,0 +1,62 @@
+name: Python App CI
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'nas-feedops-sentinel/**'
+      - '.github/workflows/pyapp-ci.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'nas-feedops-sentinel/**'
+      - '.github/workflows/pyapp-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  dependency-audit:
+    name: Dependency & CVE Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pip-audit
+        run: pip install pip-audit --break-system-packages || pip install pip-audit
+
+      # Accepted exceptions are tracked in nas-feedops-sentinel/cve-allowlist.md.
+      # Any --ignore-vuln flag below MUST have a matching, justified entry there,
+      # reviewed at least quarterly. Do not add an ignore here without updating
+      # that file in the same PR.
+      - name: Run pip-audit against locked dependencies
+        working-directory: nas-feedops-sentinel
+        run: |
+          python -m pip_audit \
+            -r requirements.lock \
+            --ignore-vuln CVE-2026-45829 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
+
+  syntax-check:
+    name: Compile Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Byte-compile source tree
+        working-directory: nas-feedops-sentinel
+        run: python -m py_compile $(find src dashboard -name '*.py')
