@@ -243,19 +243,19 @@ jumpstart-latest/log/    ──[NTFS junction]──>   nas-feedops-sentinel/dat
         │
         │ scanned by swim-folder mode (capped at 500 newest per pass)
         ▼
-src/swim_file_ingest.py — parses JMS headers + JSON body
+nas-feedops-sentinel/src/swim_file_ingest.py — parses JMS headers + JSON body
         ▼
 TAIS normalization — airport, runway, callsign, lat/lon, altitude, GS, vVert, phase
         ▼
-src/validators.py — schema and business-rule checks
+nas-feedops-sentinel/src/validators.py — schema and business-rule checks
         ▼
-src/alert_engine.py — structured alert rules
+nas-feedops-sentinel/src/alert_engine.py — structured alert rules
         ▼
-src/critic_agent.py — LLM-based pattern + escalation reasoning (CRITICAL only)
+nas-feedops-sentinel/src/critic_agent.py — LLM-based pattern + escalation reasoning (CRITICAL only)
         ▼
-src/execution_gate.py — stages action; calls Watch Officer; creates Operational Ticket
+nas-feedops-sentinel/src/execution_gate.py — stages action; calls Watch Officer; creates Operational Ticket
         ▼
-SQLite: data/feedops.db
+PostgreSQL (via asyncpg) -- nas-feedops-sentinel/src/storage/ (repositories, schema, per-loop pool)
    • nas_events
    • alert_events
    • critic_results
@@ -326,6 +326,7 @@ source .venv/bin/activate
 ### 2. Install dependencies
 
 ```bash
+cd nas-feedops-sentinel
 pip install -r requirements.txt
 ```
 
