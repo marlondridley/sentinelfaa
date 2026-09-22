@@ -86,3 +86,6 @@ jumpstart-latest/
 
 # ── Local Claude Code settings (per-developer, never shared) ──────────────────
 .claude/settings.local.json
+
+# Local container diagnostics (scripts/Collect-Diagnostics.ps1) -- may contain log output
+**/diagnostics.txt
