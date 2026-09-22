@@ -1,72 +1,133 @@
 # Setup-Keycloak.ps1
-# Creates (or repairs) the Keycloak realm the dashboard signs in against:
-#   realm  nas-sentinel
-#   client nas-feedops-sentinel  (confidential; secret taken from
-#                                 .streamlit\secrets.toml so the two match)
-#   user   one operator login you choose now
-# Safe to re-run: existing objects are updated, not duplicated.
+# Brings Keycloak up in production mode and creates an operator login.
 #
-# Secrets are read from .env / secrets.toml and handed to the container as
-# environment variables -- never printed, never on a command line.
+#   1. .env      KEYCLOAK_DASHBOARD_CLIENT_SECRET is copied from
+#                .streamlit/secrets.toml (the dashboard's side), so Keycloak
+#                and the dashboard use one secret. If both exist and differ,
+#                this stops rather than overwrite either.
+#                KEYCLOAK_DB_PASSWORD is generated if absent.
+#   2. Keycloak  keycloak-postgres + keycloak are started; the realm and the
+#                dashboard client are imported from keycloak/realm-nas-sentinel.json.
+#   3. Operator  one login in the nas-sentinel realm (you choose it now).
+#
+# -PrepareOnly runs step 1 only. Safe to re-run. Secrets are never printed
+# and never placed on a command line.
+[CmdletBinding()]
+param([switch]$PrepareOnly)
+
 $ErrorActionPreference = 'Stop'
-$appDir   = Split-Path -Parent $PSScriptRoot
-$envFile  = Join-Path $appDir '.env'
-$secrets  = Join-Path $appDir '.streamlit\secrets.toml'
-$realmSh  = Join-Path $PSScriptRoot 'keycloak-realm.sh'
+$appDir      = Split-Path -Parent $PSScriptRoot
+$envFile     = Join-Path $appDir '.env'
+$secretsFile = Join-Path (Join-Path $appDir '.streamlit') 'secrets.toml'
+$composeFile = Join-Path $appDir 'docker-compose.yml'
+$operatorSh  = Join-Path $PSScriptRoot 'keycloak-operator.sh'
+$utf8NoBom   = New-Object System.Text.UTF8Encoding($false)
 
-function Read-EnvValue($path, $key) {
-    foreach ($line in Get-Content $path) {
-        if ($line -match "^\s*$key\s*=\s*(.*)$") { return $Matches[1].Trim().Trim('"').Trim("'") }
+function Get-DotEnvValue([string]$Path, [string]$Key) {
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line -match "^\s*$([regex]::Escape($Key))\s*=\s*(.*)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
     }
-    return $null
+    return ''
 }
 
-$adminPw = Read-EnvValue $envFile 'KEYCLOAK_ADMIN_PASSWORD'
-if (-not $adminPw) { throw "KEYCLOAK_ADMIN_PASSWORD not found in $envFile" }
-
-$clientSecret = $null; $inKeycloak = $false
-foreach ($line in Get-Content $secrets) {
-    if ($line -match '^\s*\[auth\.keycloak\]') { $inKeycloak = $true; continue }
-    if ($line -match '^\s*\[') { $inKeycloak = $false }
-    if ($inKeycloak -and $line -match '^\s*client_secret\s*=\s*"?([^"]*)"?') { $clientSecret = $Matches[1].Trim() }
+function Add-DotEnvValue([string]$Path, [string]$Key, [string]$Value, [string]$Comment) {
+    $text = [IO.File]::ReadAllText($Path)
+    $nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $prefix = if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $nl } else { '' }
+    [IO.File]::AppendAllText($Path, "$prefix$nl# $Comment$nl$Key=$Value$nl", $utf8NoBom)
 }
-if (-not $clientSecret) { throw "client_secret not found under [auth.keycloak] in $secrets" }
 
-Write-Host "Waiting for Keycloak on http://localhost:8081 ..." -ForegroundColor Yellow
+function Get-DashboardClientSecret([string]$Path) {
+    $inSection = $false
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line -match '^\s*\[auth\.keycloak\]\s*$') { $inSection = $true; continue }
+        if ($line -match '^\s*\[') { $inSection = $false }
+        if ($inSection -and $line -match '^\s*client_secret\s*=\s*"?([^"]*)"?\s*$') { return $Matches[1].Trim() }
+    }
+    return ''
+}
+
+function New-RandomSecret([int]$Bytes = 32) {
+    $buf = New-Object byte[] $Bytes
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buf)
+    return -join ($buf | ForEach-Object { $_.ToString('x2') })
+}
+
+# -- 1. .env ------------------------------------------------------------------
+foreach ($f in $envFile, $secretsFile) { if (-not (Test-Path $f)) { throw "Missing $f" } }
+
+$clientSecret = Get-DashboardClientSecret $secretsFile
+if (-not $clientSecret -or $clientSecret -like 'REPLACE*') {
+    throw "client_secret under [auth.keycloak] in $secretsFile is missing or still a placeholder."
+}
+$envSecret = Get-DotEnvValue $envFile 'KEYCLOAK_DASHBOARD_CLIENT_SECRET'
+if (-not $envSecret) {
+    Add-DotEnvValue $envFile 'KEYCLOAK_DASHBOARD_CLIENT_SECRET' $clientSecret 'Keycloak client secret for the dashboard; must equal client_secret in .streamlit/secrets.toml'
+    Write-Host "  .env: KEYCLOAK_DASHBOARD_CLIENT_SECRET added (copied from secrets.toml)" -ForegroundColor Green
+} elseif ($envSecret -ne $clientSecret) {
+    throw ("KEYCLOAK_DASHBOARD_CLIENT_SECRET in .env differs from client_secret in secrets.toml. " +
+           "Decide which is correct, make the other match, and re-run. Nothing was changed.")
+} else {
+    Write-Host "  .env: KEYCLOAK_DASHBOARD_CLIENT_SECRET matches secrets.toml" -ForegroundColor Green
+}
+
+if (-not (Get-DotEnvValue $envFile 'KEYCLOAK_DB_PASSWORD')) {
+    Add-DotEnvValue $envFile 'KEYCLOAK_DB_PASSWORD' (New-RandomSecret) "Password for Keycloak's own Postgres (keycloak-postgres); generated by Setup-Keycloak.ps1"
+    Write-Host "  .env: KEYCLOAK_DB_PASSWORD generated" -ForegroundColor Green
+} else {
+    Write-Host "  .env: KEYCLOAK_DB_PASSWORD present" -ForegroundColor Green
+}
+$adminPw = Get-DotEnvValue $envFile 'KEYCLOAK_ADMIN_PASSWORD'
+if (-not $adminPw) { throw "KEYCLOAK_ADMIN_PASSWORD is missing from $envFile" }
+
+if ($PrepareOnly) { Write-Host "Prepared .env (-PrepareOnly: Keycloak not started)."; return }
+
+# -- 2. Keycloak --------------------------------------------------------------
+Write-Host "Starting keycloak-postgres and keycloak (production mode)..." -ForegroundColor Yellow
+docker compose -f $composeFile --env-file $envFile up -d keycloak-postgres keycloak
+if ($LASTEXITCODE -ne 0) { throw "docker compose could not start Keycloak (exit $LASTEXITCODE)." }
+
+Write-Host "Waiting for the nas-sentinel realm (first start builds and imports; up to 3 minutes)..." -ForegroundColor Yellow
 $ready = $false
-for ($i = 0; $i -lt 60; $i++) {
-    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 'http://localhost:8081/realms/master' | Out-Null; $ready = $true; break }
+for ($i = 0; $i -lt 90; $i++) {
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 'http://localhost:8081/realms/nas-sentinel' | Out-Null; $ready = $true; break }
     catch { Start-Sleep -Seconds 2 }
 }
-if (-not $ready) { throw "Keycloak did not answer on http://localhost:8081 within 2 minutes. Is nas-keycloak running?" }
+if (-not $ready) { throw "Realm nas-sentinel did not come up on http://localhost:8081. Check: docker logs nas-keycloak --tail 50" }
+Write-Host "  realm nas-sentinel is up" -ForegroundColor Green
 
+# -- 3. Operator login --------------------------------------------------------
 $defaultUser = $env:USERNAME
-$user  = Read-Host "Dashboard login username [$defaultUser]"; if (-not $user) { $user = $defaultUser }
+$user  = Read-Host "Operator username [$defaultUser]"; if (-not $user) { $user = $defaultUser }
 $email = Read-Host "Email for $user"
 if ($email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw "That does not look like an email address." }
-$pw1 = Read-Host "Password for $user" -AsSecureString
+$pw1 = Read-Host "Password for $user (12+ characters, not the username or email)" -AsSecureString
 $pw2 = Read-Host "Repeat password" -AsSecureString
-$plain = { param($s) [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
-$p1 = & $plain $pw1; $p2 = & $plain $pw2
+$toPlain = { param($s) [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
+$p1 = & $toPlain $pw1; $p2 = & $toPlain $pw2
 if ($p1 -ne $p2) { throw "Passwords did not match." }
-if ($p1.Length -lt 8) { throw "Use at least 8 characters." }
+if ($p1.Length -lt 12) { throw "Use at least 12 characters (the realm's password policy)." }
 
-docker cp $realmSh nas-keycloak:/tmp/keycloak-realm.sh | Out-Null
+docker cp $operatorSh nas-keycloak:/tmp/keycloak-operator.sh | Out-Null
 try {
-    $env:KC_ADMIN_PW = $adminPw; $env:CLIENT_SECRET = $clientSecret
-    $env:APP_USERNAME = $user;   $env:APP_USER_PW = $p1; $env:APP_EMAIL = $email
-    docker exec -e KC_ADMIN_PW -e CLIENT_SECRET -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL nas-keycloak bash /tmp/keycloak-realm.sh
-    if ($LASTEXITCODE -ne 0) { throw "Realm setup failed inside the container (exit $LASTEXITCODE)." }
+    $env:KC_ADMIN_PW = $adminPw; $env:APP_USERNAME = $user; $env:APP_USER_PW = $p1; $env:APP_EMAIL = $email
+    docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL nas-keycloak bash /tmp/keycloak-operator.sh
+    if ($LASTEXITCODE -ne 0) { throw "Creating the operator failed inside the container (exit $LASTEXITCODE)." }
 }
 finally {
-    Remove-Item Env:KC_ADMIN_PW, Env:CLIENT_SECRET, Env:APP_USER_PW, Env:APP_USERNAME, Env:APP_EMAIL -ErrorAction SilentlyContinue
-    docker exec nas-keycloak rm -f /tmp/keycloak-realm.sh 2>$null | Out-Null
+    Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL -ErrorAction SilentlyContinue
+    docker exec nas-keycloak rm -f /tmp/keycloak-operator.sh | Out-Null
 }
 
+# -- 4. Proof -----------------------------------------------------------------
 $disc = Invoke-RestMethod 'http://localhost:8081/realms/nas-sentinel/.well-known/openid-configuration'
 Write-Host ""
-Write-Host "Realm is live. What the browser will be sent to:" -ForegroundColor Green
+Write-Host "Keycloak is ready. The browser will be sent to:" -ForegroundColor Green
 Write-Host "  issuer                 : $($disc.issuer)"
 Write-Host "  authorization_endpoint : $($disc.authorization_endpoint)"
 Write-Host ""
-Write-Host "Open http://localhost:8501 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
+Write-Host "Next: docker compose --env-file .env up -d dashboard   (picks up the new settings)" -ForegroundColor Cyan
+Write-Host "Then open http://localhost:8501 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
+Write-Host "Keycloak admin console: http://localhost:8081/admin  (user 'admin', KEYCLOAK_ADMIN_PASSWORD)" -ForegroundColor DarkGray
