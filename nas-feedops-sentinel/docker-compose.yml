@@ -238,33 +238,85 @@ services:
     depends_on:
       - prometheus
 
+  # Keycloak's own database. start-dev kept everything in an embedded H2
+  # database that Keycloak does not support in production -- and a realm
+  # living only there, created by hand, is how the dashboard's realm went
+  # missing. Separate from the application Postgres on purpose: identity
+  # data has its own lifecycle and blast radius. Not published to the host.
+  keycloak-postgres:
+    image: postgres:16
+    container_name: nas-keycloak-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required -- run scripts/Setup-Keycloak.ps1}
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Production mode (`start`, not `start-dev`) on Postgres, with the realm
+  # defined as code in keycloak/realm-nas-sentinel.json and imported at
+  # startup. Import is skip-if-exists: it creates the realm on a fresh
+  # database and never overwrites a live one, so later edits to that file
+  # need applying through the admin console or API (or a fresh database).
+  # Operator logins are not in the file -- people are not configuration --
+  # and are created with scripts/Setup-Keycloak.ps1.
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
     container_name: nas-keycloak
     restart: unless-stopped
-    command: start-dev
+    command: ["start", "--import-realm"]
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
     ports:
-      - "8081:8080"
+      # Loopback only: the login page is for browsers on this machine.
+      - "127.0.0.1:8081:8080"
     environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required -- run scripts/Setup-Keycloak.ps1}
+      # Creates the initial admin only on first start against an empty
+      # database; ignored afterwards.
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+      # Substituted into the realm file's ${KC_DASHBOARD_CLIENT_SECRET}
+      # placeholder, so the secret is never committed. Must equal
+      # client_secret in .streamlit/secrets.toml; Setup-Keycloak.ps1 copies
+      # it from there and refuses to proceed if the two differ.
+      KC_DASHBOARD_CLIENT_SECRET: ${KEYCLOAK_DASHBOARD_CLIENT_SECRET:?KEYCLOAK_DASHBOARD_CLIENT_SECRET is required -- run scripts/Setup-Keycloak.ps1}
       # Keycloak builds its URLs from the host a request arrives on. The
       # dashboard container fetches discovery from keycloak:8080, so without
       # this the login redirect sent the BROWSER to keycloak:8080, which only
       # resolves inside Docker. KC_HOSTNAME fixes the browser-facing URLs
-      # (issuer, login page) at localhost:8081, the host-mapped port below;
+      # (issuer, login page) at localhost:8081, the host-mapped port above;
       # BACKCHANNEL_DYNAMIC keeps server-to-server URLs (token, keys) on
       # whatever host the caller used, so the dashboard still reaches
       # keycloak:8080 from inside the network.
       KC_HOSTNAME: http://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # Plain HTTP is acceptable only because every listener is loopback or
+      # internal to nas-network. Exposing this beyond one machine requires
+      # TLS (KC_HTTPS_CERTIFICATE_FILE / _KEY_FILE, or a TLS proxy) first.
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
     volumes:
-      # start-dev's default H2 database lives here. Without this, the
-      # nas-sentinel realm + client + secret you set up by hand in the admin
-      # console (see the Keycloak setup steps in chat) vanish the moment this
-      # container is recreated (`down`+`up`, not a plain `restart`) and you'd
-      # have to click through the whole setup again.
-      - keycloak-data:/opt/keycloak/data
+      - ./keycloak/realm-nas-sentinel.json:/opt/keycloak/data/import/realm-nas-sentinel.json:ro
+    healthcheck:
+      # The image ships no curl/wget; bash's /dev/tcp reaches the management
+      # port's readiness endpoint, which only reports UP once the database
+      # is connected and startup (including the realm import) has finished.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 10
     networks:
       - default
 
@@ -365,7 +417,7 @@ volumes:
   prometheus-data:
   grafana-data:
   temporal-postgres-data:
-  keycloak-data:
+  keycloak-postgres-data:
 
 networks:
   default:
