@@ -831,8 +831,10 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
     # Live-ingest always stamps the received time
     raw["received_time_utc"] = now
 
-    # Derive event time if missing
-    if "event_time_utc" not in raw:
+    # Derive event time if missing. A present-but-None value (a headers-only
+    # record with no timestamp header) counts as missing; checking only for the
+    # key let None through to the subtraction below and raised TypeError.
+    if raw.get("event_time_utc") is None:
         raw["event_time_utc"] = now
 
     # Calculate latency
@@ -918,9 +920,15 @@ def scan_swim_folder(
     stats = IngestStats()
     all_events: list[NASEvent] = []
 
+    # Dotfiles are skipped: the kit writes extensionless files, so "" is in
+    # SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
+    # extension either -- it was being ingested as a message, and its empty
+    # record crashed the watcher.
     all_candidates = [
         f for f in sorted(source_dir.iterdir())
-        if f.is_file() and f.suffix.lower() in SCAN_EXTENSIONS
+        if f.is_file()
+        and not f.name.startswith(".")
+        and f.suffix.lower() in SCAN_EXTENSIONS
     ]
     stats.files_detected = len(all_candidates)
 
@@ -975,7 +983,13 @@ def scan_swim_folder(
         events: list[NASEvent] = []
         errors: list[str] = []
         for raw in raw_records:
-            event, err = _normalise_record(raw, str(path))
+            # One malformed record fails its own file, never the scan: an
+            # exception escaping here used to abort scan_swim_folder(), and in
+            # watch mode that crash-looped the whole nas-sentinel container.
+            try:
+                event, err = _normalise_record(raw, str(path))
+            except Exception as exc:  # noqa: BLE001
+                event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
             if event:
                 events.append(event)
                 if event.service_name:

@@ -142,3 +142,82 @@ def test_read_only_mount_resilience(tmp_path: Path, monkeypatch):
     )
     assert len(events2) == 0
     assert stats2.files_skipped == 1
+
+
+# ── One bad file must never take the watcher down ────────────────────────────
+#
+# nas-sentinel crash-looped because the scanner treated the capture folder's
+# .gitkeep as a message (the kit writes extensionless files, and a dotfile has
+# no extension either), the resulting record had event_time_utc=None, and
+# `received - None` raised TypeError straight out of scan_swim_folder().
+
+
+def _valid_message(source_dir: Path, name: str = "valid_msg.json") -> None:
+    (source_dir / name).write_text(json.dumps({
+        "airport_code": "KDCA",
+        "service_name": "TERMINAL_AUTO",
+        "message_type": "TAIS_track",
+        "aircraft_id": "AAL123",
+    }))
+
+
+def test_dotfiles_in_the_ingest_folder_are_ignored(tmp_path: Path):
+    source_dir, processed_dir, failed_dir = (tmp_path / d for d in ("in", "processed", "failed"))
+    source_dir.mkdir()
+    (source_dir / ".gitkeep").write_text("")
+    _valid_message(source_dir)
+
+    events, stats = scan_swim_folder(
+        source_dir=source_dir, processed_dir=processed_dir, failed_dir=failed_dir
+    )
+
+    assert stats.files_detected == 1
+    assert len(events) == 1
+    assert (source_dir / ".gitkeep").exists(), "placeholder must be left where it is"
+
+
+def test_record_with_null_event_time_does_not_crash_the_scan(tmp_path: Path):
+    source_dir, processed_dir, failed_dir = (tmp_path / d for d in ("in", "processed", "failed"))
+    source_dir.mkdir()
+    (source_dir / "null_time.json").write_text(json.dumps({
+        "airport_code": "KDCA",
+        "service_name": "TERMINAL_AUTO",
+        "message_type": "TAIS_track",
+        "aircraft_id": "AAL123",
+        "event_time_utc": None,
+    }))
+    _valid_message(source_dir)
+
+    events, stats = scan_swim_folder(
+        source_dir=source_dir, processed_dir=processed_dir, failed_dir=failed_dir
+    )
+
+    assert stats.files_processed + stats.files_failed == 2
+    assert any(e.aircraft_id == "AAL123" for e in events)
+
+
+def test_unexpected_error_in_one_file_fails_that_file_not_the_scan(tmp_path: Path, monkeypatch):
+    import src.swim_file_ingest as ingest
+
+    source_dir, processed_dir, failed_dir = (tmp_path / d for d in ("in", "processed", "failed"))
+    source_dir.mkdir()
+    _valid_message(source_dir, "a_poison.json")
+    _valid_message(source_dir, "b_good.json")
+
+    real = ingest._normalise_record
+
+    def poisoned(raw, source_file):
+        if source_file.endswith("a_poison.json"):
+            raise TypeError("boom")
+        return real(raw, source_file)
+
+    monkeypatch.setattr(ingest, "_normalise_record", poisoned)
+
+    events, stats = scan_swim_folder(
+        source_dir=source_dir, processed_dir=processed_dir, failed_dir=failed_dir
+    )
+
+    assert stats.files_failed == 1
+    assert stats.files_processed == 1
+    assert len(events) == 1
+    assert (failed_dir / "a_poison.json").exists()
