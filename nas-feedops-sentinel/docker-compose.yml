@@ -159,6 +159,13 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
       - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
       - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
+      # The container user's home is /app, so Streamlit's per-user folder
+      # (~/.streamlit, where it writes machine_id_v4) is the same directory
+      # the secrets are mounted into read-only below -- every new browser
+      # session raised "Unable to write file: /app/.streamlit/machine_id_v4".
+      # A separate writable home fixes that without loosening the :ro mount;
+      # secrets.toml is still read from /app/.streamlit (the working dir).
+      - HOME=/tmp/streamlit-home
     ports:
       - "8501:8501"
     volumes:
@@ -241,6 +248,16 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+      # Keycloak builds its URLs from the host a request arrives on. The
+      # dashboard container fetches discovery from keycloak:8080, so without
+      # this the login redirect sent the BROWSER to keycloak:8080, which only
+      # resolves inside Docker. KC_HOSTNAME fixes the browser-facing URLs
+      # (issuer, login page) at localhost:8081, the host-mapped port below;
+      # BACKCHANNEL_DYNAMIC keeps server-to-server URLs (token, keys) on
+      # whatever host the caller used, so the dashboard still reaches
+      # keycloak:8080 from inside the network.
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     volumes:
       # start-dev's default H2 database lives here. Without this, the
       # nas-sentinel realm + client + secret you set up by hand in the admin
