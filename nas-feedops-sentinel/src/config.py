@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from src.vault_config import VaultSettingsSource
-from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
-from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 DATA_DIR: Path = BASE_DIR / "data"
@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
 
     # ── NAS domain constants ────────────────────────────────────────────────
-    SUPPORTED_AIRPORTS: set[str] = Field(
+    SUPPORTED_AIRPORTS: Annotated[set[str], NoDecode] = Field(
         default_factory=lambda: {
             "KDCA",
             "KIAD",
@@ -100,7 +100,7 @@ class Settings(BaseSettings):
 
     SUPPORTED_TRACON: str = "PCT"
 
-    SUPPORTED_SERVICES: set[str] = Field(
+    SUPPORTED_SERVICES: Annotated[set[str], NoDecode] = Field(
         default_factory=lambda: {
             "SMES",
             "APDS_RVR",
@@ -248,8 +248,8 @@ class Settings(BaseSettings):
     # -- so the audit trail can say *which* caller ingested/acted, not just "someone
     # with the key". Set as a JSON object string in the environment/.env.
     API_KEY: str | None = None
-    API_KEYS: dict[str, str] = Field(default_factory=dict)
-    CORS_ALLOWED_ORIGINS: list[str] = Field(
+    API_KEYS: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    CORS_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:8501",
             "http://localhost:3000",
@@ -279,20 +279,47 @@ class Settings(BaseSettings):
             dotenv_settings,
         )
 
-    @field_validator("API_KEYS", mode="before")
+    @field_validator(
+        "API_KEYS", "CORS_ALLOWED_ORIGINS", "SUPPORTED_AIRPORTS", "SUPPORTED_SERVICES",
+        mode="before",
+    )
     @classmethod
-    def _parse_api_keys(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            if not stripped:
-                return {}
-            import json as _json
+    def _parse_collection(cls, value: Any, info: ValidationInfo) -> Any:
+        """
+        Parse list/set/dict settings from their environment string.
 
-            parsed = _json.loads(stripped)
+        These fields are marked NoDecode so the raw string reaches this
+        validator. Otherwise pydantic-settings JSON-decodes it first, and an
+        empty value -- which is exactly what docker-compose's
+        `- API_KEYS=${API_KEYS:-}` passes when the variable is unset --
+        raised SettingsError at import and crash-looped nas-api.
+
+          ""                  -> the field's default. An empty string is how
+                                 compose spells "not configured"; it cannot
+                                 mean an empty collection, and an empty
+                                 SUPPORTED_AIRPORTS would reject every event.
+          '["a","b"]' / '{}'  -> JSON.
+          "a, b"              -> comma-separated (lists and sets only).
+
+        API_KEYS must be a JSON object; anything else is an error rather than
+        a silently empty key map.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return cls.model_fields[info.field_name].get_default(call_default_factory=True)
+
+        import json as _json
+
+        if info.field_name == "API_KEYS":
+            parsed = _json.loads(text)
             if not isinstance(parsed, dict):
                 raise ValueError("API_KEYS must be a JSON object mapping key -> principal name")
             return parsed
-        return value
+        if text[0] == "[":
+            return _json.loads(text)
+        return [part.strip() for part in text.split(",") if part.strip()]
 
     @field_validator("CRITIC_ENABLED", mode="before")
     @classmethod
