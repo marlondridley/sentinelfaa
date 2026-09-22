@@ -22,6 +22,27 @@ Section 'app image build time' { docker image inspect nas-feedops-sentinel:lates
 Section 'git branch / last commit' { git -C $appDir rev-parse --abbrev-ref HEAD; git -C $appDir log --oneline -1 }
 Section 'compose: temporal env var check' { Select-String -Path (Join-Path $appDir 'docker-compose.yml') -Pattern 'DYNAMIC_CONFIG' }
 
+$kcProbe = @'
+import json, urllib.request, urllib.error
+url = 'http://keycloak:8080/realms/nas-sentinel/.well-known/openid-configuration'
+try:
+    with urllib.request.urlopen(url, timeout=10) as r:
+        d = json.load(r)
+        print('HTTP', r.status, url)
+        for k in ('issuer', 'authorization_endpoint', 'token_endpoint'):
+            print(' ', k, '=', d.get(k))
+except urllib.error.HTTPError as e:
+    print('HTTP', e.code, url, '--', e.reason)
+except Exception as e:
+    print('FAILED', url, '--', type(e).__name__, e)
+try:
+    urllib.request.urlopen('http://keycloak:8080/realms/master', timeout=10)
+    print('keycloak itself reachable (the master realm answers)')
+except Exception as e:
+    print('keycloak itself NOT reachable --', type(e).__name__, e)
+'@
+Section 'keycloak discovery, fetched from inside nas-dashboard' { docker exec nas-dashboard python -c $kcProbe }
+
 $containers = 'nas-temporal','nas-temporal-postgresql','nas-api','nas-temporal-worker',
               'nas-sentinel','nas-dashboard','nas-temporal-ui','nas-grafana','nas-prometheus',
               'nas-keycloak','vault','nas-litellm','nas-pgbouncer','postgres'
