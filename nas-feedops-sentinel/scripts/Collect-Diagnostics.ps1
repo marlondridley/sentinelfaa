@@ -43,6 +43,14 @@ except Exception as e:
 '@
 Section 'keycloak discovery, fetched from inside nas-dashboard' { docker exec nas-dashboard python -c $kcProbe }
 
+$sqlEvents = 'PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USER -d $POSTGRES_DB -c ' +
+             [char]39 + 'select service_name, count(*) as events, max(event_time_utc) as newest_event, max(received_time_utc) as newest_received from nas_events group by 1 order by 1' + [char]39
+$sqlRest = 'PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USER -d $POSTGRES_DB -c ' +
+           [char]39 + 'select (select count(*) from nas_events) as events, (select count(*) from alert_events) as alerts, (select count(*) from staged_actions) as staged_actions, (select count(*) from operational_tickets) as tickets, (select count(*) from ingest_log) as files_ingested' + [char]39
+Section 'database: events by feed' { docker exec postgres sh -c $sqlEvents }
+Section 'database: totals' { docker exec postgres sh -c $sqlRest }
+Section 'ingest folder on disk' { Get-ChildItem -Recurse -File (Join-Path $appDir 'data') -ErrorAction SilentlyContinue | Group-Object { $_.Directory.FullName.Replace($appDir,'') } | Select-Object Count, Name }
+
 $containers = 'nas-temporal','nas-temporal-postgresql','nas-api','nas-temporal-worker',
               'nas-sentinel','nas-dashboard','nas-temporal-ui','nas-grafana','nas-prometheus',
               'nas-keycloak','vault','nas-litellm','nas-pgbouncer','postgres'

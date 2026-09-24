@@ -32,7 +32,13 @@ if [ -z "$USER_ID" ]; then
         -s firstName="$APP_USERNAME" -s lastName=Operator >/dev/null
     echo "user $APP_USERNAME: created"
 else
-    kc update "users/$USER_ID" -r "$REALM" -s email="$APP_EMAIL" -s emailVerified=true -s enabled=true
+    # firstName/lastName are set here as well as on create: Keycloak's default
+    # user profile requires them, and a user added through the admin console
+    # without them is stopped by a "complete your profile" form at login.
+    kc update "users/$USER_ID" -r "$REALM" -s email="$APP_EMAIL" -s emailVerified=true \
+        -s enabled=true -s firstName="$APP_USERNAME" -s lastName=Operator
+    # A console-created password may be marked temporary, which forces a reset
+    # at first login; set-password below replaces it with a permanent one.
     echo "user $APP_USERNAME: already existed, profile updated"
 fi
 kc set-password -r "$REALM" --username "$APP_USERNAME" --new-password "$APP_USER_PW"
