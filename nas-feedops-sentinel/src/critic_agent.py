@@ -6,14 +6,12 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from crewai import Agent
 
 from src.config import settings
 from src.context_router import ContextRouter
 from src.execution_gate import _strict_bool
 from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
-from src.llm_config import get_llm
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
@@ -21,22 +19,6 @@ from src.prompts_loader import system_prompt, tool_schema
 
 _router = ContextRouter()
 _log = get_logger(__name__)
-
-
-def get_critic_agent(llm: Any = None) -> Agent:
-    """Factory function producing a standardized CrewAI Agent instance for the Critic role."""
-    return Agent(
-        role="Critic Agent",
-        goal="Identify operational anomaly patterns, risk markers, and false positives in aviation telemetry.",
-        backstory=(
-            "You are an expert aviation telemetry specialist for PCT TRACON. "
-            "You analyze real-time ISMC, APDS_RVR, and SMES feed anomalies to assess operational risk "
-            "and determine whether alerts warrant human escalation."
-        ),
-        verbose=settings.AGENT_VERBOSE,
-        allow_delegation=False,
-        llm=llm or get_llm(),
-    )
 
 
 def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:

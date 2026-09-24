@@ -288,23 +288,26 @@ class TestQuerySemantics:
 async def test_escalation_package_does_not_block_the_event_loop(monkeypatch):
     """
     Staging a CRITICAL alert builds the Watch Officer brief, whose LLM path is
-    CrewAI's synchronous Crew.kickoff(). Run directly on the event loop it froze
-    every other coroutine -- in the Temporal worker and the pipeline alike --
-    for the whole model round-trip. A blocking stand-in for kickoff() must not
-    stop a concurrent coroutine from running.
+    a model round-trip of seconds. It must be awaited, never run blocking on
+    the event loop: in the Temporal worker and the pipeline, a blocked loop
+    stalls every other activity, database call and timer behind it. A slow
+    stand-in for the model must not stop a concurrent coroutine from running.
     """
     import asyncio
     import time
 
     import src.watch_officer_agent as watch_officer
 
-    real_brief = watch_officer.generate_watch_officer_brief
+    class SlowClient:
+        async def acall_with_tool(self, **kwargs):
+            await asyncio.sleep(0.5)  # stands in for the model round-trip
+            return {
+                "headline": "Slow but awaited.", "what_changed": [], "why_it_matters": [],
+                "recommended_human_review": [], "confidence": 0.5, "limitations": [],
+            }
 
-    def blocking_brief(context=None, use_llm=True, mcp_tools=None):
-        time.sleep(0.5)  # stands in for a synchronous LLM round-trip
-        return real_brief(context, use_llm=False)
-
-    monkeypatch.setattr(watch_officer, "generate_watch_officer_brief", blocking_brief)
+    monkeypatch.setattr(watch_officer.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(watch_officer, "build_llm_client", lambda *a, **k: SlowClient())
 
     ticks = 0
 

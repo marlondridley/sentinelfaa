@@ -37,12 +37,7 @@ jobs:
       - name: Run pip-audit against locked dependencies
         working-directory: nas-feedops-sentinel
         run: |
-          python -m pip_audit \
-            -r requirements.lock \
-            --ignore-vuln CVE-2026-45829 \
-            --ignore-vuln CVE-2026-45830 \
-            --ignore-vuln CVE-2026-45831 \
-            --ignore-vuln CVE-2026-45833
+          python -m pip_audit -r requirements.lock
 
   syntax-check:
     name: Compile Check

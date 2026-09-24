@@ -4,146 +4,48 @@ NAS FeedOps Sentinel -- CLI entry point.
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 from pathlib import Path
-
-from crewai import Crew, Task
 
 from src import config
 from src.async_bridge import run_async
 from src.agent_evaluator import AgentEvaluator, print_eval_report
-from src.alert_engine import check_alerts
-from src.critic_agent import get_critic_agent
 from src.demo_scenario import generate_cascade_failure_scenario
-from src.execution_gate import stage_critical_alert
-from src.feed_health import compute_feed_health
-from src.llm_config import get_configured_llm
 from src.logging_config import configure_logging, get_logger, new_correlation_id
-from src.metrics import (
-    ALERTS_TRIGGERED,
-    EVENTS_INGESTED,
-    EVENTS_VALIDATED,
-    set_airport_status,
-    start_metrics_server,
-)
-from src.models import CriticResult, NASEvent, PlannerResult
-from src.planner_agent import get_planner_agent
+from src.metrics import start_metrics_server
+from src.models import NASEvent
+from src.pipeline import run_pipeline
+from src.planner_agent import PlannerAgent
 from src.replay import replay_from_directory, write_sample_replay_file
 from src.sample_data import generate_sample_batch
-from src.storage import (
-    save_alerts,
-    save_critic_result,
-    save_events,
-    save_planner_result,
-)
+from src.storage import save_planner_result
 from src.swim_file_ingest import request_shutdown, scan_swim_folder, watch_swim_folder
-from src.validators import validate_event
 
 _log = get_logger(__name__)
 
 
-def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> None:
-    cid = new_correlation_id()
-    _log.info("pipeline_start", extra={"label": label, "event_count": len(events)})
+def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> dict:
+    """
+    Run the one shared pipeline (src/pipeline.py) from synchronous CLI code.
 
-    for event in events:
-        result = validate_event(event)
-        event.validation_status = "PASSED" if result.passed else "FAILED"
-        event.validation_errors = result.errors
-        EVENTS_INGESTED.labels(
-            source=label.lower(),
-            airport=event.airport_code or "unknown",
-            service=event.service_name or "unknown",
-        ).inc()
-        EVENTS_VALIDATED.labels(status=event.validation_status).inc()
-
-    run_async(save_events(events))
-
-    alerts = check_alerts(events)
-    run_async(save_alerts(alerts))
-
-    for a in alerts:
-        ALERTS_TRIGGERED.labels(
-            alert_type=a.alert_type,
-            severity=a.severity,
-            airport=a.airport_code or "unknown",
-        ).inc()
-
-    # Instantiate configured CrewAI LLM & Agent
-    llm = get_configured_llm()
-    critic_agent = get_critic_agent(llm=llm)
-    critical_alerts = [a for a in alerts if a.severity == "CRITICAL"]
-    critic_results = {}
-    max_critic_per_pass = int(os.getenv("MAX_CRITIC_PER_PASS", "5"))
-    
-    if critical_alerts:
-        to_evaluate = critical_alerts[:max_critic_per_pass]
-        skipped_count = len(critical_alerts) - len(to_evaluate)
-        _log.info(
-            "critic_evaluation_start",
-            extra={
-                "evaluating_count": len(to_evaluate),
-                "skipped_count": skipped_count,
-                "total_critical": len(critical_alerts),
-            },
-        )
-        
-        for alert in to_evaluate:
-            task = Task(
-                description=f"Evaluate the following operational alert and determine if escalation is required: {alert.model_dump_json()}",
-                expected_output="A structured evaluation with confidence, pattern, and escalation boolean.",
-                agent=critic_agent,
-                output_pydantic=CriticResult
-            )
-            crew = Crew(agents=[critic_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
-            crew_output = crew.kickoff()
-            result = crew_output.pydantic
-            
-            run_async(save_critic_result(result))
-            critic_results[alert.alert_id] = result
-
-    staged_count = 0
-    for alert in critical_alerts:
-        critic_for_alert = critic_results.get(alert.alert_id)
-        action = run_async(stage_critical_alert(alert, critic_for_alert))
-        if action is not None:
-            staged_count += 1
-    if staged_count:
-        _log.info(
-                "hitl_actions_staged",
-                extra={"staged_count": staged_count},
-            )
-    health = compute_feed_health(events)
-    for airport, status in health["airport_status"].items():
-        set_airport_status(airport, status)
+    This used to be a second, divergent copy of the pipeline built on CrewAI.
+    It skipped the Critic's guardrail and redaction, and any LLM error raised
+    straight out of crew.kickoff() -- after events and alerts were committed
+    but before staging -- so CRITICAL alerts from the live watcher were never
+    staged for human review. Every entry point now goes through
+    run_pipeline(), whose staging does not depend on the LLM succeeding.
+    """
+    return run_async(run_pipeline(events, label=label, correlation_id=new_correlation_id()))
 
 
 def run_demo() -> None:
     print("[DEMO] Generating cascade failure scenario ...")
-    events = generate_cascade_failure_scenario()
-    for event in events:
-        result = validate_event(event)
-        event.validation_status = "PASSED" if result.passed else "FAILED"
-        event.validation_errors = result.errors
-
-    _run_pipeline(events, "DEMO")
+    _run_pipeline(generate_cascade_failure_scenario(), "DEMO")
 
     question = "What is the current operational status of PCT TRACON and what should the duty manager do right now?"
-    llm = get_configured_llm()
-    planner_agent = get_planner_agent(llm=llm)
-    task = Task(
-        description=question,
-        expected_output="A structured operational assessment including answer, confidence, recommended actions, and sub-queries.",
-        agent=planner_agent,
-        output_pydantic=PlannerResult
-    )
-    crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
-    crew_output = crew.kickoff()
-    result = crew_output.pydantic
-    
+    result = run_async(PlannerAgent().query(question))
     run_async(save_planner_result(result))
-    print(f"  Confidence : {result.confidence:.0%}" if result.confidence else "N/A")
+    print(f"  Confidence : {result.confidence:.0%}" if result.confidence is not None else "  Confidence : N/A")
     print(f"  Answer     : {result.answer}")
 
 
@@ -222,7 +124,10 @@ def main() -> None:
     elif args.mode == "replay":
         target_path = Path(args.path) if args.path else Path(config.SWIM_RAW_FOLDER) if hasattr(config, "SWIM_RAW_FOLDER") else Path("/app/data/raw")
         _log.info("replay_scan_start", extra={"target_path": str(target_path)})
-        events = scan_swim_folder(target_path)
+        # scan_swim_folder returns (events, stats); this used to bind the whole
+        # tuple to `events`, which is never falsy, so the directory fallback
+        # below could not run and the pipeline was handed a 2-tuple.
+        events, _stats = scan_swim_folder(target_path)
         if not events:
             _log.info("replay_scan_empty_directory_fallback", extra={"target_path": str(target_path)})
             events, parse_errors = replay_from_directory(target_path)

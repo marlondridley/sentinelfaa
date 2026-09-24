@@ -6,31 +6,13 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from crewai import Agent
 
 from src import storage
 from src.config import settings
 from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
-from src.llm_config import get_llm
 from src.models import PlannerResult
 from src.prompts_loader import system_prompt, tool_schema
-
-
-def get_planner_agent(llm: Any = None) -> Agent:
-    """Factory function producing a standardized CrewAI Agent instance for the Planner role."""
-    return Agent(
-        role="Planner Agent",
-        goal="Synthesize operational mitigation actions and sub-queries based on telemetry evaluations.",
-        backstory=(
-            "You are a Senior Advisory Planner for PCT TRACON operations. "
-            "You evaluate telemetry analysis from the Critic Agent and construct actionable operational "
-            "mitigation steps and diagnostic sub-queries for duty managers."
-        ),
-        verbose=True,
-        allow_delegation=False,
-        llm=llm or get_llm(),
-    )
 
 
 class PlannerAgent:
