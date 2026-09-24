@@ -103,6 +103,9 @@ _MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS overridden_recommendation TEXT;
         ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS overridden_severity TEXT;
     """),
+    ("2026_09_nas_events_status_code", """
+        ALTER TABLE nas_events ADD COLUMN IF NOT EXISTS status_code TEXT;
+    """),
 ]
 
 

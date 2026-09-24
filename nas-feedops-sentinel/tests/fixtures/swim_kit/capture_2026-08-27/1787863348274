@@ -1,0 +1,23 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = TDES
+Property name = msgType; value = RD
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = TDES/all/false/RD/KBWI/PCT
+Property name = globalID; value = 51190821
+Property name = msgSeqID; value = 1874
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = tdlsInterfaceVersion; value = 1.0
+Property name = airport; value = KBWI
+Property name = pubNode; value = NEMS_ACY
+Property name = timeline; value = 1787863345503 1787863345504 1787863345537
+Property name = tracon; value = PCT
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:25.503Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns4:TDLSCSPMessage":{"beaconCode":2172,"enhancedData":{"eramGufi":"KW673015vZ","sfdpsGufi":"us.fdps.2026-08-27T18:41:41Z.000/22/5v","destinationAirport":"KMCI"},"airportID":"KBWI","xmlns:ns5":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureevent","xmlns:ns6":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstartmessage","xmlns:ns3":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:datisdatamessage","xmlns:ns4":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:tdlscspmessage","dataHeader":"QU DALACWN .BWITWXA 272042","xmlns:ns7":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:reconstitutionsubscriptiontodeparturedatamessage","xmlns:ns8":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconcompletemessage","computerID":"03P","aircraftID":"SWA1085","aircraftType":"B737","xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstatusmessage","dataBody":"009 CPDLC DCL DISPATCH MSG - NOT TO BE USED AS A CLEARANCE SWA1085 KBWI REVISED RTE DPP B737/L P2025 /AN N914WN 03P FL400 KBWI*.TERPZ8.MAULS.Q40.ALEAN..VXV..BNA.J46.ARG..SGF..NELVY.MHOMS3.KMCI TERPZ8.MAULS  CLIMB VIA SID   DEP FREQ 125.52","time":"08272026204225"}}

@@ -1,0 +1,23 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = TDES
+Property name = msgType; value = DE
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = TDES/all/false/DE/KDCA/PCT
+Property name = globalID; value = 51190611
+Property name = msgSeqID; value = 12115
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = tdlsInterfaceVersion; value = 1.0
+Property name = airport; value = KDCA
+Property name = pubNode; value = NEMS_ACY
+Property name = timeline; value = 1787863336946 1787863336953 1787863336962
+Property name = tracon; value = PCT
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:16.953Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns5:TowerDepartureEventMessage":{"beaconCode":3755,"departureAirport":"KDCA","enhancedData":{"eramGufi":"KW727665p4","sfdpsGufi":"us.fdps.2026-08-27T20:12:46Z.000/22/5p4","destinationAirport":"KCRW"},"xmlns:ns5":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureevent","xmlns:ns6":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstartmessage","flightID":"KW727665p4","xmlns:ns3":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:datisdatamessage","parkingGate":"G","xmlns:ns4":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:tdlscspmessage","xmlns:ns7":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:reconstitutionsubscriptiontodeparturedatamessage","xmlns:ns8":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconcompletemessage","computerID":"29N","aircraftID":"JIA5567","aircraftType":"CRJ7","xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstatusmessage","eventTime":"2026-08-27T20:42:16.000Z","clearanceDeliveryTime":"2026-08-27T20:42:17.000Z"}}

@@ -426,8 +426,14 @@ def _extract_records(
     if "TowerDepartureEventMessage" in root_name or "departureAirport" in payload:
         return _extract_tdes(headers, payload), True
 
+    if "TDLSCSPMessage" in root_name:
+        return _extract_tdls_dcl(headers, payload), True
+
     if "asdexMsg" in root_name or "adsbReport" in payload:
         return _extract_smes(headers, payload), True
+
+    if "SafetyLogicHoldBar" in root_name:
+        return _extract_smes_holdbar(headers, payload), True
 
     return [], False
 
@@ -581,7 +587,110 @@ def _extract_tdes(headers: dict[str, str], payload: dict) -> list[dict]:
     }]
 
 
+def _parse_tdls_time(value: Any) -> str | None:
+    """
+    TDLS "time" is MMDDYYYYHHMMSS in UTC with no separators, e.g.
+    "08272026204225" -> "2026-08-27T20:42:25Z" (cross-checked against the
+    capture's own JMS timestamp header, 2026-08-27T20:42:25.503Z). Anything
+    that does not parse returns None so the caller falls back to the header
+    time rather than inventing one.
+    """
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.strptime(text, "%m%d%Y%H%M%S")
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _extract_tdls_dcl(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns4:TDLSCSPMessage -> one departure-clearance event.
+
+    A TDLS CPDLC departure clearance (DCL) sent to a flight at a PCT airport.
+    Shape (confirmed against tests/fixtures/swim_kit/tdls_sample, a real
+    captured message):
+
+        { "airportID": "KBWI", "aircraftID": "SWA1085", "aircraftType": "B737",
+          "beaconCode": 2172, "computerID": "03P", "time": "08272026204225",
+          "dataHeader": "...", "dataBody": "<free-text clearance>",
+          "enhancedData": { "destinationAirport": "KMCI", ... } }
+
+    It maps onto the departure model already used for TowerDepartureEvent:
+    the aircraft is on the surface awaiting departure. dataBody is NOT
+    stored -- it is free text carrying the full route and the aircraft's
+    registration, none of which NASEvent models or any rule needs, and
+    keeping it would widen what can leak into a prompt.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "RD")
+    enhanced = payload.get("enhancedData") or {}
+
+    airport = _pct_primary_from(
+        payload.get("airportID"),
+        headers.get("airport"),
+        enhanced.get("destinationAirport"),
+    )
+    if airport is None:
+        return []
+
+    beacon = payload.get("beaconCode")
+
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"TDLS_{msg_type}",
+        "event_time_utc": _parse_tdls_time(payload.get("time")) or header_ts,
+        "aircraft_id": payload.get("aircraftID"),
+        "beacon_code": str(beacon) if beacon not in (None, "") else None,
+        "flight_phase": "DEPARTURE",
+        "surface_event_type": "DEPARTURE_CLEARANCE_DCL",
+        "feed_status": "operational",
+    }]
+
+
 # ── SMES -- ASDE-X surface movement ───────────────────────────────────────────
+
+def _extract_smes_holdbar(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:SafetyLogicHoldBar -> one airport-level surface-safety status event.
+
+    Shape (confirmed against tests/fixtures/swim_kit/holdbar_sample, a real
+    captured message):
+
+        { "airport": "KIAD", "control": 1,
+          "status": "0000...0007c000" }
+
+    ASDE-X Safety Logic hold-bar state for the airport. It names no aircraft,
+    vehicle or track, so it is not a movement event. `status` is a bitmask
+    whose bit-to-hold-bar mapping is defined in the non-public SMES ICD; it is
+    kept verbatim in status_code and deliberately not decoded or alerted on.
+    What the message does establish, and why it is ingested rather than
+    dropped, is that the airport's SMES feed is alive.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "SH")
+
+    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    if airport is None:
+        return []
+
+    status = payload.get("status")
+    control = payload.get("control")
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"SMES_{msg_type}",
+        "event_time_utc": header_ts,
+        "surface_event_type": "SAFETY_LOGIC_HOLD_BAR",
+        "status_code": (
+            f"control={control};status={status}" if status not in (None, "") else None
+        ),
+        "feed_status": "operational",
+    }]
+
 
 # Report arrays in an asdexMsg that this extractor has been verified against.
 # The ASDE-X schema defines others (positionReport among them), but none has

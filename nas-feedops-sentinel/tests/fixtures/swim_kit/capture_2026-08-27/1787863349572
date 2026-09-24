@@ -1,0 +1,22 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = SMES
+Property name = msgType; value = SH
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = SMES/all/false/SH/KIAD/PCT
+Property name = globalID; value = 51190854
+Property name = msgSeqID; value = 166601
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KIAD
+Property name = pubNode; value = NEMS_ACY
+Property name = tracon; value = PCT
+Property name = timeline; value = 1787863346773 1787863346773 1787863346819
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:26.773Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:SafetyLogicHoldBar":{"xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:smes:surfacemovementevent","control":1,"airport":"KIAD","status":"000000000000000000000000000000000000000000000000000000000007c000"}}

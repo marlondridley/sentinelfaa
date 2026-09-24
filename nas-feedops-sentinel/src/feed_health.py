@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src import config
-from src.models import NASEvent
+from src.models import NASEvent, is_surface_movement
 
 # Numeric rank used to pick the "worst" status
 _STATUS_RANK: dict[str, int] = {
@@ -95,7 +95,7 @@ def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
     # SMES surface movement event count per airport
     smes_counts: dict[str, int] = {}
     for event in events:
-        if event.service_name == "SMES":
+        if is_surface_movement(event):
             smes_counts[event.airport_code] = smes_counts.get(event.airport_code, 0) + 1
 
     return {
