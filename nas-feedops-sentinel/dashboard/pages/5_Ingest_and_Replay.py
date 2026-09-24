@@ -24,6 +24,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 import pandas as pd
 import streamlit as st
 
+from lib import theme
 from lib.data import KIT_LOG_PATH
 from lib.page_setup import bootstrap_page
 from src import config
@@ -197,4 +198,4 @@ st.caption(
     "NAS FeedOps Sentinel · FAA SWIM/STDDS PCT Automation Demonstration · "
     "All data is simulated unless the FAA SCDS Jumpstart Kit is connected."
 )
-st.page_link("app.py", label="◀ Back to Overview", icon="✈")
+theme.back_link()

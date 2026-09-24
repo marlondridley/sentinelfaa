@@ -20,6 +20,12 @@ from src.news_agent import build_ticker_items
 from src.feed_health import compute_feed_health
 from src import storage
 
+# The hex values in the stylesheet below are the same Blueprint tokens
+# dashboard/lib/theme.py defines by name. They are literals here rather
+# than f-string interpolations of theme.* because this whole block is
+# already an f-string (the scroll duration is computed), and doubling
+# every CSS brace to interpolate four colours costs more legibility
+# than it buys. If the palette changes, change it in both places.
 from lib.data import reconstruct_nas_events
 
 # Anchors whose section moved off the Overview page during the multipage
@@ -104,28 +110,28 @@ def render_ticker() -> None:
         <a id="page-top"></a>
         <style>
         .ticker-wrap {{
-            background: #1a1a1a;
-            border-top:    3px solid #ff3030;
-            border-bottom: 3px solid #ff3030;
+            background: #1C2127;
+            border: 1px solid #2F343C;
+            border-radius: 4px;
             overflow: hidden;
             white-space: nowrap;
-            padding: 14px 0;
+            padding: 9px 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 14px;
+            font-weight: 500;
             line-height: 1.3;
             margin: 0 0 14px 0;
             position: relative;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+            box-shadow: none;
         }}
         .ticker-label {{
-            background: #ff3030;
+            background: #CD4246;
             color: #ffffff;
-            padding: 8px 18px;
+            padding: 5px 12px;
             font-weight: 900;
             letter-spacing: 0.1em;
-            font-size: 18px;
-            margin-right: 24px;
+            font-size: 11px;
+            margin-right: 18px;
             display: inline-block;
             vertical-align: middle;
             text-shadow: 0 1px 2px rgba(0,0,0,0.4);
@@ -167,10 +173,10 @@ def render_ticker() -> None:
             margin-right: 6px;
             vertical-align: middle;
         }}
-        .tk-green  {{ color: #4ade80; }}
-        .tk-grey   {{ color: #e5e7eb; }}
-        .tk-yellow {{ color: #fbbf24; font-weight: 800; }}
-        .tk-red    {{ color: #ff5252; font-weight: 900; }}
+        .tk-green  {{ color: #72CA9B; }}
+        .tk-grey   {{ color: #8F99A8; }}
+        .tk-yellow {{ color: #FBB360; font-weight: 700; }}
+        .tk-red    {{ color: #FA999C; font-weight: 700; }}
         [id^="anchor-"], #airport-health, #airspace-ops, #alert-log,
         #rvr-section, #critic-intel, #latency-section {{
             scroll-margin-top: 80px;
