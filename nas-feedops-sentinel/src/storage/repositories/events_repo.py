@@ -26,10 +26,12 @@ class EventsRepository:
                 aircraft_id, vehicle_id, surface_event_type,
                 lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
                 flight_phase, flight_rules, beacon_code,
-                feed_status, validation_status, validation_errors, raw_message_path
+                feed_status, validation_status, validation_errors, raw_message_path,
+                status_code
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+                $29
             )
             ON CONFLICT (event_id) DO UPDATE SET
                 airport_code = EXCLUDED.airport_code,
@@ -58,7 +60,8 @@ class EventsRepository:
                 feed_status = EXCLUDED.feed_status,
                 validation_status = EXCLUDED.validation_status,
                 validation_errors = EXCLUDED.validation_errors,
-                raw_message_path = EXCLUDED.raw_message_path;
+                raw_message_path = EXCLUDED.raw_message_path,
+                status_code = EXCLUDED.status_code;
         """
         await self._pool.execute(
             query,
@@ -69,6 +72,7 @@ class EventsRepository:
             event.lat, event.lon, event.altitude_ft, event.ground_speed_kt, event.vertical_speed_fpm,
             event.flight_phase, event.flight_rules, event.beacon_code,
             event.feed_status, event.validation_status, json.dumps(event.validation_errors), event.raw_message_path,
+            event.status_code,
         )
 
     async def save_alert(self, alert: AlertEvent) -> None:
@@ -112,7 +116,8 @@ class EventsRepository:
                       aircraft_id, vehicle_id, surface_event_type,
                       lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
                       flight_phase, flight_rules, beacon_code,
-                      feed_status, validation_status, validation_errors, raw_message_path
+                      feed_status, validation_status, validation_errors, raw_message_path,
+                      status_code
                FROM nas_events ORDER BY received_time_utc DESC LIMIT $1""",
             limit,
         )

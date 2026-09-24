@@ -114,6 +114,23 @@ class ActionAuditEntry(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# surface_event_type values that describe the airport's surface-safety
+# equipment rather than a moving aircraft or vehicle. They are exempt from the
+# moving-entity validation rule and are excluded from surface-movement counts
+# (feed_health smes_counts, ALERT_SURFACE_EVENT_SPIKE), where a burst of
+# equipment status messages would otherwise read as a traffic spike.
+SMES_FACILITY_STATUS_TYPES = frozenset({"SAFETY_LOGIC_HOLD_BAR"})
+
+
+def is_surface_movement(event: "NASEvent") -> bool:
+    """True for SMES events that describe a moving entity (not equipment status)."""
+    return (
+        event.service_name == "SMES"
+        and event.surface_event_type not in SMES_FACILITY_STATUS_TYPES
+    )
+
+
+
 class NASEvent(BaseModel):
     """Normalized FAA SWIM/STDDS terminal event record."""
 
@@ -169,6 +186,11 @@ class NASEvent(BaseModel):
 
     # Feed / link status (ISMC, TERMINAL_AUTO)
     feed_status: str | None = None    # operational | degraded | unavailable | disconnected
+
+    # Raw facility status word, kept verbatim where the ICD that decodes it is
+    # not public (SMES SafetyLogicHoldBar's hold-bar bitmask). Stored, not
+    # interpreted: nothing downstream alerts on it.
+    status_code: str | None = None
 
     # Validation bookkeeping (populated by validators.py)
     validation_status: str = "PENDING"   # PENDING | PASSED | FAILED

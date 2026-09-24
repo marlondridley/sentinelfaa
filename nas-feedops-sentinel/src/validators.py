@@ -9,7 +9,7 @@ Each rule reflects real FAA SWIM/STDDS message integrity requirements:
 from __future__ import annotations
 
 from src import config
-from src.models import NASEvent, ValidationResult
+from src.models import NASEvent, ValidationResult, is_surface_movement
 
 
 def validate_event(event: NASEvent) -> ValidationResult:
@@ -62,8 +62,11 @@ def validate_event(event: NASEvent) -> ValidationResult:
                 "(rvr_touchdown, rvr_midpoint, or rvr_rollout)."
             )
 
-    # Rule 8 — SMES messages: must reference a moving entity
-    if event.service_name == "SMES" and not any([event.aircraft_id, event.vehicle_id, event.track_id]):
+    # Rule 8 — SMES movement messages: must reference a moving entity.
+    # Facility-status messages (Safety Logic hold-bar state) describe the
+    # airport's equipment and name no entity by design; see
+    # models.SMES_FACILITY_STATUS_TYPES.
+    if is_surface_movement(event) and not any([event.aircraft_id, event.vehicle_id, event.track_id]):
         errors.append(
             "SMES message must include aircraft_id, vehicle_id, or track_id."
         )

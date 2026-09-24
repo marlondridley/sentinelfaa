@@ -1,0 +1,23 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = TDES
+Property name = msgType; value = ID
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = TDES/all/false/ID/KIAD/PCT
+Property name = globalID; value = 51191257
+Property name = msgSeqID; value = 5111
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = tdlsInterfaceVersion; value = 1.0
+Property name = airport; value = KIAD
+Property name = pubNode; value = NEMS_ACY
+Property name = timeline; value = 1787863364795 1787863364796 1787863364842
+Property name = tracon; value = PCT
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-08-27T20:42:44.795Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns4:TDLSCSPMessage":{"beaconCode":6247,"enhancedData":{"eramGufi":"YJ996635Hs","sfdpsGufi":"us.fdps.2026-08-27T16:21:43Z.000/22/5Hs","destinationAirport":"KSFM"},"airportID":"KIAD","xmlns:ns5":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureevent","xmlns:ns6":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstartmessage","xmlns:ns3":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:datisdatamessage","xmlns:ns4":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:tdlscspmessage","dataHeader":"QU MLBSDCR .IADTWXA 272042","xmlns:ns7":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:reconstitutionsubscriptiontodeparturedatamessage","xmlns:ns8":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconcompletemessage","computerID":693,"aircraftID":"N650EH","aircraftType":"GLF6","xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:tdes:towerdepartureeventreconstatusmessage","dataBody":"001 CPDLC DCL DISPATCH MSG - NOT TO BE USED AS A CLEARANCE N650EH KIAD GLF6/L P2100 /AN N650EH 693 FL410 CLEARED TO KSFM AIRPORT WOOLY2.SWANN THEN AS FILED MAINT 3000FT   DEP FREQ SEE SID  KIAD.WOOLY2.SWANN..BROSS.Q419.RBV.Q22.FOXWD..BOS..PSM..KSFM","time":"08272026204244"}}

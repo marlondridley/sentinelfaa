@@ -19,7 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from src import config
-from src.models import AlertEvent, NASEvent
+from src.models import AlertEvent, NASEvent, is_surface_movement
 
 
 def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
@@ -153,11 +153,15 @@ def _stale_feed_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent
 
 
 def _surface_spike_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent]:
-    """ALERT_SURFACE_EVENT_SPIKE — unusual burst of SMES events per airport."""
+    """ALERT_SURFACE_EVENT_SPIKE — unusual burst of SMES movement events per airport.
+
+    Counts movement events only: hold-bar status messages are equipment state,
+    not traffic, and must not turn a busy status channel into a spike alert.
+    """
     window_start = now - timedelta(seconds=config.SURFACE_SPIKE_WINDOW_SECONDS)
     counts: dict[str, int] = defaultdict(int)
     for event in events:
-        if event.service_name == "SMES" and event.received_time_utc >= window_start:
+        if is_surface_movement(event) and event.received_time_utc >= window_start:
             counts[event.airport_code] += 1
 
     alerts: list[AlertEvent] = []
