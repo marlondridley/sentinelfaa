@@ -73,12 +73,13 @@ _LLM_OUTCOMES = {
 @pytest.mark.parametrize("outcome", list(_LLM_OUTCOMES))
 async def test_every_critical_alert_is_staged_whatever_the_llm_does(monkeypatch, outcome):
     import src.critic_agent as critic_agent
+    import src.investigation.specialists as specialists
     import src.watch_officer_agent as watch_officer
 
     make_client = _LLM_OUTCOMES[outcome]
     monkeypatch.setattr(settings, "CRITIC_ENABLED", True)
-    monkeypatch.setattr(critic_agent, "build_llm_client", lambda *a, **k: make_client())
-    monkeypatch.setattr(watch_officer, "build_llm_client", lambda *a, **k: make_client())
+    for module in (critic_agent, watch_officer, specialists):
+        monkeypatch.setattr(module, "build_llm_client", lambda *a, **k: make_client())
 
     summary = await run_pipeline(generate_cascade_failure_scenario(), label="TEST")
 
@@ -91,6 +92,16 @@ async def test_every_critical_alert_is_staged_whatever_the_llm_does(monkeypatch,
     assert {p.alert_id for p in pending} == {a["alert_id"] for a in critical}
     for action in pending:
         assert await storage.get_ticket_by_action_id(action.action_id) is not None
+
+    # And every staged action carries a complete, evidence-traceable investigation.
+    from src.storage.pool import get_db_pool
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    assert summary["investigated_count"] == summary["staged_count"]
+    for action in pending:
+        inv = await repo.get_by_action_id(action.action_id)
+        assert inv is not None and inv.status == "COMPLETE" and inv.untraceable_claims() == []
 
 
 async def test_rerunning_a_batch_does_not_duplicate_staged_actions(monkeypatch):
