@@ -13,7 +13,7 @@ instead of six pages carrying six slightly-drifting copies.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src import config
@@ -63,6 +63,59 @@ def format_ts(value: Any, length: int = 19) -> str:
     if isinstance(value, str):
         return value[:length]
     return ""
+
+
+def as_utc(value: Any) -> datetime | None:
+    """
+    Coerce a timestamp field from a storage row into an aware UTC datetime.
+
+    Rows arrive from two places with two shapes: asyncpg hands back real
+    datetimes for TIMESTAMPTZ columns, and anything that round-tripped
+    through JSON hands back ISO strings. A naive datetime is assumed to be
+    UTC rather than local -- every timestamp this system stores is UTC by
+    construction (see NASEvent.event_time_utc), and guessing local time
+    would silently shift every chart by the operator's offset.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def bucket_counts(
+    rows: list[dict],
+    field: str,
+    *,
+    buckets: int = 12,
+    minutes_per_bucket: int = 60,
+    predicate: Any = None,
+) -> list[int]:
+    """
+    Count rows per time bucket, oldest bucket first, for the KPI sparklines.
+
+    Returns a fixed-length list so a quiet period renders as a flat line at
+    zero rather than as a missing segment -- "nothing happened in the last
+    three hours" is information, and a sparkline that silently drops those
+    buckets would draw it as though the last event were current.
+    """
+    now = datetime.now(timezone.utc)
+    counts = [0] * buckets
+    width = timedelta(minutes=minutes_per_bucket)
+    window_start = now - width * buckets
+    for row in rows:
+        if predicate is not None and not predicate(row):
+            continue
+        ts = as_utc(row.get(field))
+        if ts is None or ts < window_start or ts > now:
+            continue
+        index = int((ts - window_start) / width)
+        counts[min(index, buckets - 1)] += 1
+    return counts
 
 
 def readiness_label(value, good_if, warn_if, bad_if, lower_is_better=False):

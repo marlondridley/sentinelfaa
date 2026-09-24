@@ -1,0 +1,32 @@
+# Streamlit's own theme tokens, kept deliberately in step with the
+# Blueprint 4 dark palette hard-coded in dashboard/lib/theme.py.
+#
+# Two places define colour because they control different things and
+# neither can do the other's job: this file is the only way to colour
+# Streamlit's *widgets* (buttons, inputs, select boxes, the dataframe
+# grid, which is a canvas element CSS cannot reach), while theme.py
+# styles everything the app draws itself. If you change one, change the
+# other -- a mismatch shows up immediately as a light-grey select box on
+# a near-black page.
+#
+# This file is read from the bind mount (docker-compose.yml mounts
+# ./.streamlit into /app/.streamlit read-only), not baked into the image,
+# so a colour change here takes effect on container restart with no
+# rebuild. Code changes under dashboard/ do need a rebuild.
+[theme]
+base = "dark"
+primaryColor = "#2D72D2"              # Blueprint BLUE3 -- buttons, focus rings, links
+backgroundColor = "#111418"           # Blueprint BLACK -- the canvas
+secondaryBackgroundColor = "#1C2127"  # Blueprint DARK_GRAY1 -- panels, sidebar, inputs
+textColor = "#F6F7F9"                 # Blueprint LIGHT_GRAY5
+
+[server]
+# The dashboard is reached only over the loopback-published port on the
+# operator's own workstation, and a "are you sure" upload/XSRF interstitial
+# on every rerun is noise in an ops console. Left at Streamlit's defaults
+# deliberately -- documented here so nobody "fixes" it by turning things
+# off without a reason.
+headless = true
+
+[browser]
+gatherUsageStats = false

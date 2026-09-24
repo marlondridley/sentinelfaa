@@ -80,6 +80,11 @@ coverage.xml
 # would silently stop matching the nested one.
 **/.streamlit/*
 !**/.streamlit/secrets.toml.example
+# config.toml carries only the theme tokens (no credentials) and has to
+# be in the repo: it is bind-mounted into the dashboard container and is
+# what colours every Streamlit widget, so an operator cloning this repo
+# without it gets the default light-on-grey theme under a dark stylesheet.
+!**/.streamlit/config.toml
 datarawswim_live/
 jumpstart-latest/
 *.zip

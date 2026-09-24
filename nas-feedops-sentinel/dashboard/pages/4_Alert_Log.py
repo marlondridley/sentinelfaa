@@ -1,8 +1,20 @@
 """
-Operational Alert Log page.
+Operational Alert Log -- the triage console.
 
-Answers "what does the duty manager need to act on?" Split out of the
-original single-file dashboard's "Alert Log" section.
+Answers "what does the duty manager need to act on, and in what order?"
+
+This page is the far end of every alert drill-down on the Overview page.
+"205 open alerts" there is a link to here; "14 critical" is a link to here
+with `?severity=CRITICAL` already applied. That is the whole reason the
+filter state is read from the URL rather than only from widgets: a number
+on a status board is useless if seeing what is behind it means arriving on
+a fresh page and rebuilding the filter by hand.
+
+Accepted query parameters, all optional and all case-insensitive:
+    ?severity=CRITICAL        one or more, comma-separated
+    ?airport=KIAD             one or more, comma-separated
+    ?service=TAIS             one or more, comma-separated
+    ?type=ALERT_LOW_RVR       one or more, comma-separated
 """
 from __future__ import annotations
 
@@ -14,53 +26,331 @@ DASHBOARD_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DASHBOARD_DIR))
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
-from lib.data import SEVERITY_EMOJI
+from lib import theme
+from lib.data import as_utc, bucket_counts
 from lib.page_setup import bootstrap_page
 from src import storage
 from src.async_bridge import run_async as run
 
-bootstrap_page(page_title="Alert Log — PCT FeedOps Sentinel", page_icon="🚨")
+bootstrap_page(page_title="Alert Log — PCT FeedOps Sentinel", page_icon="\U0001F6A8")
 
-st.title("🚨 Operational Alert Log")
-st.caption(
-    "**Answers:** *What does the duty manager need to act on?*"
+theme.page_header(
+    "Operational Alert Log",
+    "What does the duty manager need to act on, and in what order?",
+    detail=(
+        "Every alert here was raised by a deterministic rule in the alert engine "
+        "against an ingested SWIM message -- none is model-generated. Severity is "
+        "assigned by the rule that fired, not inferred."
+    ),
 )
 
 alerts_raw = run(storage.get_recent_alerts(limit=500))
-alerts_df = pd.DataFrame(alerts_raw) if alerts_raw else pd.DataFrame()
 
-if not alerts_df.empty:
-    display_cols = [c for c in
-                    ["triggered_at", "severity", "alert_type",
-                     "airport_code", "service_name", "description"]
-                    if c in alerts_df.columns]
-    disp = alerts_df[display_cols].copy()
-    disp["severity"] = disp["severity"].apply(
-        lambda s: f"{SEVERITY_EMOJI.get(s, '')} {s}"
+if not alerts_raw:
+    st.markdown(
+        f'<div style="border:1px solid {theme.TONES["ok"][1]};border-left:3px solid '
+        f'{theme.GREEN5};background:{theme.TONES["ok"][2]};border-radius:4px;'
+        f'padding:16px 18px;">'
+        f'<div style="color:{theme.GREEN5};font-size:16px;font-weight:700;">'
+        "No alerts in the log</div>"
+        f'<div style="color:{theme.GRAY3};font-size:12.5px;margin-top:5px;">'
+        "Either the system is healthy or nothing has been ingested yet. Check "
+        "messages ingested on the Overview page to tell the two apart."
+        "</div></div>",
+        unsafe_allow_html=True,
     )
-    st.dataframe(
-        disp.rename(columns={
-            "triggered_at": "Triggered (UTC)",
-            "severity": "Severity",
-            "alert_type": "Alert Type",
-            "airport_code": "Airport",
-            "service_name": "Service",
-            "description": "Description",
-        }),
-        hide_index=True,
-        use_container_width=True,
-    )
+    theme.back_link()
+    st.stop()
 
-    with st.expander("Alert type breakdown"):
-        type_counts = alerts_df["alert_type"].value_counts().reset_index()
-        type_counts.columns = ["Alert Type", "Count"]
-        st.dataframe(type_counts, hide_index=True, use_container_width=True)
-        st.bar_chart(type_counts.set_index("Alert Type"))
+df = pd.DataFrame(alerts_raw)
+for _col in ("severity", "alert_type", "airport_code", "service_name", "description"):
+    if _col not in df.columns:
+        df[_col] = None
+df["triggered_at"] = df["triggered_at"].map(as_utc)
+df = df.sort_values("triggered_at", ascending=False, na_position="last")
+
+
+# ── Filter state: URL first, widgets second ───────────────────────────────────
+def _from_query(param: str, allowed: list[str]) -> list[str]:
+    """
+    Read a comma-separated filter out of the URL, keeping only values that
+    actually occur in the data.
+
+    Silently dropping unknown values rather than erroring is deliberate: a
+    stale bookmark pointing at an airport that has since gone quiet should
+    open an unfiltered page, not an error page.
+    """
+    raw = st.query_params.get(param)
+    if not raw:
+        return []
+    wanted = {v.strip().upper() for v in str(raw).split(",") if v.strip()}
+    return [a for a in allowed if str(a).upper() in wanted]
+
+
+_severities = [s for s in ["CRITICAL", "WARNING", "INFO"] if s in set(df["severity"].dropna())]
+_types = sorted(str(t) for t in df["alert_type"].dropna().unique())
+_airports = sorted(str(a) for a in df["airport_code"].dropna().unique())
+_services = sorted(str(s) for s in df["service_name"].dropna().unique())
+
+theme.section(
+    "Filter",
+    "Arrives pre-filtered when opened from an Overview tile.",
+    right=f"{len(df):,} alerts in store",
+)
+
+f1, f2, f3, f4 = st.columns(4)
+sel_sev = f1.multiselect(
+    "Severity", _severities,
+    default=_from_query("severity", _severities) or _severities,
+)
+sel_type = f2.multiselect("Alert type", _types, default=_from_query("type", _types))
+sel_airport = f3.multiselect("Airport", _airports, default=_from_query("airport", _airports))
+sel_service = f4.multiselect("Service", _services, default=_from_query("service", _services))
+
+view = df[df["severity"].isin(sel_sev)] if sel_sev else df
+if sel_type:
+    view = view[view["alert_type"].isin(sel_type)]
+if sel_airport:
+    view = view[view["airport_code"].isin(sel_airport)]
+if sel_service:
+    view = view[view["service_name"].isin(sel_service)]
+
+# ── Shape of the filtered set ─────────────────────────────────────────────────
+n_crit = int((view["severity"] == "CRITICAL").sum())
+n_warn = int((view["severity"] == "WARNING").sum())
+n_info = int((view["severity"] == "INFO").sum())
+
+newest = view["triggered_at"].max() if not view.empty else None
+if newest is not None and pd.notna(newest):
+    _age_min = (pd.Timestamp.now(tz="UTC") - newest).total_seconds() / 60
+    if _age_min < 60:
+        age_display, age_unit = f"{_age_min:.0f}", "min"
+    elif _age_min < 1440:
+        age_display, age_unit = f"{_age_min / 60:.1f}", "h"
+    else:
+        age_display, age_unit = f"{_age_min / 1440:.1f}", "d"
+    # An alert log whose newest entry is days old is not a quiet system, it
+    # is a stopped one -- worth colouring, because the count alone reads the
+    # same either way.
+    age_tone = "ok" if _age_min < 60 else "warn" if _age_min < 1440 else "bad"
 else:
-    st.success("No alerts in the log. System appears healthy.")
+    age_display, age_unit, age_tone = "—", "", "neutral"
 
-st.divider()
-st.page_link("app.py", label="◀ Back to Overview", icon="✈")
+theme.section("Triage", "Everything below reflects the filter above.", tone="bad" if n_crit else "info")
+
+theme.kpi_row(
+    [
+        theme.kpi("Matching alerts", f"{len(view):,}", tone="info",
+                  foot=f"of {len(df):,} in the store"),
+        theme.kpi("Critical", f"{n_crit:,}", tone="bad" if n_crit else "ok",
+                  foot="Supervisor action required" if n_crit else "None in this view"),
+        theme.kpi("Warning", f"{n_warn:,}", tone="warn" if n_warn else "ok",
+                  foot="Monitor and corroborate"),
+        theme.kpi("Informational", f"{n_info:,}", tone="neutral", foot="Context only"),
+        theme.kpi("Newest alert", age_display, unit=age_unit, tone=age_tone,
+                  foot="Age of the most recent matching alert",
+                  spark=bucket_counts(view.to_dict("records"), "triggered_at", buckets=12)),
+    ],
+    columns=5,
+)
+
+if view.empty:
+    st.info("No alerts match this filter. Widen the selection above.")
+    theme.back_link()
+    st.stop()
+
+# ── Time and type structure ───────────────────────────────────────────────────
+theme.section("Where the alerts cluster", "In time, and by rule.", tone="info")
+
+c_left, c_right = st.columns([3, 2])
+
+_SEV_SCALE = alt.Scale(
+    domain=["CRITICAL", "WARNING", "INFO"],
+    range=[theme.RED5, theme.ORANGE5, theme.BLUE5],
+)
+
+with c_left:
+    st.markdown(
+        f'<div class="ev-title">Alerts over time</div>'
+        f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:4px;">'
+        "Hourly buckets. A single tall bar is an incident; a flat band is a rule "
+        "firing continuously, which usually means a threshold needs revisiting."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    hist_df = view.dropna(subset=["triggered_at"]).copy()
+    if hist_df.empty:
+        st.info("No timestamped alerts in this view.")
+    else:
+        hist_df["hour"] = hist_df["triggered_at"].dt.floor("h")
+        chart = (
+            alt.Chart(hist_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("hour:T", title=None,
+                        axis=alt.Axis(grid=False, labelColor=theme.GRAY1,
+                                      domainColor=theme.DARK_GRAY4, tickColor=theme.DARK_GRAY4)),
+                y=alt.Y("count():Q", title="alerts",
+                        axis=alt.Axis(grid=True, gridColor=theme.DARK_GRAY2,
+                                      labelColor=theme.GRAY1, titleColor=theme.GRAY1,
+                                      domainColor=theme.DARK_GRAY4)),
+                color=alt.Color("severity:N", scale=_SEV_SCALE,
+                                legend=alt.Legend(orient="top", title=None,
+                                                  labelColor=theme.GRAY3)),
+                tooltip=["hour:T", "severity:N", alt.Tooltip("count():Q", title="alerts")],
+            )
+            .properties(height=230)
+            .configure_view(strokeWidth=0)
+            .configure(background="transparent")
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+with c_right:
+    st.markdown(
+        f'<div class="ev-title">Which rules are firing</div>'
+        f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:4px;">'
+        "Concentration in one rule points at a single root cause."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    type_df = (
+        view.groupby(["alert_type", "severity"], dropna=False)
+        .size().reset_index(name="count")
+    )
+    type_chart = (
+        alt.Chart(type_df)
+        .mark_bar()
+        .encode(
+            y=alt.Y("alert_type:N", sort="-x", title=None,
+                    axis=alt.Axis(labelColor=theme.GRAY3, labelLimit=220,
+                                  domainColor=theme.DARK_GRAY4, tickColor=theme.DARK_GRAY4)),
+            x=alt.X("count():Q", title=None,
+                    axis=alt.Axis(grid=True, gridColor=theme.DARK_GRAY2,
+                                  labelColor=theme.GRAY1, domainColor=theme.DARK_GRAY4)),
+            color=alt.Color("severity:N", scale=_SEV_SCALE, legend=None),
+            tooltip=["alert_type:N", "severity:N", alt.Tooltip("count:Q", title="alerts")],
+        )
+        .properties(height=230)
+        .configure_view(strokeWidth=0)
+        .configure(background="transparent")
+    )
+    st.altair_chart(type_chart, use_container_width=True)
+
+# ── Per-airport spread ────────────────────────────────────────────────────────
+_ap = view.dropna(subset=["airport_code"])
+if not _ap.empty:
+    theme.section("Spread across facilities", "Isolated, or sector-wide?", tone="info")
+    _tiles = []
+    for _code, _grp in sorted(_ap.groupby("airport_code")):
+        _c = int((_grp["severity"] == "CRITICAL").sum())
+        _w = int((_grp["severity"] == "WARNING").sum())
+        _tiles.append(
+            theme.kpi(
+                str(_code),
+                f"{len(_grp):,}",
+                tone="bad" if _c else ("warn" if _w else "info"),
+                foot=f"{_c} critical · {_w} warning",
+                href=theme.drill_href("alerts", airport=str(_code)),
+                drill="ISOLATE →",
+            )
+        )
+    theme.kpi_row(_tiles, columns=min(len(_tiles), 4))
+
+# ── The log itself ────────────────────────────────────────────────────────────
+theme.section(
+    "Alert records",
+    "Select a row to read the full description.",
+    right=f"{len(view):,} shown · newest first",
+)
+
+table = view.copy()
+table["Triggered (UTC)"] = table["triggered_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
+table = table.rename(
+    columns={
+        "severity": "Severity",
+        "alert_type": "Alert type",
+        "airport_code": "Airport",
+        "service_name": "Service",
+        "description": "Description",
+    }
+)
+cols = ["Triggered (UTC)", "Severity", "Alert type", "Airport", "Service", "Description"]
+
+selection = st.dataframe(
+    table[cols],
+    hide_index=True,
+    use_container_width=True,
+    height=380,
+    on_select="rerun",
+    selection_mode="single-row",
+    column_config={
+        "Description": st.column_config.TextColumn(width="large"),
+        "Severity": st.column_config.TextColumn(width="small"),
+    },
+)
+
+_rows = selection.get("selection", {}).get("rows", []) if isinstance(selection, dict) else []
+if _rows:
+    # .iloc, not .loc: the row index the selection reports is positional
+    # within the *filtered, re-sorted* view, and the DataFrame still carries
+    # its original labels from the full alert set.
+    record = view.iloc[_rows[0]]
+    _sev = str(record.get("severity") or "UNKNOWN")
+    _tone = theme.STATUS_TONE.get(_sev.upper(), "neutral")
+    with st.container(border=True):
+        st.markdown(
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+            + theme.status_chip(_sev)
+            + '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+            + theme._esc(record.get("alert_type")) + "</span>"
+            + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
+            + theme.GRAY1 + ';">'
+            + theme._esc(
+                record["triggered_at"].strftime("%Y-%m-%d %H:%M:%S UTC")
+                if pd.notna(record.get("triggered_at")) else "no timestamp"
+            )
+            + "</span></div>"
+            '<div style="font-size:13.5px;color:' + theme.GRAY5
+            + ';margin-top:10px;line-height:1.55;">'
+            + theme._esc(record.get("description")) + "</div>",
+            unsafe_allow_html=True,
+        )
+        d1, d2, d3 = st.columns(3)
+        d1.markdown(
+            f'<div class="ev-title">Airport</div><div class="mono" style="color:{theme.GRAY5};">'
+            f'{theme._esc(record.get("airport_code") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        d2.markdown(
+            f'<div class="ev-title">Service</div><div class="mono" style="color:{theme.GRAY5};">'
+            f'{theme._esc(record.get("service_name") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        d3.markdown(
+            f'<div class="ev-title">Source event</div><div class="mono" '
+            f'style="color:{theme.GRAY5};font-size:11px;">'
+            f'{theme._esc(record.get("event_id") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        if record.get("airport_code"):
+            st.markdown(
+                f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
+                f'target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
+                f'text-decoration:none;font-weight:600;">'
+                f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>',
+                unsafe_allow_html=True,
+            )
+
+st.download_button(
+    "Download this view as CSV",
+    data=table[cols].to_csv(index=False).encode("utf-8"),
+    file_name="pct_alert_log.csv",
+    mime="text/csv",
+    help="Exports exactly the filtered rows shown above, for an incident record.",
+)
+
+theme.back_link()
