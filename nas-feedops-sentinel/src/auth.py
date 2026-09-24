@@ -25,7 +25,18 @@ from enum import Enum
 class PrincipalSource(str, Enum):
     """How a Principal's identity was established, in descending order of assurance."""
 
-    OIDC = "oidc"  # Verified via Keycloak/OIDC login (dashboard).
+    OIDC = "oidc"  # Verified via Keycloak/OIDC browser redirect (authorization code flow).
+    # Verified by Keycloak, but via the OAuth2 direct access grant: the
+    # dashboard collected the password itself and exchanged it at the realm's
+    # token endpoint, rather than handing the browser to Keycloak's own login
+    # page. Keycloak still authenticated the credential -- same user store,
+    # same password policy, same brute-force lockout -- so this is a verified
+    # identity. It is NOT folded into OIDC above because the two differ in one
+    # way an auditor would care about: in a direct grant the dashboard process
+    # sees the plaintext password, and no second factor or identity-provider
+    # redirect can be interposed. Recording them under separate names keeps
+    # action_audit_log honest about which of the two actually happened.
+    PASSWORD_GRANT = "password_grant"
     API_KEY = "api_key"  # Presented a configured API key (service-to-service).
     SELF_DECLARED = "self_declared"  # Operator typed a callsign; not independently verified.
     SYSTEM = "system"  # The application itself (e.g. auto-staging a CRITICAL alert).
@@ -42,8 +53,14 @@ class Principal:
 
     @property
     def verified(self) -> bool:
-        """True when this identity was independently established (OIDC or API key)."""
-        return self.source in (PrincipalSource.OIDC, PrincipalSource.API_KEY)
+        """True when this identity was independently established by an
+        authority other than the operator's own assertion -- Keycloak (either
+        OIDC flow) or a configured API key."""
+        return self.source in (
+            PrincipalSource.OIDC,
+            PrincipalSource.PASSWORD_GRANT,
+            PrincipalSource.API_KEY,
+        )
 
 
 SYSTEM_PRINCIPAL = Principal(principal_id="system", role="automation", source=PrincipalSource.SYSTEM)
@@ -65,6 +82,8 @@ def format_actor(principal: Principal) -> str:
         return f"{base} [api_key]"
     if principal.source == PrincipalSource.OIDC:
         return f"{base} [oidc]"
+    if principal.source == PrincipalSource.PASSWORD_GRANT:
+        return f"{base} [keycloak-password]"
     return base
 
 
