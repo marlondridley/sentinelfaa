@@ -27,6 +27,7 @@ import streamlit as st
 
 from lib import theme
 from lib.data import format_ts, parse_json_str_list
+from lib.investigation_view import load_investigation, render_investigation
 from lib.page_setup import bootstrap_page
 from src import storage
 from src.async_bridge import run_async as run
@@ -228,6 +229,8 @@ else:
                 st.markdown(f"**Summary:** {_ticket.summary}")
             else:
                 st.markdown(f"**Recommended action:** {_action.recommended_action}")
+
+            render_investigation(load_investigation(_action.action_id))
 
             if _ticket:
                 pc1, pc2 = st.columns(2)
