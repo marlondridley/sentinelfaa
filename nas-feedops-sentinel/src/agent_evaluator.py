@@ -6,15 +6,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
-from crewai import Crew, Task
 
 from src import storage
 from src.alert_engine import check_alerts
 from src.demo_scenario import generate_cascade_failure_scenario
 from src.guardrails import InputGuardrail, OutputGuardrail
-from src.llm_config import get_configured_llm
 from src.models import EvalReport, EvalResult, NASEvent, PlannerResult
-from src.planner_agent import get_planner_agent
 from src.validators import validate_event
 
 
@@ -149,33 +146,6 @@ class AgentEvaluator:
         )
 
         return results
-
-    def _check_planner(self, scenario: Any) -> EvalResult:
-        start = time.perf_counter()
-        llm = get_configured_llm()
-        planner_agent = get_planner_agent(llm=llm)
-        task = Task(
-            description=scenario.planner_question,
-            expected_output="A structured response to the operational query.",
-            agent=planner_agent,
-            output_pydantic=PlannerResult,
-        )
-        crew = Crew(agents=[planner_agent], tasks=[task], verbose=False, memory=False, share_crew=True)
-        crew_output = crew.kickoff()
-        result = crew_output.pydantic
-
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        expected_conf = getattr(scenario, "expected_min_confidence", 0.5) or 0.5
-        passed = (result.confidence or 0.0) >= expected_conf
-        return EvalResult(
-            scenario_name=f"{getattr(scenario, 'name', 'scenario')}::planner_llm",
-            passed=passed,
-            score=1.0 if passed else 0.5,
-            checks={"confidence": result.confidence, "latency_ms": round(latency_ms, 1)},
-            latency_ms=round(latency_ms, 1),
-            notes="",
-        )
 
     def run(self) -> EvalReport:
         """Run all evaluation suites and compute summary metrics."""

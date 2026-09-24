@@ -28,14 +28,12 @@ from lib import theme
 from lib.data import KIT_LOG_PATH
 from lib.page_setup import bootstrap_page
 from src import config
-from src.alert_engine import check_alerts
 from src.async_bridge import run_async as run
 from src.maintenance import purge_old_kit_files
+from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
 from src.sample_data import generate_sample_batch
-from src.storage import save_alerts, save_events
 from src.swim_file_ingest import read_ingest_log, scan_swim_folder
-from src.validators import validate_event
 
 bootstrap_page(page_title="Ingest & Replay — PCT FeedOps Sentinel", page_icon="📥")
 
@@ -53,16 +51,15 @@ with st.sidebar:
                           value=100, step=10)
 
     if st.button("Generate & Ingest Sample Data", use_container_width=True, type="primary"):
+        # Through the one pipeline, so CRITICAL alerts from generated data are
+        # staged for review exactly as live ones are. This used to validate,
+        # save and alert inline and stop there -- no critic, no staging.
         with st.spinner("Generating …"):
-            events = generate_sample_batch(gen_count)
-            for e in events:
-                r = validate_event(e)
-                e.validation_status = "PASSED" if r.passed else "FAILED"
-                e.validation_errors = r.errors
-            run(save_events(events))
-            alerts = check_alerts(events)
-            run(save_alerts(alerts))
-        st.success(f"Ingested {len(events)} events · {len(alerts)} alerts triggered.")
+            summary = run(run_pipeline(generate_sample_batch(gen_count), label="SAMPLE"))
+        st.success(
+            f"Ingested {summary['event_count']} events · {summary['alert_count']} alerts · "
+            f"{summary['staged_count']} staged for review."
+        )
 
     st.divider()
 
@@ -73,18 +70,16 @@ with st.sidebar:
                  disabled=len(replay_files) == 0):
         with st.spinner("Replaying …"):
             r_events, r_errors = replay_from_directory()
-            for e in r_events:
-                res = validate_event(e)
-                e.validation_status = "PASSED" if res.passed else "FAILED"
-                e.validation_errors = res.errors
-            run(save_events(r_events))
-            r_alerts = check_alerts(r_events)
-            run(save_alerts(r_alerts))
+            summary = run(run_pipeline(r_events, label="REPLAY")) if r_events else None
         if r_errors:
             st.warning(f"{len(r_errors)} parse error(s). Check console.")
-        st.success(
-            f"Replay complete · {len(r_events)} events · {len(r_alerts)} alerts."
-        )
+        if summary:
+            st.success(
+                f"Replay complete · {summary['event_count']} events · "
+                f"{summary['alert_count']} alerts · {summary['staged_count']} staged for review."
+            )
+        else:
+            st.info("Replay found no events.")
 
     st.divider()
     st.subheader("Kit Log Maintenance")
@@ -165,18 +160,13 @@ with col_ingest:
                  disabled=len(pending_files) == 0):
         with st.spinner("Scanning swim_live/ ..."):
             sw_events, sw_stats = scan_swim_folder(swim_live_dir)
-            for e in sw_events:
-                res = validate_event(e)
-                e.validation_status = "PASSED" if res.passed else "FAILED"
-                e.validation_errors = res.errors
-            run(save_events(sw_events))
-            sw_alerts = check_alerts(sw_events)
-            run(save_alerts(sw_alerts))
+            summary = run(run_pipeline(sw_events, label="SWIM_SCAN")) if sw_events else None
         st.success(
             f"Ingested {sw_stats.events_parsed} events from "
             f"{sw_stats.files_processed} file(s). "
             f"{sw_stats.files_failed} failed. "
-            f"{len(sw_alerts)} alert(s) triggered."
+            f"{summary['alert_count'] if summary else 0} alert(s), "
+            f"{summary['staged_count'] if summary else 0} staged for review."
         )
         st.rerun()
 

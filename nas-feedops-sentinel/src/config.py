@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from src.vault_config import VaultSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 DATA_DIR: Path = BASE_DIR / "data"
@@ -53,6 +53,35 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 # VaultSettingsSource returns {} on an empty address or token, and
 # _defaults() below rebuilds DATABASE_URL from the POSTGRES_* settings
 # whenever DATABASE_URL is empty.
+
+
+def proxy_model(value: str, *, setting: str = "model") -> str:
+    """
+    Normalize a model setting to the LiteLLM proxy's OpenAI-compatible route.
+
+    Model settings name a proxy alias -- a model_name in
+    instraclustr/litellm-config.yaml such as "primary-model" -- and the client
+    always reaches it as "openai/<alias>" against LITELLM_PROXY_URL.
+
+    A bare alias ("gemini-2.5-flash") gets the prefix. Before this, that exact
+    value (the compose default for CRITIC_MODEL) made litellm pick Google
+    Vertex from the name and call it directly, bypassing the proxy -- and its
+    provider allowlist, keys and logging -- and failing on missing google.auth.
+    Any other provider prefix ("gemini/...", "anthropic/...") is refused for the
+    same reason: it would route around the gateway.
+    """
+    text = (value or "").strip()
+    if not text:
+        return text
+    if text.startswith("openai/"):
+        return text
+    if "/" in text:
+        raise ValueError(
+            f"{setting}={text!r} names a provider route. Model settings must be a "
+            "LiteLLM proxy alias (e.g. 'primary-model'); every call goes through "
+            "the proxy, never directly to a provider."
+        )
+    return f"openai/{text}"
 
 
 class Settings(BaseSettings):
@@ -218,7 +247,15 @@ class Settings(BaseSettings):
     MAX_CRITIC_PER_PASS: int = 5
 
     # ── LiteLLM Proxy ────────────────────────────────────────────────────────
-    LITELLM_PROXY_URL: str = "http://localhost:4000/v1"
+    # Every model call goes through this gateway; nothing talks to a provider
+    # directly. Accepts LLM_BASE_URL as well: docker-compose.yml and .env set
+    # that name, and when only LITELLM_PROXY_URL was read, every container
+    # silently fell back to localhost:4000 -- nothing listening -- so the
+    # Critic and Watch Officer never reached a model and degraded quietly.
+    LITELLM_PROXY_URL: str = Field(
+        default="http://localhost:4000/v1",
+        validation_alias=AliasChoices("LITELLM_PROXY_URL", "LLM_BASE_URL"),
+    )
 
     # ── Temporal ─────────────────────────────────────────────────────────────
     TEMPORAL_HOST: str = "localhost:7233"
@@ -354,6 +391,9 @@ class Settings(BaseSettings):
 
         if not self.WATCH_OFFICER_MODEL:
             self.WATCH_OFFICER_MODEL = self.LLM_MODEL
+
+        for name in ("LLM_MODEL", "CRITIC_MODEL", "PLANNER_MODEL", "WATCH_OFFICER_MODEL"):
+            setattr(self, name, proxy_model(getattr(self, name), setting=name))
 
         if self.CRITIC_ENABLED and not self.CRITIC_MODEL and not self.LLM_MODEL:
             raise ValueError(

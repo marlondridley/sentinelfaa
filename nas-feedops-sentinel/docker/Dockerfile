@@ -1,13 +1,9 @@
 # Multi-stage build for NAS FeedOps Sentinel
 # Stage 1: build wheels for all deps
 FROM python:3.12-slim AS builder
-# Pinned to 3.12, not 3.13: requirements.lock hash-locks crewai==0.95.0
-# (requirements.txt deliberately constrains crewai<1.0.0 -- 1.0 was a
-# breaking API change from the version this app's Crew()/Agent()/Task()
-# code was built and verified against), and that exact version's own
-# metadata requires Python <3.13. The lock file was resolved as a coherent
-# set under this Python range; building on 3.13 makes pip refuse to
-# install crewai at all (ERROR: No matching distribution found).
+# Python 3.12 is what requirements.lock is resolved for (see the compile
+# command in its header). The 3.13 blocker was crewai, now removed; moving
+# up is a matter of recompiling the locks and running the suite.
 
 WORKDIR /build
 # Install from requirements.lock (exact pinned versions + sha256 hashes,
@@ -20,8 +16,8 @@ WORKDIR /build
 # already has the resolved, tested answer, so there is nothing left to solve:
 # pip installs the exact listed version of everything with hash verification,
 # no backtracking, dramatically less bandwidth, and a reproducible build.
-COPY requirements.lock .
-RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.lock
+COPY requirements.lock requirements-dev.lock ./
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements-dev.lock
 
 # Stage 2: runtime image
 FROM python:3.12-slim AS runtime
@@ -67,3 +63,21 @@ CMD ["python", "-m", "src.main", "--mode", "replay", "--watch"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9108/health').read()" || exit 1
+
+# ── Test image: runtime + pytest/ruff + tests. Built by CI, never shipped. ──
+FROM runtime AS test
+USER root
+COPY --from=builder /wheels /wheels
+COPY requirements-dev.lock .
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements-dev.lock \
+    && rm -rf /wheels
+COPY tests/ ./tests/
+COPY pytest.ini ./
+COPY scripts/ ./scripts/
+RUN chown -R sentinel:sentinel /app/tests /app/scripts
+USER sentinel
+CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-q"]
+
+# The last stage is the default build target, so the shipped image must be
+# last: `docker compose build` and a plain `docker build` produce it.
+FROM runtime AS final

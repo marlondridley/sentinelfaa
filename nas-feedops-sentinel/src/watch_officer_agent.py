@@ -4,40 +4,26 @@ Watch Officer — Advisory Operational Narrative Layer.
 
 from __future__ import annotations
 
-import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
-from crewai import Agent, Crew, Task
 from pydantic import BaseModel, Field, field_validator
 
 from src import config, storage
 from src.async_bridge import run_async
+from src.config import settings
 from src.feed_health import compute_feed_health
-from src.llm_config import get_configured_llm
+from src.llm_client import build_llm_client
 from src.logging_config import get_logger
+from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import NASEvent, WatchOfficerBrief
+from src.prompts_loader import system_prompt, tool_schema
 from src.redaction import redact_structured
 
 _log = get_logger(__name__)
 
 EVENT_LIMIT = 200
-
-
-def get_watch_officer_agent(llm: Any = None, tools: list | None = None) -> Agent:
-    return Agent(
-        role="Watch Officer",
-        goal="Synthesize complex feed telemetry into executive operational briefs for duty management.",
-        backstory=(
-            "You are the PCT TRACON Watch Officer. You summarize operational state, feed health, "
-            "and active alerts into concise briefs. You strictly adhere to control-plane truth and never "
-            "approve or stage operational actions directly."
-        ),
-        tools=tools or [],
-        verbose=settings.AGENT_VERBOSE,
-        allow_delegation=False,
-        llm=llm or get_configured_llm(),
-    )
 
 
 class RawLLMNarrative(BaseModel):
@@ -435,62 +421,68 @@ class OutputGuardrail:
             limitations=list(raw_narrative.limitations),
         )
 
-# watch_officer_agent.py
+async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> RawLLMNarrative:
+    """
+    One structured completion through the shared LiteLLM client -- the same
+    redacted, error-classified path the Critic and Planner use. Raises on any
+    failure; the caller falls back to the deterministic brief.
+    """
+    client = build_llm_client(model=settings.WATCH_OFFICER_MODEL)
+    if client is None:
+        raise RuntimeError("no LLM client configured")
 
+    payload = redact_structured({"context": context, "signals": signals})
+    raw = await client.acall_with_tool(
+        system_prompt=system_prompt("watch_officer"),
+        tool=tool_schema("watch_officer"),
+        user_message=(
+            "Write the operational watch summary for this context:\n"
+            + json.dumps(payload, default=str)
+        ),
+        max_tokens=900,
+    )
+    return RawLLMNarrative.model_validate(raw)
 
 
 async def agenerate_watch_officer_brief(
     context: dict[str, Any] | None = None,
     use_llm: bool = True,
-    mcp_tools: list | None = None,
 ) -> WatchOfficerBrief:
     """
-    Async entry point for generate_watch_officer_brief(); use this from coroutines.
-
-    generate_watch_officer_brief() is synchronous, and with use_llm=True it runs
-    CrewAI's Crew.kickoff(), which blocks until the model answers. Called
-    directly from a coroutine it froze the event loop for that whole round-trip:
-    in the Temporal worker and the pipeline, every other activity, database call
-    and timer on that loop stalled behind it. The context is built here on the
-    caller's loop, since it is async storage I/O, and only the synchronous part
-    runs in a worker thread.
+    Build the Watch Officer brief. The model writes only the narrative;
+    posture, trust and counts come from OutputGuardrail.guard(). Any LLM
+    failure -- unconfigured, unreachable, malformed output -- returns the
+    deterministic brief, which says it is rule-based in its limitations.
     """
     if context is None:
         context = await build_watch_officer_context()
-    return await asyncio.to_thread(generate_watch_officer_brief, context, use_llm, mcp_tools)
+    signals = _detect_signals(context)
+
+    if use_llm and settings.CRITIC_ENABLED:
+        start = time.perf_counter()
+        try:
+            narrative = await _llm_narrative(context, signals)
+            LLM_CALLS.labels(agent="watch_officer", outcome="success").inc()
+            return OutputGuardrail.guard(narrative, context, signals, llm_used=True)
+        except Exception as exc:  # noqa: BLE001 -- advisory layer; fall back
+            LLM_CALLS.labels(agent="watch_officer", outcome="error").inc()
+            _log.warning("watch_officer_llm_failed", extra={"error": str(exc)})
+        finally:
+            LLM_CALL_LATENCY.labels(agent="watch_officer").observe(time.perf_counter() - start)
+
+    return _deterministic_brief(context, signals)
 
 
 def generate_watch_officer_brief(
     context: dict[str, Any] | None = None,
     use_llm: bool = True,
-    mcp_tools: list | None = None,
 ) -> WatchOfficerBrief:
-    if context is None:
-        context = run_async(build_watch_officer_context())
-
-    signals = _detect_signals(context)
-
-    if use_llm:
-        try:
-            agent = get_watch_officer_agent(llm=get_configured_llm(), tools=mcp_tools)
-            payload = redact_structured({"context": context, "signals": signals})
-            task = Task(
-                description=(
-                    "Synthesize operational watch summary for context: "
-                    + json.dumps(payload, default=str)
-                ),
-                expected_output="A valid JSON object adhering to the RawLLMNarrative schema.",
-                agent=agent,
-                output_json=RawLLMNarrative,
-            )
-            
-            crew = Crew(agents=[agent], tasks=[task], verbose=settings.AGENT_VERBOSE, memory=False, share_crew=True)
-            result = crew.kickoff()
-            
-            narrative = result.pydantic if hasattr(result, "pydantic") and result.pydantic else RawLLMNarrative.model_validate_json(result.raw)
-            return OutputGuardrail.guard(narrative, context, signals, llm_used=True)
-            
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("watch_officer_crew_execution_failed", extra={"error": str(exc)})
-
-    return _deterministic_brief(context, signals)
+    """
+    Synchronous entry point for callers with no running event loop (the
+    Streamlit dashboard). The deterministic path needs no loop at all, so it
+    is served directly; anything that touches storage or the model runs on the
+    shared bridge loop.
+    """
+    if not use_llm and context is not None:
+        return _deterministic_brief(context, _detect_signals(context))
+    return run_async(agenerate_watch_officer_brief(context, use_llm))
