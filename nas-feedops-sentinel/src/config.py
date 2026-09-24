@@ -246,6 +246,17 @@ class Settings(BaseSettings):
 
     MAX_CRITIC_PER_PASS: int = 5
 
+    # ── Investigations (src/investigation/) ─────────────────────────────────
+    # Every staged action gets an investigation. The first
+    # MAX_LLM_INVESTIGATIONS_PER_PASS in a pipeline pass run the four
+    # specialists with the model (4 calls each); the rest run the same flow
+    # deterministically, so a burst of CRITICAL alerts cannot become an
+    # unbounded burst of LLM calls, and no staged action goes uninvestigated.
+    INVESTIGATIONS_ENABLED: bool = True
+    MAX_LLM_INVESTIGATIONS_PER_PASS: int = 3
+    INVESTIGATION_WINDOW_MINUTES: int = 60
+    INVESTIGATION_MODEL: str = ""
+
     # ── LiteLLM Proxy ────────────────────────────────────────────────────────
     # Every model call goes through this gateway; nothing talks to a provider
     # directly. Accepts LLM_BASE_URL as well: docker-compose.yml and .env set
@@ -358,7 +369,7 @@ class Settings(BaseSettings):
             return _json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
-    @field_validator("CRITIC_ENABLED", mode="before")
+    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", mode="before")
     @classmethod
     def _parse_bool(cls, value: Any) -> bool:
         if isinstance(value, str):
@@ -392,7 +403,10 @@ class Settings(BaseSettings):
         if not self.WATCH_OFFICER_MODEL:
             self.WATCH_OFFICER_MODEL = self.LLM_MODEL
 
-        for name in ("LLM_MODEL", "CRITIC_MODEL", "PLANNER_MODEL", "WATCH_OFFICER_MODEL"):
+        if not self.INVESTIGATION_MODEL:
+            self.INVESTIGATION_MODEL = self.LLM_MODEL
+
+        for name in ("LLM_MODEL", "CRITIC_MODEL", "PLANNER_MODEL", "WATCH_OFFICER_MODEL", "INVESTIGATION_MODEL"):
             setattr(self, name, proxy_model(getattr(self, name), setting=name))
 
         if self.CRITIC_ENABLED and not self.CRITIC_MODEL and not self.LLM_MODEL:

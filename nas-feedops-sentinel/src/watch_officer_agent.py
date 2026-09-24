@@ -59,7 +59,8 @@ class RawLLMNarrative(BaseModel):
         return [str(value)]
 
 
-def _rebuild_events(rows: list[dict]) -> tuple[list[NASEvent], int]:
+def rebuild_events(rows: list[dict]) -> tuple[list[NASEvent], int]:
+    """Reconstruct NASEvents from storage rows; returns (events, rows_that_failed)."""
     events: list[NASEvent] = []
     failed_count = 0
 
@@ -111,7 +112,7 @@ async def build_watch_officer_context(
     draft_tickets = await storage.get_draft_operational_tickets()
     critic_rows = await storage.get_recent_critic_results(limit=20)
 
-    live_events, failed_reconstructions = _rebuild_events(events_raw)
+    live_events, failed_reconstructions = rebuild_events(events_raw)
 
     health = (
         compute_feed_health(live_events)
