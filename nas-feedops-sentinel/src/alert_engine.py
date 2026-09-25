@@ -19,7 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from src import config
-from src.models import AlertEvent, NASEvent, is_surface_movement
+from src.models import AlertEvent, NASEvent, is_surface_movement, stable_id
 
 
 def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
@@ -35,7 +35,27 @@ def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
     alerts.extend(_stale_feed_alerts(events, now))
     alerts.extend(_surface_spike_alerts(events, now))
 
-    return alerts
+    return [_with_stable_id(a, now) for a in alerts]
+
+
+def _with_stable_id(alert: AlertEvent, now: datetime) -> AlertEvent:
+    """
+    Give an alert an identity derived from what triggered it.
+
+    Per-event alerts: the rule, the triggering event, and the description
+    (one RVR event can raise LOW_RVR at touchdown and at rollout). Aggregate
+    alerts (stale feed, surface spike) have no single event: the rule, airport,
+    service and the evaluation window they fell in. Re-running the same events
+    -- a retry, a double scan -- therefore yields the same alerts, which upsert
+    in place and stage at most once.
+    """
+    if alert.event_id:
+        key = stable_id("alert", alert.alert_type, alert.event_id, alert.description)
+    else:
+        window = max(config.SURFACE_SPIKE_WINDOW_SECONDS, config.STALE_FEED_SECONDS)
+        bucket = int(now.timestamp() // window)
+        key = stable_id("alert", alert.alert_type, alert.airport_code, alert.service_name, bucket)
+    return alert.model_copy(update={"alert_id": key})
 
 
 # ── Per-event rules ───────────────────────────────────────────────────────────

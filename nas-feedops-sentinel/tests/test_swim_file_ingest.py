@@ -206,10 +206,10 @@ def test_unexpected_error_in_one_file_fails_that_file_not_the_scan(tmp_path: Pat
 
     real = ingest._normalise_record
 
-    def poisoned(raw, source_file):
+    def poisoned(raw, source_file, index=None):
         if source_file.endswith("a_poison.json"):
             raise TypeError("boom")
-        return real(raw, source_file)
+        return real(raw, source_file, index=index)
 
     monkeypatch.setattr(ingest, "_normalise_record", poisoned)
 
