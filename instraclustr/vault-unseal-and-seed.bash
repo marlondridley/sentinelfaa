@@ -167,7 +167,8 @@ for role in sentinel-app sentinel-migrate; do
     dir="/vault-init-data/approle/$role"
     mkdir -p "$dir"
     vault read -field=role_id "auth/approle/role/$role/role-id" > "$dir/role_id"
-    for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null | tr -d '[]", ' ); do
+    # Accessors are UUIDs; with none issued yet `vault list` prints "{}".
+    for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null                       | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'); do
         vault write -f "auth/approle/role/$role/secret-id-accessor/destroy" secret_id_accessor="$accessor" >/dev/null
     done
     vault write -f -field=secret_id "auth/approle/role/$role/secret-id" > "$dir/secret_id"

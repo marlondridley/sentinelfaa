@@ -107,6 +107,15 @@ def classify(exc: BaseException) -> LLMError:
 
     detail = f"{type(exc).__name__}: {exc}"
 
+    # An exhausted daily quota comes back as a 429 like any rate limit, but it
+    # will not clear for hours. Retrying it only spends the next key's quota:
+    # observed live, failing calls became dozens of upstream requests (client
+    # retries x proxy retries x deployments) and drained a second free-tier
+    # key. Treated as permanent so the caller falls back to rules at once.
+    text = str(exc)
+    if "PerDay" in text or "exceeded your current quota" in text:
+        return LLMPermanentError(detail)
+
     if _PERMANENT_EXC and isinstance(exc, _PERMANENT_EXC):
         return LLMPermanentError(detail)
 

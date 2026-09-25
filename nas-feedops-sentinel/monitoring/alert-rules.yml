@@ -6,7 +6,7 @@ groups:
       - alert: CriticalAlertsUnstaged
         # The headline invariant. The reconciler repairs this every minute, so
         # a value that stays above zero means staging itself is failing.
-        expr: nas_critical_alerts_unstaged > 0
+        expr: max(nas_critical_alerts_unstaged{job="nas-sentinel"}) > 0
         for: 5m
         labels: {severity: critical}
         annotations:
@@ -14,7 +14,7 @@ groups:
           description: "Check nas-sentinel logs for reconcile_failed / staging errors. docs/operations.md."
 
       - alert: HumanReviewQueueStale
-        expr: nas_hitl_oldest_pending_age_seconds > 3600
+        expr: max(nas_hitl_oldest_pending_age_seconds{job="nas-sentinel"}) > 3600
         for: 10m
         labels: {severity: warning}
         annotations:
