@@ -30,7 +30,7 @@ def _summarise_events(events: list[dict]) -> dict[str, dict[str, Any]]:
             s["feed_statuses"].add(e["feed_status"])
         if len(s["sample_event_ids"]) < 5:
             event_id = e.get("event_id") or e.get("id") or "UNKNOWN"
-            s["sample_event_ids"].append(e["event_id"])
+            s["sample_event_ids"].append(event_id)
 
     result: dict[str, dict[str, Any]] = {}
     for svc, s in by_service.items():

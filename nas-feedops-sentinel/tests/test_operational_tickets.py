@@ -83,7 +83,7 @@ class TestTicketCreation:
 
     async def test_draft_query_returns_only_drafts(self):
         a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+        await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
         t1 = await storage.get_ticket_by_action_id(a1.action_id)
         await storage.approve_operational_ticket(t1.ticket_id, actor="x", note="")

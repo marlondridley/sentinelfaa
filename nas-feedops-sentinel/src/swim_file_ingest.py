@@ -49,7 +49,6 @@ from watchdog.observers import Observer
 from src import config, storage
 from src.async_bridge import run_async
 from src.models import NASEvent
-from dataclasses import dataclass
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)

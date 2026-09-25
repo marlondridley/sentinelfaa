@@ -16,7 +16,7 @@ from src.metrics import start_metrics_server
 from src.models import NASEvent
 from src.pipeline import run_pipeline
 from src.planner_agent import PlannerAgent
-from src.replay import replay_from_directory, write_sample_replay_file
+from src.replay import replay_from_directory
 from src.sample_data import generate_sample_batch
 from src.storage import save_planner_result
 from src.swim_file_ingest import request_shutdown, scan_swim_folder, watch_swim_folder

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.execution_gate import stage_critical_alert, _build_escalation_package
-from src.models import AlertEvent, CriticResult, OperationalTicket, StagedAction, WatchOfficerBrief
+from src.models import AlertEvent, CriticResult, StagedAction, WatchOfficerBrief
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_build_escalation_package_awaits_storage():
 
     with patch("src.storage.get_ticket_by_action_id", new_callable=AsyncMock) as mock_get_ticket, \
          patch("src.watch_officer_agent.build_watch_officer_context", new_callable=AsyncMock) as mock_ctx, \
-         patch("src.watch_officer_agent.agenerate_watch_officer_brief", new_callable=AsyncMock, return_value=brief) as mock_brief, \
+         patch("src.watch_officer_agent.agenerate_watch_officer_brief", new_callable=AsyncMock, return_value=brief), \
          patch("src.storage.save_watch_officer_brief", new_callable=AsyncMock) as mock_save_brief, \
          patch("src.storage.create_operational_ticket", new_callable=AsyncMock) as mock_create_ticket:
 
