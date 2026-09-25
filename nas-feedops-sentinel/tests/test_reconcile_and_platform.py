@@ -110,15 +110,46 @@ def test_services_log_in_with_approle_not_a_token(tmp_path: Path, monkeypatch):
 
 # ── Edge TLS certificate ──────────────────────────────────────────────────────
 
-def test_edge_certificate_covers_localhost_and_is_kept_across_restarts(tmp_path: Path):
+def test_edge_certificate_chains_to_a_local_authority_and_survives_restarts(tmp_path: Path):
+    """
+    Browsers reject a bare self-signed server certificate
+    (NET::ERR_CERT_AUTHORITY_INVALID). The server certificate must be signed
+    by a local authority the operator trusts once, and restarts must keep both.
+    """
     from cryptography import x509
+    from cryptography.hazmat.primitives.asymmetric import ec
 
-    from src.devcert import CERT_NAME, ensure_certificate
+    from src.devcert import CA_CERT, CERT_NAME, ensure_certificate
 
     assert ensure_certificate(tmp_path) is True
-    cert = x509.load_pem_x509_certificate((tmp_path / CERT_NAME).read_bytes())
-    sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    ca = x509.load_pem_x509_certificate((tmp_path / CA_CERT).read_bytes())
+    chain = x509.load_pem_x509_certificates((tmp_path / CERT_NAME).read_bytes())
+    leaf = chain[0]
+
+    assert ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is True
+    assert leaf.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
+    assert leaf.issuer == ca.subject and chain[1] == ca
+    ca.public_key().verify(leaf.signature, leaf.tbs_certificate_bytes,
+                           ec.ECDSA(leaf.signature_hash_algorithm))
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert "localhost" in sans.get_values_for_type(x509.DNSName)
-    first = (tmp_path / CERT_NAME).read_bytes()
+
+    before = ((tmp_path / CA_CERT).read_bytes(), (tmp_path / CERT_NAME).read_bytes())
     assert ensure_certificate(tmp_path) is False
-    assert (tmp_path / CERT_NAME).read_bytes() == first
+    assert ((tmp_path / CA_CERT).read_bytes(), (tmp_path / CERT_NAME).read_bytes()) == before
+
+
+def test_old_self_signed_certificate_is_replaced(tmp_path: Path):
+    """A leaf not issued by the current authority (the earlier self-signed one) is re-issued."""
+    from cryptography import x509
+
+    from src import devcert
+
+    devcert.ensure_certificate(tmp_path)
+    ca_before = (tmp_path / devcert.CA_CERT).read_bytes()
+    (tmp_path / devcert.CA_CERT).unlink()                      # simulate the pre-authority layout
+    (tmp_path / devcert.CA_KEY).unlink()
+    assert devcert.ensure_certificate(tmp_path) is True
+    ca = x509.load_pem_x509_certificate((tmp_path / devcert.CA_CERT).read_bytes())
+    leaf = x509.load_pem_x509_certificates((tmp_path / devcert.CERT_NAME).read_bytes())[0]
+    assert leaf.issuer == ca.subject and (tmp_path / devcert.CA_CERT).read_bytes() != ca_before
