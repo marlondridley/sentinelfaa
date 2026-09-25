@@ -16,14 +16,16 @@ model_list:
       api_key: "os.environ/DEEPSEEK_API_KEY"
       api_base: "https://api.deepseek.com"
 
+  # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
+  # gemini-3.8-flash as the replacement), so both Gemini aliases point there.
   - model_name: gemini-backup
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
 
-  - model_name: gemini-2.5-flash
+  - model_name: gemini-flash
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
 
 # Fallbacks belong here. They used to sit inside the primary-model entry,
