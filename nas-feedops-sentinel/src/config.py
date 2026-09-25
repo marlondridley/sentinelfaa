@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     # ── Paths ────────────────────────────────────────────────────────────────
     INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
+    # Poll the SWIM folder instead of relying on native file events, which do
+    # not reach a container through a Windows/macOS host bind mount.
+    SWIM_WATCH_POLLING: bool = False
+    SWIM_WATCH_POLL_SECONDS: float = 2.0
 
     # ── Database / PgBouncer ────────────────────────────────────────────────
     POSTGRES_HOST: str = "localhost"

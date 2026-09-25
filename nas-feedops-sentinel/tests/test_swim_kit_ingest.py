@@ -505,3 +505,46 @@ def test_holdbar_status_does_not_count_toward_a_surface_spike():
         for _ in range(config.SURFACE_SPIKE_COUNT * 2)
     ]
     assert not [a for a in check_alerts(burst) if a.alert_type == "ALERT_SURFACE_EVENT_SPIKE"]
+
+
+def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monkeypatch):
+    """
+    With SWIM_WATCH_POLLING (on in compose), a file the kit writes is picked up
+    in seconds, not at the next 5-minute reconcile. Native file events do not
+    cross a Windows/macOS host bind mount, which is how the live watcher was
+    waiting up to five minutes for every message.
+    """
+    import shutil
+    import threading
+    import time
+
+    from src import swim_file_ingest
+
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.5)
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "processed")
+    monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "failed")
+
+    watched = tmp_path / "log"
+    watched.mkdir()
+    got: list[int] = []
+    worker = threading.Thread(
+        target=swim_file_ingest.watch_swim_folder,
+        kwargs={"source_dir": watched, "reconcile_interval": 3600, "debounce_seconds": 0.2,
+                "on_events": lambda events, stats: got.append(len(events))},
+        daemon=True,
+    )
+    worker.start()
+    try:
+        time.sleep(1.5)  # past the startup scan of an empty folder
+        shutil.copy(CAPTURE / "1787863348274", watched / "1787863348274")
+        deadline = time.monotonic() + 10
+        while not got and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert got == [1], "the new TDLS message should be ingested within seconds"
+    finally:
+        swim_file_ingest.request_shutdown()
+        worker.join(timeout=10)
+        swim_file_ingest._shutdown_requested.clear()

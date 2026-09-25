@@ -45,6 +45,7 @@ from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 from src import config, storage
 from src.async_bridge import run_async
@@ -1246,7 +1247,15 @@ def watch_swim_folder(
         finally:
             scan_lock.release()
 
-    observer = Observer()
+    # Native file events do not cross a Docker Desktop bind mount from a
+    # Windows or macOS host into a Linux container: the kit writes on the
+    # host, no inotify event fires, and a new message waited for the next
+    # reconcile pass (up to reconcile_interval, 5 minutes). Polling the
+    # folder works everywhere; SWIM_WATCH_POLLING turns it on.
+    observer = (
+        PollingObserver(timeout=config.SWIM_WATCH_POLL_SECONDS)
+        if config.SWIM_WATCH_POLLING else Observer()
+    )
     observer.schedule(_NewFileHandler(trigger), str(source_dir), recursive=False)
     observer.start()
     _log.info(
