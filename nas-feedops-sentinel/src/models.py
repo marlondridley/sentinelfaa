@@ -37,6 +37,13 @@ def content_key(record: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Where a record came from. The trust cockpit must never present test or
+# replayed data as the live FAA picture, so every event carries this and every
+# alert inherits it. `unknown` is for rows ingested before the tag existed --
+# their origin cannot be reconstructed honestly.
+DataOrigin = Literal["live", "replay", "synthetic", "api", "unknown"]
+AlertOrigin = Literal["live", "replay", "synthetic", "api", "unknown", "mixed"]
+
 AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
 TraconCode = Literal["PCT"]
 ServiceName = Literal["SMES", "APDS_RVR", "ISMC", "TOWER_DEPARTURE", "TERMINAL_AUTO"]
@@ -217,6 +224,10 @@ class NASEvent(BaseModel):
     # interpreted: nothing downstream alerts on it.
     status_code: str | None = None
 
+    # Provenance: live (the Jumpstart kit's folder), replay (recorded files),
+    # synthetic (sample generator, demo scenario), api (posted to /v1/ingest).
+    data_origin: DataOrigin = "unknown"
+
     # Validation bookkeeping (populated by validators.py)
     validation_status: str = "PENDING"   # PENDING | PASSED | FAILED
     validation_errors: list[str] = Field(default_factory=list)
@@ -243,6 +254,7 @@ class AlertEvent(BaseModel):
     description: str
     triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     event_id: str | None = None           # Source event that caused the alert
+    data_origin: AlertOrigin = "unknown"  # inherited from the event(s) behind it
 
 
 class ValidationResult(BaseModel):

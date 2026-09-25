@@ -81,6 +81,7 @@ def _base_fields(airport: str, service: str, message_type: str) -> dict:
         event_time_utc=event_time,
         received_time_utc=received_time,
         latency_ms=latency_ms,
+        data_origin="synthetic",
     )
 
 

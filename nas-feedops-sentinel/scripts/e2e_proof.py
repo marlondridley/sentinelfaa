@@ -106,12 +106,13 @@ async def run(require_llm: bool) -> int:
         for f in CAPTURE.iterdir():
             shutil.copy(f, src_dir / f.name)
         events, stats = await asyncio.to_thread(
-            swim_file_ingest.scan_swim_folder, src_dir, 500, processed, failed)
+            swim_file_ingest.scan_swim_folder, src_dir, 500, processed, failed, "replay")
         proof.check(stats.files_processed == 10 and stats.files_failed == 0,
                     "all ten captured files ingested, none quarantined",
                     f"processed={stats.files_processed} failed={stats.files_failed} events={len(events)}")
         with contextlib.redirect_stdout(io.StringIO()):
             real = await run_pipeline(events, label="E2E_REAL_CAPTURE")
+        proof.check(all(e.data_origin == "replay" for e in events), "replayed capture tagged data_origin=replay")
         proof.check(real["passed"] == real["event_count"] > 0, "every real event passed validation",
                     f"{real['passed']}/{real['event_count']} passed, {real['alert_count']} alert(s), "
                     f"{real['staged_count']} staged")
@@ -122,6 +123,8 @@ async def run(require_llm: bool) -> int:
         fault = await run_pipeline(generate_cascade_failure_scenario(), label="E2E_SYNTHETIC_FAULT")
     alerts = await storage.get_recent_alerts(limit=1000)
     critical = [a for a in alerts if a["severity"] == "CRITICAL"]
+    proof.check(bool(critical) and all(a["data_origin"] == "synthetic" for a in critical),
+                "alerts from the synthetic scenario are tagged data_origin=synthetic")
     pending = await storage.get_pending_staged_actions()
     proof.check(bool(critical) and {p.alert_id for p in pending} >= {a["alert_id"] for a in critical},
                 "every CRITICAL alert staged PENDING for human review",

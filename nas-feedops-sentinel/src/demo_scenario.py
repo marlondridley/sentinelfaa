@@ -34,6 +34,7 @@ def _event(**kwargs) -> NASEvent:
         "tracon": "PCT",
         "message_type": "demo",
         "validation_status": "PASSED",
+        "data_origin": "synthetic",
     }
     base.update(kwargs)
     if "latency_ms" not in base:

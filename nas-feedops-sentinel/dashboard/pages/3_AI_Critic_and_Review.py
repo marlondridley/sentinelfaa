@@ -214,8 +214,10 @@ if not _pending_actions:
         unsafe_allow_html=True,
     )
 else:
+    _alert_origin = {a.get("alert_id"): a.get("data_origin", "unknown") for a in alerts_raw}
     for _action in _pending_actions:
         _ticket = run(get_ticket_by_action_id(_action.action_id))
+        _origin = _alert_origin.get(_action.alert_id, "unknown")
         with st.container(border=True):
             title = (
                 _ticket.title if _ticket
@@ -233,7 +235,15 @@ else:
                 + theme.status_chip(posture)
                 + '<span style="font-size:15px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
                 + theme._esc(title) + "</span>"
-                '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
+                # Provenance: anything not from the live feed is labelled on its face.
+                + (
+                    '<span class="chip" style="color:' + theme.ORANGE5
+                    + ";border-color:" + theme.TONES["warn"][1]
+                    + ';padding:2px 8px;font-size:10.5px;">'
+                    + theme._esc(_origin.upper()) + " DATA</span>"
+                    if _origin != "live" else ""
+                )
+                + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
                 + theme.GRAY1 + ';">AI confidence ' + theme._esc(conf_str) + "</span>"
                 "</div>",
                 unsafe_allow_html=True,

@@ -118,7 +118,7 @@ def trigger_evidence(s: Snapshot) -> Evidence:
                    "alert_id": a.alert_id, "alert_type": a.alert_type, "severity": a.severity,
                    "airport": a.airport_code, "service": a.service_name,
                    "description": a.description, "triggered_at": _iso(_aware(a.triggered_at)),
-                   "action_id": s.action_id,
+                   "action_id": s.action_id, "data_origin": a.data_origin,
                })
 
 

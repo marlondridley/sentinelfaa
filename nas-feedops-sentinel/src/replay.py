@@ -74,6 +74,7 @@ def parse_raw_message(raw: dict) -> tuple[NASEvent | None, str | None]:
 
         if source_file:
             raw["raw_message_path"] = source_file
+        raw["data_origin"] = "replay"
 
         return NASEvent(**raw), None
     except Exception as exc:  # noqa: BLE001

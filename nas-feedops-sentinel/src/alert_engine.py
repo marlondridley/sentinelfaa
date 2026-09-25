@@ -35,7 +35,24 @@ def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
     alerts.extend(_stale_feed_alerts(events, now))
     alerts.extend(_surface_spike_alerts(events, now))
 
-    return [_with_stable_id(a, now) for a in alerts]
+    return [_with_origin(_with_stable_id(a, now), events) for a in alerts]
+
+
+def _with_origin(alert: AlertEvent, events: list[NASEvent]) -> AlertEvent:
+    """
+    An alert inherits the provenance of what raised it: its event's origin, or
+    for an aggregate alert the origins of the events at that airport/service
+    ("mixed" when they differ). A synthetic event must never produce an alert
+    that looks live.
+    """
+    if alert.event_id:
+        origin = next((e.data_origin for e in events if e.event_id == alert.event_id), "unknown")
+    else:
+        scope = {e.data_origin for e in events
+                 if e.airport_code == alert.airport_code
+                 and (alert.service_name is None or e.service_name == alert.service_name)}
+        origin = scope.pop() if len(scope) == 1 else ("mixed" if scope else "unknown")
+    return alert.model_copy(update={"data_origin": origin})
 
 
 def _with_stable_id(alert: AlertEvent, now: datetime) -> AlertEvent:

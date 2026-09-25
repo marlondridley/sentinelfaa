@@ -58,6 +58,7 @@ __all__ = [
     "get_recent_events",
     "get_recent_alerts",
     "get_latest_rvr",
+    "get_origin_counts",
     "get_event_counts_by_service",
     "get_validation_summary",
     "get_events_for_critic",
@@ -127,6 +128,11 @@ async def get_recent_events(limit: int = 500) -> list[dict]:
 async def get_recent_alerts(limit: int = 200) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
     return await repo.get_recent_alerts(limit)
+
+
+async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.get_origin_counts(window_minutes)
 
 
 async def get_latest_rvr() -> list[dict]:

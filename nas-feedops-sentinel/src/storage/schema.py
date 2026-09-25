@@ -144,6 +144,14 @@ _MIGRATIONS: list[tuple[str, str]] = [
             BEFORE UPDATE OR DELETE ON investigations
             FOR EACH ROW EXECUTE FUNCTION investigations_append_only();
     """),
+    # Provenance of every event and alert (models.DataOrigin). Existing rows
+    # get 'unknown': their origin cannot be reconstructed honestly.
+    ("2026_09_data_origin", """
+        ALTER TABLE nas_events   ADD COLUMN IF NOT EXISTS data_origin TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS data_origin TEXT NOT NULL DEFAULT 'unknown';
+        CREATE INDEX IF NOT EXISTS idx_nas_events_origin_time
+            ON nas_events (data_origin, received_time_utc DESC);
+    """),
 ]
 
 
