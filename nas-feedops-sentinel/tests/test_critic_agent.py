@@ -285,3 +285,50 @@ def test_exhausted_daily_quota_is_not_retried():
     assert isinstance(classify(quota), LLMPermanentError)
     burst = type("RateLimitError", (Exception,), {"status_code": 429})("Too many requests, slow down")
     assert isinstance(classify(burst), LLMTransientError)
+
+
+# ── Schema repair in the shared LLM client ───────────────────────────────────
+
+class _FakeCompletion:
+    """Stands in for litellm.acompletion, returning scripted JSON replies."""
+
+    def __init__(self, *replies):
+        import json as _json
+        self.replies = [_json.dumps(r) for r in replies]
+        self.calls = []
+
+    async def __call__(self, **kwargs):
+        from types import SimpleNamespace
+        self.calls.append(kwargs["messages"])
+        content = self.replies[min(len(self.calls), len(self.replies)) - 1]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+_TOOL = {"name": "t", "input_schema": {"type": "object", "required": ["pattern", "escalate", "confidence"]}}
+
+
+async def test_missing_required_keys_get_exactly_one_repair_request(monkeypatch):
+    import src.llm_client as llm
+
+    fake = _FakeCompletion({"confidence": 0.8}, {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
+    monkeypatch.setattr(llm.litellm, "acompletion", fake)
+    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    assert out == {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False}
+    assert len(fake.calls) == 2
+    assert "missing required keys: pattern, escalate" in fake.calls[1][-1]["content"]
+    assert "pattern, escalate, confidence" in fake.calls[0][0]["content"], "required keys named up front"
+
+
+async def test_complete_reply_needs_no_repair_and_bad_repair_is_not_retried(monkeypatch):
+    import src.llm_client as llm
+
+    complete = _FakeCompletion({"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
+    monkeypatch.setattr(llm.litellm, "acompletion", complete)
+    await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    assert len(complete.calls) == 1
+
+    stubborn = _FakeCompletion({"confidence": 0.8})
+    monkeypatch.setattr(llm.litellm, "acompletion", stubborn)
+    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    assert out == {"confidence": 0.8}, "returned as-is for the caller's guardrail to reject"
+    assert len(stubborn.calls) == 2

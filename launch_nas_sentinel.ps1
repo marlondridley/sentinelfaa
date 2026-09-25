@@ -27,6 +27,27 @@ Write-Host "Starting NAS FeedOps Sentinel Launch Sequence..." -ForegroundColor C
 # container's environment -- doing it twice was redundant and only risked the
 # two copies drifting out of sync.
 
+# 0. .env is the source of truth for the stacks it configures.
+# docker compose lets a variable already in this process's environment
+# override the same key in --env-file. A stale Windows user variable did
+# exactly that: DEEPSEEK_API_KEY held an old placeholder, so the proxy kept
+# getting it even after .env had the real key. For this process only (nothing
+# persistent is changed), remove any variable an env file also defines.
+function Clear-ShadowingEnv([string]$envFile) {
+    if (-not (Test-Path $envFile)) { return }
+    foreach ($line in Get-Content $envFile) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') {
+            $name = $Matches[1]
+            if (Test-Path "Env:\$name") {
+                Write-Host "  [!] Ignoring $name from the environment; using $envFile" -ForegroundColor Yellow
+                Remove-Item "Env:\$name"
+            }
+        }
+    }
+}
+Clear-ShadowingEnv (Join-Path $scriptDir "instraclustr\.env")
+Clear-ShadowingEnv (Join-Path $scriptDir "nas-feedops-sentinel\.env")
+
 # 1. Network Setup
 $networkName = "nas-network"
 $existingNetwork = docker network ls --filter "name=$networkName" --format "{{.Name}}"
