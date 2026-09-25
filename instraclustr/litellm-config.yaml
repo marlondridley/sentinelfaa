@@ -10,11 +10,29 @@
 # endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
 # OpenAI Government, or on-prem inference).
 model_list:
+  # DeepSeek is the intended low-cost primary, kept here for when a valid key
+  # is set. It is commented out because the configured DEEPSEEK_API_KEY is
+  # rejected ("Authentication Fails"), and LiteLLM surfaces that as a 400,
+  # which it deliberately does not fail over from -- so with the bad key,
+  # most primary-model calls failed instead of falling back to Gemini.
+  # To restore: set DEEPSEEK_API_KEY in .env, uncomment this entry, and
+  # delete the two Gemini primary-model entries below.
+  # - model_name: primary-model
+  #   litellm_params:
+  #     model: deepseek/deepseek-chat
+  #     api_key: "os.environ/DEEPSEEK_API_KEY"
+  #     api_base: "https://api.deepseek.com"
+
+  # Meanwhile primary-model is served by the Gemini free-tier keys.
   - model_name: primary-model
     litellm_params:
-      model: deepseek/deepseek-chat
-      api_key: "os.environ/DEEPSEEK_API_KEY"
-      api_base: "https://api.deepseek.com"
+      model: gemini/gemini-3.8-flash
+      api_key: "os.environ/GEMINI_API_KEY"
+
+  - model_name: primary-model
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: "os.environ/GEMINI_API_KEY_2"
 
   # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
   # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
@@ -49,9 +67,9 @@ model_list:
 router_settings:
   fallbacks:
     - primary-model: ["gemini-backup"]
-  # Enough retries to try every gemini-backup key once when one is exhausted;
-  # a key that fails is benched for a minute rather than retried each call.
-  num_retries: 2
+  # One retry: a second key gets a chance, without multiplying calls against
+  # a quota that is already gone. A failing key is benched for a minute.
+  num_retries: 1
   allowed_fails: 1
   cooldown_time: 60
   timeout: 60

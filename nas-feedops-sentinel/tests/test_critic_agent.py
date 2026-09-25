@@ -275,3 +275,13 @@ async def test_save_and_retrieve_critic_result():
     assert row["escalate"] is True
     import json
     assert json.loads(row["citations"]) == ["id-x", "id-y"]
+
+
+def test_exhausted_daily_quota_is_not_retried():
+    """A per-day quota 429 will not clear for hours; retrying it drains other keys."""
+    from src.llm_client import LLMPermanentError, LLMTransientError, classify
+
+    quota = Exception('RateLimitError: geminiException - {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}')
+    assert isinstance(classify(quota), LLMPermanentError)
+    burst = type("RateLimitError", (Exception,), {"status_code": 429})("Too many requests, slow down")
+    assert isinstance(classify(burst), LLMTransientError)
