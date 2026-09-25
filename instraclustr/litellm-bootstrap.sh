@@ -20,8 +20,10 @@ ALIAS=sentinel-app
 BUDGET="${LITELLM_APP_BUDGET_USD:-10}"
 RPM="${LITELLM_APP_RPM:-30}"
 
-FLAT=$(tr -d '\n\t ' < /vault-init-data/init.json)
-VAULT_TOKEN=$(echo "$FLAT" | grep -o '"root_token":"[^"]*"' | sed -E 's/.*"([^"]+)"$/\1/')
+# Authenticate as vault-bootstrap (see vault-unseal-and-seed.bash); no root
+# token exists on disk any more.
+VAULT_TOKEN=$(vault write -field=token auth/approle/login \
+    role_id="$(cat /vault-bootstrap/role_id)" secret_id="$(cat /vault-bootstrap/secret_id)")
 export VAULT_TOKEN
 
 proxy() {  # proxy <path> [json-body]
