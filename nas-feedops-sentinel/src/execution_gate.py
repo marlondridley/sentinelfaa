@@ -355,10 +355,15 @@ async def _build_escalation_package(
         alert=alert,
     )
 
-    # Off the event loop: the LLM path is a blocking CrewAI kickoff().
+    # Rule-based, deliberately. This runs inside staging for every CRITICAL
+    # alert, so a model call here was unbudgeted and serial: a burst of 15
+    # alerts meant 15 model round-trips (with provider fallback and retries)
+    # before the pass finished. The model-written narrative now comes from
+    # the investigation, which runs after staging under
+    # MAX_LLM_INVESTIGATIONS_PER_PASS; staging itself never waits on a model.
     brief = await agenerate_watch_officer_brief(
         context,
-        use_llm=True,
+        use_llm=False,
     )
 
     await storage.save_watch_officer_brief(
