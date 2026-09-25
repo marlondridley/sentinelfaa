@@ -16,16 +16,24 @@ PgBouncer, Vault, LiteLLM), waits for them, then starts this stack. In this
 stack, `migrate` runs first and every application service waits for it to
 finish successfully.
 
-Everything is published on `127.0.0.1` only:
+The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`,
+with a self-signed certificate for localhost written to `./tls/` by
+`python -m src.devcert` on first start (kept across restarts). Trust
+`tls/edge.crt` once in the Windows certificate store to silence the browser
+warning, or replace the pair with a certificate from your CA.
 
 | Service | URL |
 |---|---|
-| Dashboard | http://localhost:8501 |
-| API | http://localhost:8000/health |
-| Keycloak | http://localhost:8081 |
-| Grafana | http://localhost:3000 |
-| Prometheus | http://localhost:9090 |
-| Temporal UI | http://localhost:8088 |
+| Dashboard | https://localhost:8443 |
+| API | https://localhost:8444/health |
+| Grafana | https://localhost:8445 |
+| Temporal UI | https://localhost:8446 |
+| Prometheus (and its alerts) | https://localhost:8447/alerts |
+| Keycloak admin (HTTP, loopback) | http://localhost:8081/admin |
+
+Internal traffic between containers stays plain HTTP on `nas-network`, which
+nothing outside the host can reach. The API's `/metrics` and `/docs` are not
+routed by the proxy.
 
 ## Prove it works
 
@@ -46,9 +54,21 @@ docstring for what each step asserts.
   tables and only `SELECT`/`INSERT` on `action_audit_log` and
   `investigations`. `APP_DB_PASSWORD` must be the same in `.env` and
   `../instraclustr/.env`; the Vault seed job copies it into Vault.
-* **LLM proxy.** The application authenticates to LiteLLM with the proxy's
-  master key (`secret/sentinel/config`). This is temporary: give LiteLLM a
-  database and issue a virtual key scoped to the approved aliases.
+* **Vault.** Services authenticate with AppRole, not a token. On every start
+  `instraclustr/vault-unseal-and-seed.bash` unseals Vault (initializing it
+  first after a `down -v`), seeds secrets, writes the `sentinel-app` and
+  `sentinel-migrate` policies and roles, rotates their secret IDs, and writes
+  `vault-init-data/approle/<role>/{role_id,secret_id}`. Each service mounts
+  only its own role's directory; `sentinel-app` can read
+  `secret/postgres/app` and `secret/sentinel/config` and nothing else. The
+  root token stays in `vault-init-data/init.json`, used only by the bootstrap
+  jobs. No manual `vault write` is ever needed.
+* **LLM proxy.** The application holds a LiteLLM virtual key, not the master
+  key. `instraclustr/litellm-bootstrap.sh` issues it after the proxy is up
+  (alias `sentinel-app`: `primary-model` and `gemini-backup` only, a 30-day
+  budget `LITELLM_APP_BUDGET_USD`, `LITELLM_APP_RPM` requests/minute) and
+  stores it in Vault. LiteLLM keeps keys in its own `litellm` database
+  (`litellm-db-init.sh`).
 * **Operators.** Keycloak realm roles decide who may act:
   `watch_officer` (approve / reject / monitor), `supervisor` (also override),
   `auditor` (read-only). A signed-in user with no role is read-only. Grant
@@ -57,10 +77,30 @@ docstring for what each step asserts.
 * **API.** `/v1/ingest` requires `API_KEY` (or a named key in `API_KEYS`) and
   refuses every call if none is configured.
 
+## Escalation integrity
+
+`nas-sentinel` runs a reconciler every `RECONCILE_INTERVAL_SECONDS` (60):
+any CRITICAL alert without a staged action is staged PENDING if it is younger
+than `RECONCILE_STAGE_WINDOW_MINUTES` (60), or recorded EXPIRED ("never staged
+for review in time") if older. `nas_critical_alerts_unstaged` should always
+read 0; the `CriticalAlertsUnstaged` alert fires if it does not. Run one pass
+by hand with `python -m src.reconcile`.
+
+## Alerts
+
+Rules are in `monitoring/alert-rules.yml`: unstaged CRITICAL alerts, a stale
+review queue, degraded airport feeds, no ingest for 30 minutes, a high model
+error rate, and scrape targets down. Prometheus evaluates them and shows them
+at https://localhost:8447/alerts. No Alertmanager is configured yet, so
+nothing pages anyone.
+
 ## Models
 
 `instraclustr/litellm-config.yaml` routes the `primary-model` alias to
-DeepSeek with Gemini as fallback. That is a low-cost test configuration.
+DeepSeek with Gemini as fallback. `gemini-backup` has one deployment per
+Gemini key (`GEMINI_API_KEY`, `_2`, `_3`); the proxy spreads calls across
+them and benches a key that hits its quota (the free tier allows 20
+requests/day per model per project). That is a low-cost test configuration.
 Neither provider is an authorized boundary for FAA operational data; move
 `primary-model` to an approved endpoint before real feed data reaches it.
 Application settings name aliases only (`LLM_MODEL=primary-model`);

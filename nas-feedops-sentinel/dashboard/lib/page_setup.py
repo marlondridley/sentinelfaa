@@ -44,8 +44,9 @@ _log = get_logger(__name__)
 # so both open without a second login -- which is the point: an operator
 # chasing a latency spike should not hit a credentials wall between the
 # dashboard and the metric behind it.
-GRAFANA_URL = "http://localhost:3000"
-PROMETHEUS_URL = "http://localhost:9090"
+# Public (edge TLS) URLs, set in docker-compose.yml; defaults for a local run.
+GRAFANA_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_PUBLIC_URL", "http://localhost:9090")
 
 
 def require_oidc_auth() -> None:

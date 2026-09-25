@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src import storage
@@ -337,3 +338,7 @@ async def ingest(
 
 
 app.include_router(router)
+
+# Prometheus scrape endpoint for the API process. Served on the internal
+# network only: the edge proxy (docker/edge/nginx.conf) does not route it.
+app.mount("/metrics", make_asgi_app())

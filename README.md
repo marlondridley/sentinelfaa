@@ -81,7 +81,7 @@ Deterministic processing happens first. AI is invoked only where reasoning over 
 - The AI Critic runs only on CRITICAL alerts, and only `MAX_CRITIC_PER_PASS` (default 5) per ingest cycle
 - The Watch Officer Brief is generated from already-summarized structured signals, not raw event streams
 - `sample` and `replay` modes exercise the full pipeline without consuming live broker capacity or LLM credits
-- The LLM client is provider-agnostic: Anthropic for demo quality, NVIDIA NIM for on-prem federal deployment, Gemini through an OpenAI-compatible endpoint for cost-effective production, Ollama for zero-cost local development
+- Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`); which provider serves an alias is proxy configuration, not application code. Today that is DeepSeek with Gemini fallback, for low-cost testing; real FAA data needs an authorized endpoint (Claude on Bedrock GovCloud, Azure OpenAI Government, or on-prem vLLM/NIM)
 - No agent-loop recursion; the architecture is a directed pipeline, not a free-form ReAct loop
 
 ### What happens when feeds, tools, models, or parsers fail?
@@ -339,18 +339,14 @@ cp .env.example .env
 Edit `.env`. The minimum useful set for a local sample-mode demo:
 
 ```ini
-# LLM provider — pick one
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-CRITIC_MODEL=claude-haiku-4-5-20251001
+# Models: LiteLLM proxy aliases only. Provider keys live in
+# ../instraclustr/.env, not here; see docs/operations.md.
+LLM_BASE_URL=http://nas-litellm:4000/v1
+LLM_MODEL=primary-model
+CRITIC_MODEL=primary-model
 CRITIC_ENABLED=1
-MAX_CRITIC_PER_PASS=5
-
-# Or Gemini through OpenAI-compatible endpoint:
-# LLM_PROVIDER=nim
-# NIM_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/openai
-# NIM_MODEL=gemini-2.5-flash
-# NIM_API_KEY=AIzaSy...
+MAX_CRITIC_PER_PASS=2
+MAX_LLM_INVESTIGATIONS_PER_PASS=1
 ```
 
 For live broker access add the SWIM section. **Never commit the real `.env`.**
@@ -418,14 +414,9 @@ python -m src.main --mode eval --llm  # also exercise Critic + Planner
 
 ## LLM Provider Configuration
 
-`src/llm_client.py` is a thin abstraction over a single `call_with_tool(...)` method. Two implementations ship:
+`src/llm_client.py` makes one kind of call: a structured (JSON-schema) completion against the LiteLLM proxy, with redaction applied first and errors classified as transient or permanent. There is one implementation and no provider SDK in the application.
 
-| Provider | When | `.env` shape |
-|---|---|---|
-| **Anthropic** (native) | Demo quality, prompt-cache friendly | `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=…`, `CRITIC_MODEL=claude-haiku-4-5-…` |
-| **OpenAI-compatible** (NIM / Gemini / Ollama / vLLM / TGI) | On-prem or cost-optimized | `LLM_PROVIDER=nim`, `NIM_ENDPOINT=…`, `NIM_MODEL=…`, `NIM_API_KEY=…` |
-
-The same code runs against either. Swapping providers is an `.env` change, not a code change.
+Providers are chosen in `instraclustr/litellm-config.yaml`, per alias, with fallbacks (for example `primary-model` -> DeepSeek, falling back to Gemini). The application authenticates with a scoped virtual key that can call only its aliases, within a budget and rate limit. Settings that name a provider route directly (`gemini/...`) are refused at startup. Swapping providers is a proxy-config change, not an application change.
 
 ---
 
@@ -436,7 +427,7 @@ The same code runs against either. Swapping providers is an `.env` change, not a
 - The Jumpstart Kit log folder, `data/processed/`, and `data/failed/` are all gitignored.
 - The HITL gate has no auto-execute path: no controller is paged, no ATC system is contacted, no real FAA operational command is issued.
 - LLM calls go only to the configured provider endpoint. There is no telemetry, no third-party analytics, no background data exfiltration.
-- The system is designed to run inside a federal boundary by swapping the LLM endpoint to an internal NIM / vLLM deployment.
+- The system is designed to run inside a federal boundary by pointing `primary-model` at an internal vLLM / NIM deployment in the proxy config.
 
 ---
 
@@ -456,7 +447,7 @@ The same code runs against either. Swapping providers is an `.env` change, not a
 - Human-in-the-loop staged action gate with audit trail
 - Streamlit dashboard with Mission Questions Answered, Watch Officer Brief, airspace map, flight phase matrix, altitude / speed distributions, RVR monitor, data quality posture, alert log, HITL queue, audit trail
 - Operational ticker (banner) 
-- LLM provider abstraction (Anthropic / NIM / Gemini / Ollama)
+- LiteLLM gateway: provider routing, fallback, and a scoped application key, all outside the application
 - Prometheus `/metrics` endpoint with HITL queue depth, LLM latency, gate decisions, per-airport status
 - Sample mode, replay mode, swim-folder live mode, eval mode
 - 147+ pytest tests covering deterministic and degraded paths
@@ -474,8 +465,4 @@ The same code runs against either. Swapping providers is an `.env` change, not a
 
 ## Technical Outcomes
 
-> Built **PCT TAIS FeedOps Sentinel**, a Python agentic-AI operational intelligence system for FAA SWIM / STDDS TAIS data covering PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit, hybrid JMS+JSON parsing, Pydantic-validated TAIS normalization, deterministic alert and feed-health rules, AI Critic and Watch Officer agents with deterministic fallback, an internal escalation-package workflow, a human-in-the-loop execution gate with immutable audit trail, and a Streamlit operational dashboard with airspace map, flight phase matrix, and live-data banner. Designed end-to-end around the LCFE production framework (Latency, Cost, Failure, Evaluation) with provider-agnostic LLM client supporting Anthropic, NVIDIA NIM, Gemini, and local Ollama endpoints. 147+ pytest tests, replay and sample regression modes, Prometheus metrics, Docker Compose with Grafana auto-provisioning.
-
----
-#   s e n t i n e l f a a  
- 
+> Built **PCT TAIS FeedOps Sentinel**, a Python agentic-AI operational intelligence system for FAA SWIM / STDDS TAIS data covering PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit, hybrid JMS+JSON parsing, Pydantic-validated TAIS normalization, deterministic alert and feed-health rules, AI Critic and Watch Officer agents with deterministic fallback, an internal escalation-package workflow, a human-in-the-loop execution gate with immutable audit trail, and a Streamlit operational dashboard with airspace map, flight phase matrix, and live-data banner. Designed end-to-end around the LCFE production framework (Latency, Cost, Failure, Evaluation) with every model call routed through a LiteLLM gateway under a scoped key. 330+ pytest tests, including an end-to-end proof run in CI, replay and sample regression modes, Prometheus metrics, Docker Compose with Grafana auto-provisioning.

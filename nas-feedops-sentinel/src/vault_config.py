@@ -23,6 +23,31 @@ class VaultConfigError(RuntimeError):
     """Raised when a strictly required secret could not be loaded from Vault."""
 
 
+def _authenticated_client(vault_url: str, token: str | None, approle_dir: str | None):
+    """
+    A Vault client authenticated as this service.
+
+    AppRole first: VAULT_APPROLE_DIR holds role_id and secret_id files written
+    by the infrastructure bootstrap (instraclustr/vault-unseal-and-seed.bash),
+    and the login returns a short-lived token limited to this service's policy
+    -- the application can read its own database identity and proxy key and
+    nothing else. VAULT_TOKEN is the fallback for local runs; deployed
+    services no longer receive one (they used to get the root token).
+    """
+    if approle_dir:
+        from pathlib import Path
+
+        base = Path(approle_dir)
+        client = hvac.Client(url=vault_url)
+        client.auth.approle.login(
+            role_id=(base / "role_id").read_text(encoding="utf-8").strip(),
+            secret_id=(base / "secret_id").read_text(encoding="utf-8").strip(),
+        )
+        _log.info("vault_approle_login", extra={"approle_dir": approle_dir})
+        return client
+    return hvac.Client(url=vault_url, token=token)
+
+
 class VaultSettingsSource(PydanticBaseSettingsSource):
     """Custom Pydantic source interceptor to pull secrets from HashiCorp Vault."""
 
@@ -39,13 +64,15 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
 
         vault_url = os.getenv("VAULT_ADDR")
         vault_token = os.getenv("VAULT_TOKEN")
+        approle_dir = os.getenv("VAULT_APPROLE_DIR")
 
-        if not vault_url or not vault_token:
+        if not vault_url or not (vault_token or approle_dir):
             _log.warning(
                 "vault_disabled_missing_config",
                 extra={
                     "vault_addr_set": bool(vault_url),
                     "vault_token_set": bool(vault_token),
+                    "vault_approle_dir_set": bool(approle_dir),
                 },
             )
             return {}
@@ -53,7 +80,7 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
         secrets_dict: dict[str, Any] = {}
 
         try:
-            client = hvac.Client(url=vault_url, token=vault_token)
+            client = _authenticated_client(vault_url, vault_token, approle_dir)
 
             # 1. Fetch PostgreSQL Credentials
             try:
@@ -85,26 +112,7 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                     extra={"path": os.getenv("VAULT_POSTGRES_SECRET_PATH", "postgres/credentials"), "error": str(exc)},
                 )
 
-            # 2. Fetch Global LLM Provider Keys
-            try:
-                llm_resp = client.secrets.kv.v2.read_secret_version(path="litellm")
-                llm_data = llm_resp.get("data", {}).get("data", {})
-                if llm_data:
-                    secrets_dict["DEEPSEEK_API_KEY"] = llm_data.get("DEEPSEEK_API_KEY")
-                    secrets_dict["GEMINI_API_KEY"] = llm_data.get("GEMINI_API_KEY")
-                    secrets_dict["LITELLM_MASTER_KEY"] = llm_data.get("LITELLM_MASTER_KEY")
-                else:
-                    _log.warning(
-                        "vault_secret_empty",
-                        extra={"path": "litellm"},
-                    )
-            except Exception as exc:
-                _log.warning(
-                    "vault_secret_fetch_failed",
-                    extra={"path": "litellm", "error": str(exc)},
-                )
-
-            # 3. Fetch Sentinel Application Proxy Key
+            # 2. Fetch the application's LiteLLM proxy key (a scoped virtual key)
             try:
                 sentinel_resp = client.secrets.kv.v2.read_secret_version(path="sentinel/config")
                 sentinel_data = sentinel_resp.get("data", {}).get("data", {})
