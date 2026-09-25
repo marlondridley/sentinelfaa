@@ -35,7 +35,7 @@ _log = get_logger(__name__)
 
 _UNSTAGED_SQL = """
     SELECT a.alert_id, a.alert_type, a.severity, a.airport_code, a.service_name,
-           a.description, a.triggered_at, a.event_id
+           a.description, a.triggered_at, a.event_id, a.data_origin
     FROM alert_events a
     LEFT JOIN staged_actions s ON s.alert_id = a.alert_id
     WHERE a.severity = 'CRITICAL' AND s.action_id IS NULL

@@ -213,4 +213,31 @@ def bootstrap_page(page_title: str, page_icon: str = "✈") -> Principal:
         # otherwise leak the operator identity widgets onto the login screen.
         _login.render_login(settings)
 
+    _provenance_banner()
     return render_operator_identity_sidebar()
+
+
+def _provenance_banner() -> None:
+    """
+    Say so whenever data on screen did not come from the live FAA feed.
+
+    Sample generation, replays and API posts land in the same tables as the
+    live feed; each event carries data_origin, and this banner keeps an
+    operator from reading a demo or a replay as the current picture.
+    """
+    try:
+        from src import storage
+        from src.async_bridge import run_async
+
+        counts = run_async(storage.get_origin_counts(window_minutes=60))
+    except Exception:  # noqa: BLE001 -- provenance banner must never break a page
+        return
+    not_live = {k: v for k, v in counts.items() if k != "live" and v}
+    if not not_live:
+        return
+    detail = ", ".join(f"{n} {origin}" for origin, n in sorted(not_live.items()))
+    st.warning(
+        f"Not all data here is live FAA feed data: {detail} event(s) in the last hour. "
+        "Alerts and actions derived from them carry the same origin tag.",
+        icon="⚠️",
+    )

@@ -373,6 +373,17 @@ class RedTeamCritic:
                     "The event may only look isolated: degraded feeds can hide the correlated alerts that would "
                     "show a pattern.", feed_ids)
 
+        # Provenance: an alert raised from anything but the live feed describes
+        # a test, a replay or an unverified source -- not current operations.
+        origin = trigger.get("data_origin", "unknown")
+        if origin in ("synthetic", "replay", "api", "mixed"):
+            add("ALTERNATIVE_EXPLANATION", TRIGGER_ID,
+                f"This alert was raised from {origin} data, not the live FAA feed; it may describe a test "
+                "or replay rather than current operations.", [TRIGGER_ID])
+        elif origin == "unknown":
+            add("MISSING_EVIDENCE", TRIGGER_ID,
+                "The alert's data provenance is unknown (ingested before provenance was recorded).")
+
         # Missing evidence behind a conclusion.
         failed = _get(view, "failed_files")
         if feed and failed and not failed.data.get("readable"):

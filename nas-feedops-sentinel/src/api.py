@@ -293,6 +293,9 @@ async def ingest(
     )
 
     if body.events:
+        # Provenance is the server's to assign: a client cannot label what it
+        # posts as the live feed.
+        body.events = [{**payload, "data_origin": "api"} for payload in body.events]
         _validate_events(body.events)
 
     workflow_key = _idempotency_key(idempotency_key, body.events) or cid
