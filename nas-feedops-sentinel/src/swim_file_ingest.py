@@ -905,7 +905,7 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
 # Record normaliser 
 
 def _normalise_record(
-    raw: dict, source_file: str, index: int | None = None,
+    raw: dict, source_file: str, index: int | None = None, data_origin: str = "live",
 ) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
@@ -920,6 +920,8 @@ def _normalise_record(
     # the file name; plus the record's position in the message. Without a
     # position (a caller normalising one record), the record's content.
     source_key = raw.pop("_source_key", None) or Path(source_file).name
+    # Set by whoever scans, never taken from the file's own content.
+    raw["data_origin"] = data_origin
     if not raw.get("event_id"):
         raw["event_id"] = stable_id(
             "swim", source_key, index if index is not None else content_key(raw))
@@ -1020,6 +1022,7 @@ def scan_swim_folder(
     max_files: int = 500,
     processed_dir: Path | None = None,
     failed_dir: Path | None = None,
+    data_origin: str = "live",
 ) -> tuple[list[NASEvent], IngestStats]:
     """
     Scan source_dir for new STDDS message files, parse them, and return
@@ -1067,7 +1070,16 @@ def scan_swim_folder(
     stats.files_skipped = len(all_candidates) - len(unprocessed)
 
     # Cap files per scan so a backlog doesn't pin the pipeline for minutes.
-    candidate_files = sorted(unprocessed, key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    def _mtime(p: Path) -> float:
+        # Another scanner may claim (rename away) a file between the listing
+        # above and this stat; that raised FileNotFoundError and killed the
+        # whole pass. A vanished file sorts last and is skipped at claim time.
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidate_files = sorted(unprocessed, key=_mtime, reverse=True)[:max_files]
     
     # Account for files deferred due to the max_files backlog cap
     excess_backlog = len(unprocessed) - len(candidate_files)
@@ -1120,7 +1132,7 @@ def scan_swim_folder(
             # exception escaping here used to abort scan_swim_folder(), and in
             # watch mode that crash-looped the whole nas-sentinel container.
             try:
-                event, err = _normalise_record(raw, str(path), index=record_index)
+                event, err = _normalise_record(raw, str(path), index=record_index, data_origin=data_origin)
             except Exception as exc:  # noqa: BLE001
                 event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
             if event:

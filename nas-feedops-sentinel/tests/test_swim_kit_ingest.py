@@ -558,6 +558,7 @@ def _isolate_ingest_log(monkeypatch):
     monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
 
 
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
 def test_two_scanners_on_one_folder_ingest_each_file_exactly_once(tmp_path: Path, monkeypatch):
     """The live watcher and a Temporal ingest run scanning the same folder at once."""
     import shutil
