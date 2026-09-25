@@ -165,6 +165,13 @@ def render_operator_identity_sidebar() -> Principal:
                 principal_id=signed_in.principal_id,
                 role=role,
                 source=signed_in.source,
+                roles=signed_in.roles,
+            )
+            # Authority comes from the token's realm roles; the station above
+            # is only a label.
+            st.caption(
+                "Authorized roles: " + (", ".join(sorted(principal.roles)) or
+                                        "none -- read-only until an admin grants a realm role")
             )
         else:
             principal = _self_declared_identity()

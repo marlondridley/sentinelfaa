@@ -31,29 +31,43 @@ from lib.investigation_view import load_investigation, render_investigation
 from lib.page_setup import bootstrap_page
 from src import storage
 from src.async_bridge import run_async as run
+from src.auth import AuthorizationError, Decision, authorize, can_decide, format_actor
+from src.config import settings
 from src.execution_gate import (
-    approve_staged_action as gate_approve,
-)
-from src.execution_gate import (
+    decide_staged_action,
     get_action_audit_log,
     get_pending_staged_actions,
     get_recent_staged_actions,
 )
-from src.execution_gate import (
-    reject_staged_action as gate_reject,
-)
-from src.execution_gate import (
-    override_staged_action as gate_override,
-)
-from src.storage import (
-    approve_operational_ticket,
-    get_ticket_by_action_id,
-    mark_operational_ticket_monitoring,
-    mark_operational_ticket_overridden,
-    reject_operational_ticket,
-)
+from src.storage import get_ticket_by_action_id
 
-bootstrap_page(page_title="AI Critic & Review — PCT FeedOps Sentinel", page_icon="\U0001F916")
+_principal = bootstrap_page(page_title="AI Critic & Review — PCT FeedOps Sentinel", page_icon="\U0001F916")
+
+
+
+def _allowed(decision: Decision) -> bool:
+    return can_decide(_principal, decision, allow_unverified=settings.ALLOW_UNVERIFIED_DECISIONS)
+
+
+def _why_not(decision: Decision) -> str | None:
+    """The authorization failure, shown as the disabled button's tooltip."""
+    try:
+        authorize(_principal, decision, allow_unverified=settings.ALLOW_UNVERIFIED_DECISIONS)
+    except AuthorizationError as exc:
+        return str(exc)
+    return None
+
+
+def _decide(action_id: str, decision: Decision, note: str | None, **override) -> None:
+    """Every disposition goes through the gate, which authorizes before it writes."""
+    try:
+        run(decide_staged_action(action_id, decision, _principal, note or "", **override))
+    except AuthorizationError as exc:
+        st.error(str(exc))
+        return
+    st.toast(f"{decision.value.upper()} recorded for {action_id[:8]} by {format_actor(_principal)}")
+    st.rerun()
+
 
 alerts_raw = run(storage.get_recent_alerts(limit=500))
 
@@ -261,11 +275,7 @@ else:
             # -- including whether the identity was Keycloak-verified or
             # self-declared -- as the sidebar banner the operator actually saw when
             # they started this session, regardless of which page they were on.
-            _active_actor = st.session_state.get(
-                "operator_principal_actor",
-                f"{st.session_state.get('operator_id', 'watch_officer_primary')}"
-                f" ({st.session_state.get('operator_role', 'Watch Officer')}) [self-declared]",
-            )
+            _active_actor = format_actor(_principal)
             st.markdown(
                 f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid '
                 f'{theme.BLUE5};background:{theme.TONES["info"][2]};border-radius:3px;'
@@ -314,51 +324,28 @@ else:
                     key=override_sev_key,
                 )
 
-                if st.button("Override & sign off", key=ov_key, use_container_width=True):
-                    run(gate_override(
-                        _action.action_id,
-                        overridden_recommendation=edited_recommendation,
-                        overridden_severity=edited_severity,
-                        actor=_active_actor,
-                        note=note or "",
-                    ))
-                    if _ticket:
-                        run(mark_operational_ticket_overridden(
-                            _ticket.ticket_id, actor=_active_actor, note=note or ""
-                        ))
-                    st.toast(f"Action {_action.action_id[:8]} OVERRIDDEN by {_active_actor}")
-                    st.rerun()
+                if st.button("Override & sign off", key=ov_key, use_container_width=True,
+                             disabled=not _allowed(Decision.OVERRIDE),
+                             help=_why_not(Decision.OVERRIDE)):
+                    _decide(_action.action_id, Decision.OVERRIDE, note,
+                            overridden_recommendation=edited_recommendation,
+                            overridden_severity=edited_severity)
 
             b1, b2, b3, _sp = st.columns([1.5, 1.5, 1.2, 2])
 
-            if b1.button("Approve escalation", key=ap_key, type="primary", use_container_width=True):
-                run(gate_approve(_action.action_id, actor=_active_actor, note=note or ""))
-                if _ticket:
-                    run(approve_operational_ticket(
-                        _ticket.ticket_id, actor=_active_actor, note=note or ""
-                    ))
-                st.toast(f"Escalation APPROVED for {_action.action_id[:8]} by {_active_actor}")
-                st.rerun()
+            if b1.button("Approve escalation", key=ap_key, type="primary", use_container_width=True,
+                         disabled=not _allowed(Decision.APPROVE), help=_why_not(Decision.APPROVE)):
+                _decide(_action.action_id, Decision.APPROVE, note)
 
             if b2.button("Continue monitoring", key=mo_key, use_container_width=True,
-                         help="Keep the staged action PENDING; mark the ticket MONITORING"):
-                if _ticket:
-                    run(mark_operational_ticket_monitoring(
-                        _ticket.ticket_id, actor=_active_actor, note=note or ""
-                    ))
-                    st.toast(f"Ticket {_ticket.ticket_id[:8]} -> MONITORING by {_active_actor}")
-                else:
-                    st.warning("No ticket linked to this action; cannot mark monitoring.")
-                st.rerun()
+                         disabled=not _allowed(Decision.MONITOR),
+                         help=_why_not(Decision.MONITOR)
+                         or "Keep the staged action PENDING; mark the ticket MONITORING"):
+                _decide(_action.action_id, Decision.MONITOR, note)
 
-            if b3.button("Reject", key=rj_key, use_container_width=True):
-                run(gate_reject(_action.action_id, actor=_active_actor, note=note or ""))
-                if _ticket:
-                    run(reject_operational_ticket(
-                        _ticket.ticket_id, actor=_active_actor, note=note or ""
-                    ))
-                st.toast(f"Action {_action.action_id[:8]} REJECTED by {_active_actor}")
-                st.rerun()
+            if b3.button("Reject", key=rj_key, use_container_width=True,
+                         disabled=not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
+                _decide(_action.action_id, Decision.REJECT, note)
 
 # ── Decision audit trail ──────────────────────────────────────────────────────
 theme.section(

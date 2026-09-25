@@ -7,6 +7,7 @@ from typing import Any
 
 from temporalio import activity
 
+from src import config
 from src.logging_config import bind_correlation_id, get_logger
 from src.models import NASEvent
 from src.pipeline import run_pipeline
@@ -28,6 +29,13 @@ async def ingest_folder_activity(
     # replay mode and the dashboard rely on -- so we don't duplicate that
     # default here.
     source = Path(source_dir) if source_dir else None
+    if source is not None:
+        # Workflows can be started directly on Temporal, not only through the
+        # API, so the activity itself refuses paths outside the raw-data root:
+        # scan_swim_folder() moves every file it finds.
+        root = (config.DATA_DIR / "raw").resolve()
+        if not source.resolve().is_relative_to(root):
+            raise ValueError(f"source_dir must be inside {root}")
 
     # scan_swim_folder() is synchronous and reaches storage through
     # src/async_bridge.run_async(), which drives its own long-lived event loop
