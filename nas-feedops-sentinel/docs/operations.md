@@ -86,6 +86,24 @@ docstring for what each step asserts.
 * **API.** `/v1/ingest` requires `API_KEY` (or a named key in `API_KEYS`) and
   refuses every call if none is configured.
 
+## Ingest guarantees
+
+* **Stable identities.** An event's id comes from its SWIM message
+  (`mex:globalID:msgSeqID`, or the file name) plus its position in the
+  message; an alert's from the rule and what triggered it. Re-dropping a
+  file, a double scan or a retried run updates the same rows, never adds
+  duplicates or a second staged action.
+* **One consumer per file.** A scanner claims a file by renaming it into the
+  folder's hidden `.inflight/` subfolder before reading it; only one rename
+  can succeed. A claim left by a crashed scanner is released after 10
+  minutes. A read-only folder is read in place.
+* **Provenance.** Every event and alert carries `data_origin`: `live` (the
+  kit's folder), `replay`, `synthetic` (sample button, demo scenario), `api`,
+  or `unknown` for rows from before the tag. Alerts inherit it (`mixed` for
+  aggregates spanning origins). The dashboard warns on every page when
+  non-live data is present, the review queue labels non-live actions, and the
+  Red-Team Critic challenges any alert that is not from the live feed.
+
 ## Escalation integrity
 
 `nas-sentinel` runs a reconciler every `RECONCILE_INTERVAL_SECONDS` (60):
