@@ -56,7 +56,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
         f"Service activity:\n"
         + ("\n".join(svc_lines) if svc_lines else "  No events in window")
         + f"\n\nPrior alerts at this airport (last 60 min):\n{prior_alerts}\n"
-        f"\nCall submit_critique to record your structured assessment."
+        f"\nRespond with the JSON object described in the system prompt, including every required key."
     )
 
 
@@ -148,5 +148,5 @@ class CriticAgent:
             system_prompt=self._prompt,
             tool=self._tool,
             user_message=_format_user_message(alert, context),
-            max_tokens=512,
+            max_tokens=1000,
         )

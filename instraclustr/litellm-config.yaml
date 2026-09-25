@@ -10,29 +10,16 @@
 # endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
 # OpenAI Government, or on-prem inference).
 model_list:
-  # DeepSeek is the intended low-cost primary, kept here for when a valid key
-  # is set. It is commented out because the configured DEEPSEEK_API_KEY is
-  # rejected ("Authentication Fails"), and LiteLLM surfaces that as a 400,
-  # which it deliberately does not fail over from -- so with the bad key,
-  # most primary-model calls failed instead of falling back to Gemini.
-  # To restore: set DEEPSEEK_API_KEY in .env, uncomment this entry, and
-  # delete the two Gemini primary-model entries below.
-  # - model_name: primary-model
-  #   litellm_params:
-  #     model: deepseek/deepseek-chat
-  #     api_key: "os.environ/DEEPSEEK_API_KEY"
-  #     api_base: "https://api.deepseek.com"
-
-  # Meanwhile primary-model is served by the Gemini free-tier keys.
+  # Low-cost primary for testing. If DeepSeek rejects its key, LiteLLM
+  # surfaces that as a 400 and does NOT fall back to gemini-backup (it treats
+  # 400s as client errors), so a bad DEEPSEEK_API_KEY breaks primary-model
+  # outright; the Gemini deployments below only cover provider outages,
+  # timeouts and rate limits.
   - model_name: primary-model
     litellm_params:
-      model: gemini/gemini-3.8-flash
-      api_key: "os.environ/GEMINI_API_KEY"
-
-  - model_name: primary-model
-    litellm_params:
-      model: gemini/gemini-3.8-flash
-      api_key: "os.environ/GEMINI_API_KEY_2"
+      model: deepseek/deepseek-chat
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+      api_base: "https://api.deepseek.com"
 
   # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
   # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
