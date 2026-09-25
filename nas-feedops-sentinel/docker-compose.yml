@@ -26,6 +26,8 @@ x-app-env: &app-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   DATA_DIR: /app/data
   SWIM_RAW_FOLDER: ${SWIM_RAW_FOLDER:-/app/data/raw}
+  # The kit writes on the host; file events do not cross the bind mount.
+  SWIM_WATCH_POLLING: ${SWIM_WATCH_POLLING:-true}
   # Database: the application role through PgBouncer. DATABASE_URL is empty
   # on purpose, so it is rebuilt from these settings rather than inherited
   # from .env with the owner's credentials in it.
