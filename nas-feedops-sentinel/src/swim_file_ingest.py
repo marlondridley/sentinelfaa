@@ -33,6 +33,7 @@ limit over the life of a long-running deployment.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -1045,6 +1046,7 @@ def scan_swim_folder(
 
     stats = IngestStats()
     all_events: list[NASEvent] = []
+    _release_stale_claims(source_dir)
 
     # Dotfiles are skipped: the kit writes extensionless files, so "" is in
     # SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
@@ -1092,11 +1094,16 @@ def scan_swim_folder(
             )
             break
 
+        work = _claim(path)
+        if work is None:
+            stats.files_skipped += 1
+            continue
+
         _log.info("swim_ingest_processing_file", extra={"file_name": path.name})
-        raw_records, parse_error = _parse_file(path)
+        raw_records, parse_error = _parse_file(work)
 
         if parse_error and not raw_records:
-            _move_to_failed(path, parse_error, failed_dir)
+            _move_to_failed(work, parse_error, failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -1124,7 +1131,7 @@ def scan_swim_folder(
                 errors.append(err or "Unknown normalisation error")
 
         if not events and errors:
-            _move_to_failed(path, "; ".join(errors), failed_dir)
+            _move_to_failed(work, "; ".join(errors), failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -1139,7 +1146,7 @@ def scan_swim_folder(
         if dest.exists():
             dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
         try:
-            shutil.move(str(path), str(dest))
+            shutil.move(str(work), str(dest))
         except OSError as exc:
             # The file parsed fine; only the archival move failed. That is the
             # normal case on a read-only ingest mount (a :ro volume, or a
@@ -1153,6 +1160,13 @@ def scan_swim_folder(
             # The file stays where it is. The ingest_log entry written below
             # is what stops it being reprocessed on the next scan, so
             # leaving it in place is safe rather than a duplicate-ingest risk.
+            # Put a claimed file back where it was, so the next scan sees it
+            # and skips it by name instead of it sitting in .inflight/.
+            if work != path:
+                try:
+                    os.rename(work, path)
+                except OSError:
+                    pass
             _log.warning(
                 "swim_ingest_archive_move_failed",
                 extra={
@@ -1312,6 +1326,65 @@ def watch_swim_folder(
 def read_ingest_log(limit: int = 100) -> list[dict]:
     """Return the most recent ingest log entries (newest first)."""
     return run_async(storage.get_recent_ingest_log(limit))
+
+
+# ── Single consumer per file ──────────────────────────────────────────────────
+#
+# More than one process can scan the same folder: the live watcher and a
+# Temporal ingest run, or two watchers after a misconfiguration. Before this,
+# both could parse the same file, race to move it, and ingest it twice.
+#
+# A scanner now claims a file before touching it: an atomic rename into the
+# folder's hidden .inflight/ subdirectory, keeping its name. A rename can only
+# succeed once, so every other scanner finds the file gone and skips it -- this
+# works across processes and containers sharing a mount, with no lock server.
+# A claim left behind by a scanner that died is released after CLAIM_TIMEOUT.
+
+INFLIGHT_DIR = ".inflight"
+CLAIM_TIMEOUT_SECONDS = 600
+
+
+def _claim(path: Path) -> Path | None:
+    """
+    Atomically take ownership of `path`; returns the path to read from, or None
+    if the file is not ours this pass.
+
+    A folder this process cannot write (a read-only mount) cannot be consumed
+    destructively by anyone, so its files are read in place, exactly as before
+    claims existed; the ingest_log and stable event ids stop re-ingestion.
+    """
+    if not os.access(path.parent, os.W_OK):
+        return path
+    inflight = path.parent / INFLIGHT_DIR
+    claimed = inflight / path.name
+    try:
+        inflight.mkdir(exist_ok=True)
+        os.rename(path, claimed)
+    except FileNotFoundError:
+        return None              # another scanner claimed it first
+    except OSError:
+        return None              # e.g. the writer on a Windows host still holds it; next pass
+    os.utime(claimed)            # claim time, for stale-claim release
+    return claimed
+
+
+def _release_stale_claims(source_dir: Path) -> int:
+    """Return files claimed by a scanner that died back to the folder."""
+    inflight = source_dir / INFLIGHT_DIR
+    if not inflight.is_dir():
+        return 0
+    released = 0
+    cutoff = time.time() - CLAIM_TIMEOUT_SECONDS
+    for f in inflight.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff and not (source_dir / f.name).exists():
+                os.rename(f, source_dir / f.name)
+                released += 1
+        except OSError:
+            continue
+    if released:
+        _log.warning("swim_ingest_stale_claims_released", extra={"count": released, "source_dir": str(source_dir)})
+    return released
 
 
 def _move_to_failed(path: Path, reason: str, failed_dir: Path | None = None) -> None:

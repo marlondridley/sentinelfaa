@@ -548,3 +548,104 @@ def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monke
         swim_file_ingest.request_shutdown()
         worker.join(timeout=10)
         swim_file_ingest._shutdown_requested.clear()
+
+
+# ── One consumer per file ─────────────────────────────────────────────────────
+
+def _isolate_ingest_log(monkeypatch):
+    from src import swim_file_ingest
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+
+
+def test_two_scanners_on_one_folder_ingest_each_file_exactly_once(tmp_path: Path, monkeypatch):
+    """The live watcher and a Temporal ingest run scanning the same folder at once."""
+    import shutil
+    import threading
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    for f in CAPTURE.iterdir():
+        shutil.copy(f, folder / f.name)
+
+    results = {}
+
+    def scan(name):
+        events, stats = swim_file_ingest.scan_swim_folder(
+            folder, processed_dir=tmp_path / f"processed_{name}", failed_dir=tmp_path / f"failed_{name}")
+        results[name] = (stats.files_processed, {e.event_id for e in events})
+
+    threads = [threading.Thread(target=scan, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    (processed_a, ids_a), (processed_b, ids_b) = results["a"], results["b"]
+    assert processed_a + processed_b == 10, "every file processed once, by exactly one scanner"
+    assert not (ids_a & ids_b), "no event ingested by both"
+    assert not list(folder.glob("*")) or all(p.is_dir() for p in folder.iterdir())
+
+
+def test_a_claimed_file_is_invisible_to_another_scanner(tmp_path: Path, monkeypatch):
+    import shutil
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    assert swim_file_ingest._claim(folder / "1787863348274") is not None
+    assert swim_file_ingest._claim(folder / "1787863348274") is None      # already taken
+    _, stats = swim_file_ingest.scan_swim_folder(
+        folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    assert stats.files_processed == 0
+
+
+def test_a_claim_abandoned_by_a_dead_scanner_is_released_and_processed(tmp_path: Path, monkeypatch):
+    import os
+    import shutil
+    import time
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    (folder / swim_file_ingest.INFLIGHT_DIR).mkdir(parents=True)
+    stale = folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274"
+    shutil.copy(CAPTURE / "1787863348274", stale)
+    old = time.time() - swim_file_ingest.CLAIM_TIMEOUT_SECONDS - 5
+    os.utime(stale, (old, old))
+
+    events, stats = swim_file_ingest.scan_swim_folder(
+        folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    assert stats.files_processed == 1 and len(events) == 1
+    assert (tmp_path / "p" / "1787863348274").exists()
+
+
+def test_a_read_only_folder_is_still_ingested_in_place(tmp_path: Path, monkeypatch):
+    """No claim is possible on a read-only mount; files are read in place, as before."""
+    import os
+    import shutil
+    import stat
+
+    from src import swim_file_ingest
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        events, stats = swim_file_ingest.scan_swim_folder(
+            folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    finally:
+        folder.chmod(stat.S_IRWXU)
+    assert stats.files_processed == 1 and len(events) == 1
+    assert (folder / "1787863348274").exists(), "left in place on a read-only mount"
