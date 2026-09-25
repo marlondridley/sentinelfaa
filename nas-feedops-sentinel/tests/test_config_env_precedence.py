@@ -165,3 +165,28 @@ def test_direct_provider_model_route_is_refused():
     with pytest.raises(ValueError, match="proxy alias"):
         proxy_model("gemini/gemini-2.5-flash", setting="CRITIC_MODEL")
     assert proxy_model("openai/primary-model") == "openai/primary-model"
+
+
+def test_explicit_postgres_db_wins_over_the_vault_secrets_database(monkeypatch):
+    """Vault supplies credentials; an explicitly configured database name is not overridden."""
+    import types
+
+    import src.vault_config as vault_config
+
+    class FakeKV:
+        def read_secret_version(self, path):
+            data = {"postgres/credentials": {"username": "owner", "password": "pw", "database": "sentinel_db"},
+                    "sentinel/config": {"LITELLM_API_KEY": "k"}}.get(path, {})
+            return {"data": {"data": data}}
+
+    fake_hvac = types.SimpleNamespace(Client=lambda url, token: types.SimpleNamespace(
+        secrets=types.SimpleNamespace(kv=types.SimpleNamespace(v2=FakeKV()))))
+    monkeypatch.setattr(vault_config, "hvac", fake_hvac)
+    monkeypatch.setenv("VAULT_ADDR", "http://vault:8200")
+    monkeypatch.setenv("VAULT_TOKEN", "t")
+
+    monkeypatch.setenv("POSTGRES_DB", "sentinel_test")
+    assert "POSTGRES_DB" not in vault_config.VaultSettingsSource(src.config.Settings)()
+
+    monkeypatch.delenv("POSTGRES_DB")
+    assert vault_config.VaultSettingsSource(src.config.Settings)()["POSTGRES_DB"] == "sentinel_db"

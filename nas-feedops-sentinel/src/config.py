@@ -245,6 +245,7 @@ class Settings(BaseSettings):
     WATCH_OFFICER_MODEL: str = ""
 
     MAX_CRITIC_PER_PASS: int = 5
+    LLM_TIMEOUT_SECONDS: float = 90.0
 
     # ── Investigations (src/investigation/) ─────────────────────────────────
     # Every staged action gets an investigation. The first

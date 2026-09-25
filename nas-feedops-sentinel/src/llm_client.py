@@ -242,6 +242,10 @@ class LiteLLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                # Bounded: without it a call inherits litellm's multi-minute
+                # default and pins a worker slot. Timeout is a transient error
+                # (classify() below), so tenacity retries it.
+                timeout=settings.LLM_TIMEOUT_SECONDS,
                 extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
             )
         except Exception as exc:  # noqa: BLE001 -- normalized immediately below

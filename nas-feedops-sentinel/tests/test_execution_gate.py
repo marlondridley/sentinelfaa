@@ -285,52 +285,36 @@ class TestQuerySemantics:
 
 # ── Event-loop responsiveness ────────────────────────────────────────────────
 
-async def test_escalation_package_does_not_block_the_event_loop(monkeypatch):
+async def test_staging_never_waits_on_a_model(monkeypatch):
     """
-    Staging a CRITICAL alert builds the Watch Officer brief, whose LLM path is
-    a model round-trip of seconds. It must be awaited, never run blocking on
-    the event loop: in the Temporal worker and the pipeline, a blocked loop
-    stalls every other activity, database call and timer behind it. A slow
-    stand-in for the model must not stop a concurrent coroutine from running.
+    Staging a CRITICAL alert must not call a model. It used to write the
+    ticket's Watch Officer brief with an LLM, once per alert, serially, inside
+    staging -- a burst of alerts became a burst of unbudgeted model calls, and
+    the pass waited on every one. The model narrative now comes from the
+    investigation, which runs after staging under a per-pass budget.
     """
-    import asyncio
     import time
 
     import src.watch_officer_agent as watch_officer
 
-    class SlowClient:
+    calls = []
+
+    class Model:
         async def acall_with_tool(self, **kwargs):
-            await asyncio.sleep(0.5)  # stands in for the model round-trip
-            return {
-                "headline": "Slow but awaited.", "what_changed": [], "why_it_matters": [],
-                "recommended_human_review": [], "confidence": 0.5, "limitations": [],
-            }
+            calls.append(kwargs)
+            raise AssertionError("staging called the model")
 
     monkeypatch.setattr(watch_officer.settings, "CRITIC_ENABLED", True)
-    monkeypatch.setattr(watch_officer, "build_llm_client", lambda *a, **k: SlowClient())
+    monkeypatch.setattr(watch_officer, "build_llm_client", lambda *a, **k: Model())
 
-    ticks = 0
+    started = time.perf_counter()
+    action = await _persist_and_stage(_critical_alert())
+    elapsed = time.perf_counter() - started
 
-    async def ticker():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.01)
-            ticks += 1
-
-    task = asyncio.create_task(ticker())
-    try:
-        started = time.perf_counter()
-        action = await _persist_and_stage(_critical_alert())
-        elapsed = time.perf_counter() - started
-    finally:
-        task.cancel()
-
-    # The brief really ran and the ticket was built -- otherwise this test
-    # would pass without measuring anything.
-    assert elapsed >= 0.5
-    assert await storage.get_ticket_by_action_id(action.action_id) is not None
-    # A free loop ticks ~50 times in 0.5 s at a 10 ms interval.
-    assert ticks >= 25, f"event loop was blocked: only {ticks} ticks in {elapsed:.2f}s"
+    assert calls == []
+    ticket = await storage.get_ticket_by_action_id(action.action_id)
+    assert ticket is not None, "the ticket is still built, from the rule-based brief"
+    assert elapsed < 5, f"staging took {elapsed:.1f}s"
 
 
 # ── Idempotency key behavior ──────────────────────────────────────────────────

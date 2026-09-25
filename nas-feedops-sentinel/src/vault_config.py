@@ -66,7 +66,14 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                 if pg_data:
                     secrets_dict["POSTGRES_USER"] = pg_data.get("username")
                     secrets_dict["POSTGRES_PASSWORD"] = pg_data.get("password")
-                    secrets_dict["POSTGRES_DB"] = pg_data.get("database")
+                    # Credentials come from Vault; which database to use is
+                    # deployment configuration. An explicit POSTGRES_DB wins, so
+                    # a job aimed at a disposable database (tests, the e2e
+                    # proof) is not silently redirected to production by the
+                    # secret's default -- which is exactly what happened before
+                    # the proof's disposable-database guard caught it.
+                    if not os.getenv("POSTGRES_DB"):
+                        secrets_dict["POSTGRES_DB"] = pg_data.get("database")
                 else:
                     _log.warning(
                         "vault_secret_empty",
