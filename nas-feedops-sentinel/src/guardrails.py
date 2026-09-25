@@ -166,45 +166,6 @@ class OutputGuardrail:
       4. Reasoning is substantive (not empty, not suspiciously short)
       5. No schema injection artifacts in string fields
     """
-    @staticmethod
-    def guard(
-        raw_narrative: RawLLMNarrative,
-        context: dict[str, Any],
-        signals: dict[str, Any],
-        *,
-        llm_used: bool,
-    ) -> WatchOfficerBrief:
-        # Overwrite all critical state with control plane facts
-        posture = _derive_posture(signals, context)
-        trust = _derive_trust(signals, context)
-        affected = _affected_airports(signals, context)
-        evidence = _build_deterministic_evidence(context, signals)
-
-        limitations = list(raw_narrative.limitations)
-        limitations.extend([
-            "Deterministic control plane establishes posture.",
-            "Deterministic control plane establishes trust assessment.",
-            "Deterministic control plane establishes affected airports.",
-            "Operational evidence is generated from system state, not LLM claims.",
-            "Human approval is required before any staged action can proceed.",
-        ])
-
-        return WatchOfficerBrief(
-            posture=posture,
-            trust_assessment=trust,
-            headline=raw_narrative.headline,
-            what_changed=raw_narrative.what_changed,
-            why_it_matters=raw_narrative.why_it_matters,
-            recommended_human_review=raw_narrative.recommended_human_review,
-            evidence=evidence,
-            pending_actions_count=context.get("pending_actions_count", 0),
-            critical_alert_count=context.get("critical_alert_count", 0),
-            affected_airports=affected,
-            confidence=raw_narrative.confidence,
-            llm_used=llm_used,
-            limitations=limitations,
-        )
-        
     def verify_critic_output(self, output: dict[str, Any]) -> GuardrailResult:
         return self._verify_output(
             output=output,

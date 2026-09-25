@@ -94,3 +94,9 @@ jumpstart-latest/
 
 # Local container diagnostics (scripts/Collect-Diagnostics.ps1) -- may contain log output
 **/diagnostics.txt
+
+# Local tools and scratch output, not part of this project:
+# llm-wiki/ is a separate third-party repository (its own .git) whose wiki/
+# is generated from local Claude Code sessions.
+llm-wiki/
+Claude outputs/

@@ -22,7 +22,8 @@ set -eu
 : "${DEEPSEEK_API_KEY:?Missing DEEPSEEK_API_KEY in environment}"
 : "${GEMINI_API_KEY:?Missing GEMINI_API_KEY in environment}"
 : "${LITELLM_MASTER_KEY:?Missing LITELLM_MASTER_KEY in environment}"
-: "${LLM_API_KEY:?Missing LLM_API_KEY in environment}"
+: "${APP_DB_PASSWORD:?Missing APP_DB_PASSWORD in environment}"
+APP_DB_USER="${APP_DB_USER:-sentinel_app}"
 
 INIT_FILE=/vault-init-data/init.json
 STATUS_FILE=/tmp/vault-status.json
@@ -122,9 +123,25 @@ vault kv put secret/litellm/deepseek \
 vault kv put secret/litellm/gemini \
     api_key="${GEMINI_API_KEY}"
 
-# Consumed as LITELLM_API_KEY by src/vault_config.py
+# Consumed as LITELLM_API_KEY by src/vault_config.py.
+#
+# TEMPORARY: the application authenticates to the proxy with the proxy's
+# master key. The proxy has no key database, so it accepts no other key (a
+# non-master key fails with "No connected db"). The least-privilege version
+# gives LiteLLM a database and a virtual key scoped to the approved aliases
+# with a budget; the master key is proxy admin and must not stay here.
 vault kv put secret/sentinel/config \
-    LITELLM_API_KEY="${LLM_API_KEY}"
+    LITELLM_API_KEY="${LITELLM_MASTER_KEY}"
+
+# The application's own database identity: DML on operational tables,
+# SELECT/INSERT only on the evidence tables. Created and granted by the
+# migrate job (src/storage/migrate.py); read by application services via
+# VAULT_POSTGRES_SECRET_PATH=postgres/app. postgres/credentials above stays
+# the schema owner, used only by that job.
+vault kv put secret/postgres/app \
+    username="${APP_DB_USER}" \
+    password="${APP_DB_PASSWORD}" \
+    database="${POSTGRES_DB}"
 
 echo "=== Vault unseal + seed complete ==="
 echo "Root token is saved in $INIT_FILE if you need it for anything manual."

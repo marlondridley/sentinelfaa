@@ -210,7 +210,7 @@ class TestDecisionWorkflow:
     async def test_duplicate_approval_is_idempotent(self):
         alert = _critical_alert()
         action = await _persist_and_stage(alert)
-        first = await approve_staged_action(action.action_id, actor="a", note="first")
+        await approve_staged_action(action.action_id, actor="a", note="first")
         second = await approve_staged_action(action.action_id, actor="b", note="second-attempt")
 
         # State must not change on re-approval
@@ -259,7 +259,7 @@ class TestQuerySemantics:
 
     async def test_recent_query_returns_all_statuses(self):
         a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+        await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
         await approve_staged_action(a1.action_id, actor="x", note="")
 

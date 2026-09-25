@@ -1,10 +1,20 @@
+# LiteLLM proxy: the only way the application reaches a model.
+#
+# The application only ever names the aliases below (model_name), through
+# the proxy's OpenAI-compatible route; src/config.proxy_model() refuses any
+# direct provider route. Swapping providers happens here, not in app code.
+#
+# Current routing is a low-cost TEST configuration: DeepSeek primary, Gemini
+# fallback. Neither is an authorized boundary for FAA operational data --
+# before real feed data is sent, primary-model must move to an approved
+# endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
+# OpenAI Government, or on-prem inference).
 model_list:
   - model_name: primary-model
     litellm_params:
       model: deepseek/deepseek-chat
       api_key: "os.environ/DEEPSEEK_API_KEY"
       api_base: "https://api.deepseek.com"
-    fallbacks: ["gemini-backup"]
 
   - model_name: gemini-backup
     litellm_params:
@@ -15,3 +25,15 @@ model_list:
     litellm_params:
       model: gemini/gemini-2.5-flash
       api_key: "os.environ/GEMINI_API_KEY"
+
+# Fallbacks belong here. They used to sit inside the primary-model entry,
+# where the proxy does not read them, so a DeepSeek failure had no fallback.
+router_settings:
+  fallbacks:
+    - primary-model: ["gemini-backup"]
+  num_retries: 1
+  timeout: 60
+
+litellm_settings:
+  request_timeout: 60
+  drop_params: true
