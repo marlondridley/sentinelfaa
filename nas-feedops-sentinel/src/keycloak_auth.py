@@ -75,7 +75,7 @@ from typing import Any
 
 import httpx
 
-from src.auth import Principal, PrincipalSource
+from src.auth import KNOWN_ROLES, Principal, PrincipalSource
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)
@@ -276,6 +276,19 @@ def _classify(error: str, description: str) -> tuple[str, str, str]:
     )
 
 
+def roles_from_claims(claims: dict[str, Any]) -> frozenset[str]:
+    """
+    This application's realm roles from a verified token's realm_access.roles.
+
+    The realm's "realm roles" protocol mapper on the dashboard client puts
+    them in the ID token (keycloak/realm-nas-sentinel.json). Only roles this
+    application defines are kept; anything else in the realm is ignored.
+    """
+    realm_access = claims.get("realm_access") or {}
+    roles = realm_access.get("roles") if isinstance(realm_access, dict) else None
+    return frozenset(str(r) for r in (roles or []) if str(r) in KNOWN_ROLES)
+
+
 def password_login(
     settings: KeycloakSettings,
     username: str,
@@ -406,6 +419,7 @@ def password_login(
             principal_id=str(principal_id),
             role=role,
             source=PrincipalSource.PASSWORD_GRANT,
+            roles=roles_from_claims(claims),
         ),
         claims=claims,
         refresh_token=str(payload.get("refresh_token") or ""),

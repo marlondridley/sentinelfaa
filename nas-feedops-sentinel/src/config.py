@@ -297,6 +297,22 @@ class Settings(BaseSettings):
     # with the key". Set as a JSON object string in the environment/.env.
     API_KEY: str | None = None
     API_KEYS: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # With no API key configured, /v1/ingest refuses every call (503) unless
+    # this is false. It used to fail open -- and in practice the API was only
+    # protected because it silently accepted the LiteLLM proxy key instead.
+    API_AUTH_REQUIRED: bool = True
+    API_DOCS_ENABLED: bool = False
+
+    # Self-declared (typed-callsign) operators may approve/override/reject only
+    # when this is true: a single-user lab with no identity provider. Off, a
+    # decision needs a verified Keycloak sign-in holding the right realm role.
+    ALLOW_UNVERIFIED_DECISIONS: bool = False
+
+    # Run schema bootstrap + migrations whenever a process opens its pool.
+    # True for tests and local runs. The compose services set it false and run
+    # `python -m src.storage.migrate` once, as the schema owner, so the
+    # application role never needs DDL rights.
+    RUN_MIGRATIONS_ON_CONNECT: bool = True
     CORS_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:8501",

@@ -37,9 +37,8 @@ from src.models import (
     StagedAction,
     WatchOfficerBrief,
 )
-from src.storage.pool import close_db_pool, create_asyncpg_pool, get_db_pool
+from src.storage.pool import close_db_pool, get_db_pool
 from src.storage.repositories.analysis_repo import AnalysisRepository
-from src.storage.repositories.audit_repo import AuditLogRepository
 from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
@@ -49,7 +48,6 @@ from src.storage.test_support import override_db_path, reset_db
 
 __all__ = [
     "close_db_pool",
-    "create_asyncpg_pool",
     "get_db_pool",
     "override_db_path",
     "reset_db",

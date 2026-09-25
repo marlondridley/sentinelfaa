@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from pydantic import SecretStr
 
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+from pydantic_settings import PydanticBaseSettingsSource
 
 from src.logging_config import get_logger
 
@@ -58,7 +57,11 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
 
             # 1. Fetch PostgreSQL Credentials
             try:
-                pg_resp = client.secrets.kv.v2.read_secret_version(path="postgres/credentials")
+                # Which database identity this process gets. Application services
+                # read postgres/app (DML only); the migrate job reads
+                # postgres/credentials (the schema owner).
+                pg_path = os.getenv("VAULT_POSTGRES_SECRET_PATH", "postgres/credentials")
+                pg_resp = client.secrets.kv.v2.read_secret_version(path=pg_path)
                 pg_data = pg_resp.get("data", {}).get("data", {})
                 if pg_data:
                     secrets_dict["POSTGRES_USER"] = pg_data.get("username")
@@ -67,12 +70,12 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
                 else:
                     _log.warning(
                         "vault_secret_empty",
-                        extra={"path": "postgres/credentials"},
+                        extra={"path": pg_path},
                     )
             except Exception as exc:
                 _log.warning(
                     "vault_secret_fetch_failed",
-                    extra={"path": "postgres/credentials", "error": str(exc)},
+                    extra={"path": os.getenv("VAULT_POSTGRES_SECRET_PATH", "postgres/credentials"), "error": str(exc)},
                 )
 
             # 2. Fetch Global LLM Provider Keys
@@ -133,45 +136,3 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
             )
 
         return secrets_dict
-
-
-class Settings(BaseSettings):
-    # --- General App Settings (Pulled from .env) ---
-    log_level: str
-    critic_enabled: int
-    critic_model: str
-    swim_raw_folder: str
-
-    # --- Vault Connection (Pulled from .env) ---
-    vault_addr: str
-    vault_token: str
-
-    # --- Secure Credentials (Pulled dynamically from Vault) ---
-    db_host: str
-    db_port: int
-    db_name: str
-    db_user: str
-    db_password: str
-    litellm_api_key: str  # The proxy key needed to talk to your models
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (
-            init_settings,
-            VaultSettingsSource(settings_cls), # Injects Vault secrets here
-            env_settings,                      # Grabs .env variables here
-            dotenv_settings,
-        )
-
-# Instantiate this once. The rest of your app will import this specific object.
-
-
-if __name__ == "__main__":
-    settings = Settings()

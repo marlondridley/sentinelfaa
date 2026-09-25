@@ -110,15 +110,22 @@ $p1 = & $toPlain $pw1; $p2 = & $toPlain $pw2
 if ($p1 -ne $p2) { throw "Passwords did not match." }
 if ($p1.Length -lt 12) { throw "Use at least 12 characters (the realm's password policy)." }
 
+$rbacSh = Join-Path $PSScriptRoot 'keycloak-rbac.sh'
 docker cp $operatorSh nas-keycloak:/tmp/keycloak-operator.sh | Out-Null
+docker cp $rbacSh nas-keycloak:/tmp/keycloak-rbac.sh | Out-Null
 try {
     $env:KC_ADMIN_PW = $adminPw; $env:APP_USERNAME = $user; $env:APP_USER_PW = $p1; $env:APP_EMAIL = $email
-    docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL nas-keycloak bash /tmp/keycloak-operator.sh
+    # Realm roles + ID-token mapper first: the operator script grants roles.
+    docker exec -e KC_ADMIN_PW nas-keycloak bash /tmp/keycloak-rbac.sh
+    if ($LASTEXITCODE -ne 0) { throw "Applying realm roles failed inside the container (exit $LASTEXITCODE)." }
+    # APP_ROLES defaults to watch_officer; set it before running this script
+    # (e.g. $env:APP_ROLES = 'watch_officer,supervisor') to grant more.
+    docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL -e APP_ROLES nas-keycloak bash /tmp/keycloak-operator.sh
     if ($LASTEXITCODE -ne 0) { throw "Creating the operator failed inside the container (exit $LASTEXITCODE)." }
 }
 finally {
     Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL -ErrorAction SilentlyContinue
-    docker exec nas-keycloak rm -f /tmp/keycloak-operator.sh | Out-Null
+    docker exec nas-keycloak rm -f /tmp/keycloak-operator.sh /tmp/keycloak-rbac.sh | Out-Null
 }
 
 # -- 4. Proof -----------------------------------------------------------------
