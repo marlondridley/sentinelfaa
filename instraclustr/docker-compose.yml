@@ -247,6 +247,11 @@ services:
     volumes:
       - ./vault-unseal-and-seed.bash:/scripts/vault-unseal-and-seed.bash:ro
       - ./vault-init-data:/vault-init-data
+      # Unseal key share 2 lives only in this volume; share 1 is in
+      # vault-init-data. Automatic unseal needs both (threshold 2 of 3).
+      - vault-unseal-share:/vault-share-2
+      # Share 3, written once for the operator to move off this machine.
+      - ./vault-recovery:/vault-recovery
     entrypoint: ["/bin/sh", "/scripts/vault-unseal-and-seed.bash"]
 
   litellm:
@@ -314,7 +319,7 @@ services:
       LITELLM_APP_RPM: ${LITELLM_APP_RPM:-30}
     volumes:
       - ./litellm-bootstrap.sh:/scripts/litellm-bootstrap.sh:ro
-      - ./vault-init-data:/vault-init-data:ro
+      - ./vault-init-data/bootstrap:/vault-bootstrap:ro
     entrypoint: ["/bin/sh", "/scripts/litellm-bootstrap.sh"]
 
 volumes:
@@ -322,6 +327,7 @@ volumes:
   # elasticsearch-data:  -- unused, see DISABLED block above
   postgres-data:
   vault-data:
+  vault-unseal-share:
 
 networks:
   default:

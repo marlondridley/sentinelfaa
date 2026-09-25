@@ -56,13 +56,22 @@ docstring for what each step asserts.
   `../instraclustr/.env`; the Vault seed job copies it into Vault.
 * **Vault.** Services authenticate with AppRole, not a token. On every start
   `instraclustr/vault-unseal-and-seed.bash` unseals Vault (initializing it
-  first after a `down -v`), seeds secrets, writes the `sentinel-app` and
+  first after a `down -v`), seeds secrets, reconciles the `sentinel-app` and
   `sentinel-migrate` policies and roles, rotates their secret IDs, and writes
   `vault-init-data/approle/<role>/{role_id,secret_id}`. Each service mounts
   only its own role's directory; `sentinel-app` can read
-  `secret/postgres/app` and `secret/sentinel/config` and nothing else. The
-  root token stays in `vault-init-data/init.json`, used only by the bootstrap
-  jobs. No manual `vault write` is ever needed.
+  `secret/postgres/app` and `secret/sentinel/config` and nothing else. No
+  manual `vault write` is ever needed.
+* **Vault unseal and root.** The unseal key is split into 3 shares, any 2 of
+  which unseal: share 1 in `instraclustr/vault-init-data/unseal/`, share 2
+  in the `vault-unseal-share` Docker volume (mounted only into the unseal
+  job), share 3 in `instraclustr/vault-recovery/`. **Move share 3 off this
+  machine, then delete it.** No root token is stored: it exists in memory at
+  first initialization only, long enough to create the `vault-bootstrap`
+  AppRole the bootstrap jobs use (it can seed this project's secrets and
+  manage its sentinel-* roles, nothing else), and is then revoked. For
+  break-glass access, regenerate one from two shares with
+  `vault operator generate-root`.
 * **LLM proxy.** The application holds a LiteLLM virtual key, not the master
   key. `instraclustr/litellm-bootstrap.sh` issues it after the proxy is up
   (alias `sentinel-app`: `primary-model` and `gemini-backup` only, a 30-day
