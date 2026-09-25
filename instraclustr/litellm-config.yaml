@@ -17,11 +17,27 @@ model_list:
       api_base: "https://api.deepseek.com"
 
   # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
-  # gemini-3.8-flash as the replacement), so both Gemini aliases point there.
+  # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
+  #
+  # One deployment per free-tier key under the same alias: the router spreads
+  # requests across them and, when one key returns 429 (the free tier allows
+  # 20 requests/day/model per project), cools it down and uses the next.
   - model_name: gemini-backup
     litellm_params:
       model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
+
+  - model_name: gemini-backup
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: "os.environ/GEMINI_API_KEY_2"
+
+  # Third key (GEMINI_API_KEY_3 in .env): uncomment once it is set. An entry
+  # with an empty key fails every call routed to it.
+  # - model_name: gemini-backup
+  #   litellm_params:
+  #     model: gemini/gemini-3.8-flash
+  #     api_key: "os.environ/GEMINI_API_KEY_3"
 
   - model_name: gemini-flash
     litellm_params:
@@ -33,7 +49,11 @@ model_list:
 router_settings:
   fallbacks:
     - primary-model: ["gemini-backup"]
-  num_retries: 1
+  # Enough retries to try every gemini-backup key once when one is exhausted;
+  # a key that fails is benched for a minute rather than retried each call.
+  num_retries: 2
+  allowed_fails: 1
+  cooldown_time: 60
   timeout: 60
 
 litellm_settings:

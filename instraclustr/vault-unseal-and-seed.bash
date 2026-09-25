@@ -123,15 +123,8 @@ vault kv put secret/litellm/deepseek \
 vault kv put secret/litellm/gemini \
     api_key="${GEMINI_API_KEY}"
 
-# Consumed as LITELLM_API_KEY by src/vault_config.py.
-#
-# TEMPORARY: the application authenticates to the proxy with the proxy's
-# master key. The proxy has no key database, so it accepts no other key (a
-# non-master key fails with "No connected db"). The least-privilege version
-# gives LiteLLM a database and a virtual key scoped to the approved aliases
-# with a budget; the master key is proxy admin and must not stay here.
-vault kv put secret/sentinel/config \
-    LITELLM_API_KEY="${LITELLM_MASTER_KEY}"
+# secret/sentinel/config (LITELLM_API_KEY) is written by litellm-bootstrap.sh
+# once LiteLLM is up: a scoped virtual key, not the master key.
 
 # The application's own database identity: DML on operational tables,
 # SELECT/INSERT only on the evidence tables. Created and granted by the
@@ -142,6 +135,44 @@ vault kv put secret/postgres/app \
     username="${APP_DB_USER}" \
     password="${APP_DB_PASSWORD}" \
     database="${POSTGRES_DB}"
+
+# ── AppRole: each service gets its own least-privilege identity ──────────────
+#
+# Services used to receive the root token. Now each logs in with an AppRole
+# whose policy allows reading only its own secrets, and gets a short-lived
+# token. Rebuilt on every start, so a `down -v` needs no manual Vault setup.
+# Credentials are written to /vault-init-data/approle/<role>/{role_id,secret_id};
+# each service mounts only its own directory (never init.json). The secret_id
+# is rotated every start: previous ones are destroyed and one fresh one issued.
+if ! vault auth list -format=json | grep -q '"approle/"'; then
+    vault auth enable approle
+fi
+
+vault policy write sentinel-app - <<'POLICY'
+# Application services: their database identity and LiteLLM key, nothing else.
+path "secret/data/postgres/app"   { capabilities = ["read"] }
+path "secret/data/sentinel/config" { capabilities = ["read"] }
+POLICY
+
+vault policy write sentinel-migrate - <<'POLICY'
+# Schema job: the owner identity plus what it grants to the application role.
+path "secret/data/postgres/credentials" { capabilities = ["read"] }
+path "secret/data/postgres/app"         { capabilities = ["read"] }
+path "secret/data/sentinel/config"      { capabilities = ["read"] }
+POLICY
+
+for role in sentinel-app sentinel-migrate; do
+    vault write "auth/approle/role/$role" token_policies="$role" \
+        token_ttl=1h token_max_ttl=4h secret_id_ttl=0 secret_id_num_uses=0 >/dev/null
+    dir="/vault-init-data/approle/$role"
+    mkdir -p "$dir"
+    vault read -field=role_id "auth/approle/role/$role/role-id" > "$dir/role_id"
+    for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null | tr -d '[]", ' ); do
+        vault write -f "auth/approle/role/$role/secret-id-accessor/destroy" secret_id_accessor="$accessor" >/dev/null
+    done
+    vault write -f -field=secret_id "auth/approle/role/$role/secret-id" > "$dir/secret_id"
+    echo "approle $role: policy written, secret_id rotated"
+done
 
 echo "=== Vault unseal + seed complete ==="
 echo "Root token is saved in $INIT_FILE if you need it for anything manual."

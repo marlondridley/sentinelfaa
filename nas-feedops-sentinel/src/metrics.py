@@ -84,6 +84,24 @@ HITL_QUEUE_DEPTH = Gauge(
 
 # ── Feed-health gauges ────────────────────────────────────────────────────────
 
+# The headline invariant, measured: CRITICAL alerts inside the staging window
+# with no staged action. Anything but 0 for more than a reconcile interval is
+# the failure that left 84 CRITICAL alerts unreviewed (alert rule
+# CriticalAlertsUnstaged in monitoring/alert-rules.yml).
+CRITICAL_ALERTS_UNSTAGED = Gauge(
+    "nas_critical_alerts_unstaged",
+    "CRITICAL alerts inside the staging window with no staged action.",
+)
+HITL_OLDEST_PENDING_SECONDS = Gauge(
+    "nas_hitl_oldest_pending_age_seconds",
+    "Age of the oldest PENDING staged action (0 when the queue is empty).",
+)
+RECONCILED_ALERTS = Counter(
+    "nas_reconciled_alerts_total",
+    "CRITICAL alerts the reconciler found unstaged, by what it did with them.",
+    ["outcome"],  # staged_pending | recorded_expired
+)
+
 AIRPORT_OVERALL_STATUS = Gauge(
     "nas_airport_overall_status",
     "Worst-wins feed status per airport (0=OK, 1=STALE, 2=DEGRADED, 3=UNAVAILABLE, 4=DISCONNECTED).",

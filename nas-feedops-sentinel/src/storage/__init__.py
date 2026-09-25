@@ -225,9 +225,9 @@ async def save_critic_result(result: CriticResult) -> None:
 
 # ── HITL staged actions (staged_actions / action_audit_log) ───────────────────
 
-async def create_staged_action(action: StagedAction) -> StagedAction:
+async def create_staged_action(action: StagedAction, note: str = "staged from CRITICAL alert") -> StagedAction:
     repo = StagedActionsRepository(await get_db_pool())
-    return await repo.create(action)
+    return await repo.create(action, note=note)
 
 
 async def get_pending_staged_actions() -> list[StagedAction]:

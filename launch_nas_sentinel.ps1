@@ -108,6 +108,19 @@ foreach ($svc in $infraServices) {
     }
 }
 
+# 3b. Bootstrap jobs must have succeeded: Vault seeding + AppRoles, LiteLLM's
+#     database, and the application's scoped LiteLLM key. A failure here would
+#     otherwise surface later as application services that cannot start.
+foreach ($job in @("vault-unseal", "litellm-db-init", "litellm-bootstrap")) {
+    $code = docker inspect $job --format '{{.State.ExitCode}}' 2>$null
+    $state = docker inspect $job --format '{{.State.Status}}' 2>$null
+    if ($state -ne "exited" -or $code -ne "0") {
+        Write-Host "CRITICAL ERROR: bootstrap job $job did not complete (state=$state exit=$code). See: docker logs $job" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [+] $job completed." -ForegroundColor Green
+}
+
 # 4. Build and Launch Application Stack
 $appDir = Join-Path $scriptDir "nas-feedops-sentinel"
 $appEnv = Join-Path $appDir ".env"
@@ -160,13 +173,14 @@ if ($WithLiveFeed) {
 }
 
 Write-Host ""
-Write-Host "Launch sequence complete!" -ForegroundColor Green
-Write-Host "  - Streamlit Dashboard : http://localhost:8501" -ForegroundColor Cyan
-Write-Host "  - LiteLLM Admin UI   : http://localhost:4000/ui" -ForegroundColor Cyan
-Write-Host "  - Prometheus Metrics : http://localhost:9090" -ForegroundColor Cyan
-Write-Host "  - Grafana Dashboard  : http://localhost:3000" -ForegroundColor Cyan
-Write-Host "  - Temporal UI        : http://localhost:8088" -ForegroundColor Cyan
-Write-Host "  - API (FastAPI)      : http://localhost:8000/health" -ForegroundColor Cyan
+Write-Host "Launch sequence complete!  (HTTPS via the edge proxy; self-signed cert for localhost)" -ForegroundColor Green
+Write-Host "  - Dashboard          : https://localhost:8443" -ForegroundColor Cyan
+Write-Host "  - API                : https://localhost:8444/health" -ForegroundColor Cyan
+Write-Host "  - Grafana            : https://localhost:8445" -ForegroundColor Cyan
+Write-Host "  - Temporal UI        : https://localhost:8446" -ForegroundColor Cyan
+Write-Host "  - Prometheus (alerts): https://localhost:8447/alerts" -ForegroundColor Cyan
+Write-Host "  - Keycloak admin     : http://localhost:8081/admin" -ForegroundColor DarkGray
+Write-Host "  - LiteLLM admin UI   : http://localhost:4000/ui" -ForegroundColor DarkGray
 Write-Host ""
 if ($feedStarted) {
     Write-Host "  Live SWIM feed running in its own window." -ForegroundColor Green

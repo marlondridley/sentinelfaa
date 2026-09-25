@@ -258,14 +258,19 @@ services:
     depends_on:
       vault-unseal:
         condition: service_completed_successfully
+      litellm-db-init:
+        condition: service_completed_successfully
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - HCP_VAULT_ADDR=http://vault:8200
-      - HCP_VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2:-}
+      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3:-}
+      # Its own database, for virtual keys (litellm-db-init.sh). Direct to
+      # Postgres: Prisma needs session-level connections, not the pooler.
+      # No Vault token here any more -- the provider keys come from env, and
+      # the proxy never needed root access to Vault.
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@postgres:5432/litellm
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -273,7 +278,44 @@ services:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:4000/health/liveliness\")' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      start_period: 60s
+      retries: 10
+
+  # One-shot: LiteLLM's own database and login role (idempotent).
+  litellm-db-init:
+    image: postgres:16
+    container_name: litellm-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
+    volumes:
+      - ./litellm-db-init.sh:/scripts/litellm-db-init.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/litellm-db-init.sh"]
+
+  # One-shot: the application's scoped virtual key, stored in Vault
+  # (litellm-bootstrap.sh). The application services read it with their
+  # AppRole; the master key stays with the proxy.
+  litellm-bootstrap:
+    image: hashicorp/vault:1.15.2
+    container_name: litellm-bootstrap
+    depends_on:
+      litellm:
+        condition: service_healthy
+      vault-unseal:
+        condition: service_completed_successfully
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      LITELLM_APP_BUDGET_USD: ${LITELLM_APP_BUDGET_USD:-10}
+      LITELLM_APP_RPM: ${LITELLM_APP_RPM:-30}
+    volumes:
+      - ./litellm-bootstrap.sh:/scripts/litellm-bootstrap.sh:ro
+      - ./vault-init-data:/vault-init-data:ro
+    entrypoint: ["/bin/sh", "/scripts/litellm-bootstrap.sh"]
 
 volumes:
   # cassandra-data:      -- unused, see DISABLED block above

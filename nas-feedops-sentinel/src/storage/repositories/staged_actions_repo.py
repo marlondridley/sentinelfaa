@@ -63,7 +63,7 @@ class StagedActionsRepository:
         self._pool = pool
         self._audit = AuditLogRepository(pool)
 
-    async def create(self, action: StagedAction) -> StagedAction:
+    async def create(self, action: StagedAction, note: str = "staged from CRITICAL alert") -> StagedAction:
         """
         Insert a new staged action and its "(new) -> PENDING" audit row, atomically,
         or return the action already staged under the same idempotency key.
@@ -107,7 +107,7 @@ class StagedActionsRepository:
 
             await self._audit.write(
                 uow.conn, action.action_id, previous_status="(new)", new_status=action.status,
-                actor="system", note="staged from CRITICAL alert",
+                actor="system", note=note,
             )
         return action
 

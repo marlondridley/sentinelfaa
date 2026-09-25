@@ -33,6 +33,17 @@ done
 
 CLIENT_UUID=$(kc get clients -r "$REALM" -q clientId="$CLIENT_ID" --fields id --format csv --noquotes)
 [ -n "$CLIENT_UUID" ] || { echo "ERROR: client $CLIENT_ID missing" >&2; exit 1; }
+
+# The dashboard signs in with its own form (direct access grant). The realm
+# file enables it, but import is skip-if-exists, so a realm imported earlier
+# keeps it off and every sign-in fails with "not configured for in-app
+# sign-in". Reconciled here too, not only in keycloak-operator.sh.
+if [ "$(kc get "clients/$CLIENT_UUID" -r "$REALM" --fields directAccessGrantsEnabled --format csv --noquotes)" = "true" ]; then
+    echo "client $CLIENT_ID: direct access grants already enabled"
+else
+    kc update "clients/$CLIENT_UUID" -r "$REALM" -s directAccessGrantsEnabled=true
+    echo "client $CLIENT_ID: direct access grants enabled"
+fi
 if kc get "clients/$CLIENT_UUID/protocol-mappers/models" -r "$REALM" --fields name --format csv --noquotes \
         | grep -qx "realm roles in ID token"; then
     echo "mapper: exists"

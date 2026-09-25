@@ -58,6 +58,29 @@ def run_demo() -> None:
 # currently being ingested -- see swim_file_ingest.request_shutdown(), which
 # the scan loop polls between files -- rather than dropping it.
 
+def _start_reconciler() -> None:
+    """
+    Run the escalation-integrity reconciler (src/reconcile.py) every
+    RECONCILE_INTERVAL_SECONDS in a daemon thread, alongside the watcher.
+    run_async serializes it with the watcher's own storage calls.
+    """
+    import threading
+    import time
+
+    from src.reconcile import reconcile_unstaged
+    from src.swim_file_ingest import shutdown_requested
+
+    def _loop() -> None:
+        while not shutdown_requested():
+            try:
+                run_async(reconcile_unstaged())
+            except Exception as exc:  # noqa: BLE001 -- keep reconciling; the metric shows failure
+                _log.error("reconcile_failed", extra={"error": str(exc)})
+            time.sleep(config.RECONCILE_INTERVAL_SECONDS)
+
+    threading.Thread(target=_loop, daemon=True, name="reconciler").start()
+
+
 def _install_shutdown_handler() -> None:
     def _handle_shutdown_signal(signum: int, frame) -> None:
         _log.warning(
@@ -105,6 +128,7 @@ def main() -> None:
         events = generate_sample_batch()
         _run_pipeline(events, "SAMPLE")
     elif args.mode == "replay" and args.watch:
+        _start_reconciler()
         target_path = Path(args.path) if args.path else Path(config.SWIM_RAW_FOLDER) if hasattr(config, "SWIM_RAW_FOLDER") else Path("/app/data/raw")
         _log.info(
             "swim_folder_watch_start",

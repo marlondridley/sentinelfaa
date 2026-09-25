@@ -257,6 +257,12 @@ class Settings(BaseSettings):
     # specialists with the model (4 calls each); the rest run the same flow
     # deterministically, so a burst of CRITICAL alerts cannot become an
     # unbounded burst of LLM calls, and no staged action goes uninvestigated.
+    # Escalation-integrity reconciler (src/reconcile.py), run by the live
+    # watcher: unstaged CRITICAL alerts younger than the window are staged
+    # PENDING; older ones are recorded EXPIRED.
+    RECONCILE_INTERVAL_SECONDS: float = 60.0
+    RECONCILE_STAGE_WINDOW_MINUTES: int = 60
+
     INVESTIGATIONS_ENABLED: bool = True
     MAX_LLM_INVESTIGATIONS_PER_PASS: int = 3
     INVESTIGATION_WINDOW_MINUTES: int = 60
