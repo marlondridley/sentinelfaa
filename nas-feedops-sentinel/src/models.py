@@ -6,11 +6,36 @@ received from the FAA SWIM feed (or generated/replayed locally).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Namespace for identifiers derived from content (uuid5). Fixed forever: changing
+# it would give every re-ingested record a new identity.
+_ID_NAMESPACE = uuid.UUID("5b3f6f0e-9a41-4c44-9f7c-2e2f7c9d1a10")
+
+
+def stable_id(*parts: object) -> str:
+    """
+    A deterministic identifier for something identified by `parts`.
+
+    Records that arrive twice -- a re-dropped SWIM file, a Temporal activity
+    retry, a double scan -- must land on the same row, not a new one. Random
+    uuid4 identities made every repeat a duplicate event, a duplicate alert and,
+    through the alert, a duplicate staged action and model call.
+    """
+    return str(uuid.uuid5(_ID_NAMESPACE, "|".join("" if p is None else str(p) for p in parts)))
+
+
+def content_key(record: dict) -> str:
+    """A stable digest of a record's content, for records with no better identity."""
+    canonical = json.dumps(record, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
 TraconCode = Literal["PCT"]

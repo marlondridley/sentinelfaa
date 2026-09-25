@@ -49,7 +49,7 @@ from watchdog.observers.polling import PollingObserver
 
 from src import config, storage
 from src.async_bridge import run_async
-from src.models import NASEvent
+from src.models import NASEvent, content_key, stable_id
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)
@@ -241,6 +241,12 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
 
     records, recognised = _extract_records(headers, body, path)
     if records:
+        # The message's own identity on the SWIM stream. Every record from one
+        # message shares it; the scan loop adds each record's position.
+        if headers.get("globalID") or headers.get("msgSeqID"):
+            key = f"{headers.get('mex', '')}:{headers.get('globalID', '')}:{headers.get('msgSeqID', '')}"
+            for record in records:
+                record["_source_key"] = key
         return records
 
     # No records. Whether that is fine depends entirely on WHY.
@@ -897,7 +903,9 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
 
 # Record normaliser 
 
-def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str | None]:
+def _normalise_record(
+    raw: dict, source_file: str, index: int | None = None,
+) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
     Injects received_time_utc = now so every live-ingested event has a receipt stamp.
@@ -905,6 +913,15 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     raw = dict(raw)
+
+    # Stable identity: the same message ingested twice is the same event.
+    # Key = the SWIM message identity (mex:globalID:msgSeqID) or, lacking one,
+    # the file name; plus the record's position in the message. Without a
+    # position (a caller normalising one record), the record's content.
+    source_key = raw.pop("_source_key", None) or Path(source_file).name
+    if not raw.get("event_id"):
+        raw["event_id"] = stable_id(
+            "swim", source_key, index if index is not None else content_key(raw))
 
     # Coerce ISO timestamp strings; strip timezone info to keep all datetimes naive UTC
     for ts_field in ("event_time_utc", "received_time_utc"):
@@ -1091,12 +1108,12 @@ def scan_swim_folder(
 
         events: list[NASEvent] = []
         errors: list[str] = []
-        for raw in raw_records:
+        for record_index, raw in enumerate(raw_records):
             # One malformed record fails its own file, never the scan: an
             # exception escaping here used to abort scan_swim_folder(), and in
             # watch mode that crash-looped the whole nas-sentinel container.
             try:
-                event, err = _normalise_record(raw, str(path))
+                event, err = _normalise_record(raw, str(path), index=record_index)
             except Exception as exc:  # noqa: BLE001
                 event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
             if event:
