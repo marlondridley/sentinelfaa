@@ -54,8 +54,6 @@ monitoring/  keycloak/  docker/  jumpstart/
 Run inside the application image (`docker compose run --rm --no-deps sentinel …`) or anywhere the database and Vault settings resolve:
 
 ```bash
-python -m src.main --mode demo                  # labelled synthetic cascade failure, then one planner question
-python -m src.main --mode sample                # a random synthetic batch of 50 events
 python -m src.main --mode replay --path DIR     # scan a folder of captured messages once
 python -m src.main --mode replay --watch        # the live watcher (what the sentinel service runs)
 python -m src.main --mode eval                  # guardrail cases and deterministic scenarios
@@ -64,7 +62,7 @@ python -m src.readiness [--hours N] [--json] [--gate]   # model readiness verdic
 python -m src.storage.migrate                   # schema, migrations and the app role (as schema owner)
 ```
 
-Everything written by `demo`, `sample` and `replay` is tagged `synthetic` or `replay`, and the dashboard says so while it is on screen.
+Real FAA data only; there is no synthetic mode. Events from the kit's folder are tagged `live` and any other folder `replay`, and the dashboard says so while non-live data is on screen.
 
 ## Tests
 

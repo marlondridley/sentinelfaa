@@ -34,7 +34,7 @@ def test_every_producer_tags_its_events(tmp_path: Path, monkeypatch):
     assert {e.data_origin for e in generate_cascade_failure_scenario()} == {"synthetic"}
 
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
     folder = tmp_path / "log"
     folder.mkdir()
     shutil.copy(CAPTURE / "1787863346242", folder / "1787863346242")

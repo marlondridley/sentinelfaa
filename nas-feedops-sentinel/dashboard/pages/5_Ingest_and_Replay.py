@@ -32,36 +32,19 @@ from src.async_bridge import run_async as run
 from src.maintenance import purge_old_kit_files
 from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
-from src.sample_data import generate_sample_batch
 from src.swim_file_ingest import read_ingest_log, scan_swim_folder
 
 bootstrap_page(page_title="Ingest & Replay — PCT FeedOps Sentinel", page_icon="📥")
 
 st.title("📥 Ingest & Replay")
 st.caption(
-    "Generate sample data, replay recorded SWIM files, scan the live "
-    "swim_live/ folder, and review recent ingest activity."
+    "Replay recorded SWIM files, scan the live swim_live/ folder, and review "
+    "recent ingest activity. Real FAA data only."
 )
 
 # ── Controls ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙ Controls")
-
-    gen_count = st.slider("Sample events to generate", min_value=10, max_value=500,
-                          value=100, step=10)
-
-    if st.button("Generate & Ingest Sample Data", use_container_width=True, type="primary"):
-        # Through the one pipeline, so CRITICAL alerts from generated data are
-        # staged for review exactly as live ones are. This used to validate,
-        # save and alert inline and stop there -- no critic, no staging.
-        with st.spinner("Generating …"):
-            summary = run(run_pipeline(generate_sample_batch(gen_count), label="SAMPLE"))
-        st.success(
-            f"Ingested {summary['event_count']} events · {summary['alert_count']} alerts · "
-            f"{summary['staged_count']} staged for review."
-        )
-
-    st.divider()
 
     st.subheader("Replay")
     replay_files = list(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
@@ -117,8 +100,8 @@ if replay_files_list:
     st.caption("Click 'Run Replay from data/raw' in the sidebar to process these files.")
 else:
     st.info(
-        "No replay files found in data/raw/. "
-        "Generate some first: `python -m src.main --mode sample`"
+        "No replay files found in data/raw/. Copy captured SWIM files there "
+        "to replay them; the live feed lands in data/raw/swim_live/ on its own."
     )
 
 st.divider()

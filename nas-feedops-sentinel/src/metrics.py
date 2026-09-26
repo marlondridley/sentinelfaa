@@ -13,6 +13,7 @@ Metrics families:
 """
 from __future__ import annotations
 
+import time
 from threading import Thread
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
@@ -132,6 +133,22 @@ def set_airport_status(airport: str, status: str) -> None:
 
 # ── /metrics HTTP server ──────────────────────────────────────────────────────
 
+# The server runs on its own thread, so it keeps answering while the process's
+# event loop is hung. A process that calls beat() from its loop makes /health
+# report that stall; one that never calls it keeps the plain liveness answer.
+LOOP_STALL_SECONDS = 60.0
+_last_beat: float | None = None
+
+
+def beat() -> None:
+    global _last_beat
+    _last_beat = time.monotonic()
+
+
+def loop_stalled() -> bool:
+    return _last_beat is not None and time.monotonic() - _last_beat > LOOP_STALL_SECONDS
+
+
 class _SilentHandler(WSGIRequestHandler):
     def log_message(self, format, *args):  # silence default per-request logs
         pass
@@ -143,6 +160,9 @@ def _metrics_app(environ, start_response):
         start_response("200 OK", [("Content-Type", CONTENT_TYPE_LATEST)])
         return [data]
     if environ.get("PATH_INFO") in ("/health", "/healthz"):
+        if loop_stalled():
+            start_response("503 Service Unavailable", [("Content-Type", "text/plain")])
+            return [b"event loop stalled"]
         start_response("200 OK", [("Content-Type", "text/plain")])
         return [b"ok"]
     start_response("404 Not Found", [("Content-Type", "text/plain")])

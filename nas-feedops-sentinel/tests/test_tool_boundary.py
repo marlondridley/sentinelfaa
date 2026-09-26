@@ -186,7 +186,7 @@ async def test_a_model_is_never_handed_another_agents_tool(monkeypatch):
         raise AssertionError("a refused call reached the model")
 
     monkeypatch.setattr(llm.litellm, "acompletion", must_not_be_called)
-    client = llm.LiteLLMClient(model="openai/primary-model", api_key="k")
+    client = llm.LiteLLMClient(model="openai/primary-model")
     with pytest.raises(llm.LLMPolicyDenied, match="tool-use policy"):
         await client.acall_with_tool("sys", {"name": "submit_operational_brief", "input_schema": {}}, "user",
                                      role="critic")

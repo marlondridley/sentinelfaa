@@ -107,7 +107,6 @@ async def run_pipeline(
     passed = sum(1 for e in events if e.validation_status == "PASSED")
     failed = len(events) - passed
 
-    sep = "-" * 50
     _log.info(
     "pipeline_execution_summary",
     extra={
@@ -121,23 +120,6 @@ async def run_pipeline(
         "smes_counts": health["smes_counts"],
     },
 )
-
-    if alerts:
-        print(f"\n  Top alerts (showing up to 10 of {len(alerts)}):")
-        for alert in alerts[:10]:
-            print(f"    [{alert.severity:8s}] {alert.alert_type}: {alert.description}")
-            cr = critic_results.get(alert.alert_id)
-            if cr:
-                conf_str = f"{cr.confidence:.2f}" if cr.confidence is not None else "N/A"
-                escalate_flag = " [ESCALATE]" if cr.escalate else ""
-                print(f"             Critic: conf={conf_str} pattern={cr.pattern}{escalate_flag}")
-                print(f"             {cr.reasoning}")
-        if len(alerts) > 10:
-            print(f"    ... and {len(alerts) - 10} more. Run the dashboard for full list.")
-
-    print()
-    print("  Dashboard: streamlit run dashboard/app.py")
-    print(f"[{label}] Done. {sep}")
 
     return {
         "correlation_id": cid,

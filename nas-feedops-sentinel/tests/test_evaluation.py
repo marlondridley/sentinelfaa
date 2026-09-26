@@ -74,7 +74,7 @@ async def _investigate(monkeypatch, *, use_llm: bool):
 
     monkeypatch.setattr(llm.litellm, "acompletion", _scripted_model)
     monkeypatch.setattr(specialists, "build_llm_client",
-                        lambda model=None: llm.LiteLLMClient(model="openai/primary-model", api_key="k"))
+                        lambda model=None: llm.LiteLLMClient(model="openai/primary-model"))
     alert = _alert()
     await storage.save_alerts([alert])
     action = await stage_critical_alert(alert)

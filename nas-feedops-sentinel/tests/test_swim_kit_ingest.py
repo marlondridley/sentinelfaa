@@ -230,6 +230,31 @@ def test_real_apds_missing_reading_becomes_none_not_zero(tmp_path: Path):
     assert by_runway["15L"]["rvr_touchdown"] == 6000
 
 
+def test_rvr_zero_is_a_not_reporting_code_not_zero_visibility(tmp_path: Path):
+    """
+    Live, 2026-09-25: KBWI 10/28 read 0 on both ends while its other runways read
+    5000-6000 ft. Read as feet, every update staged a CRITICAL ALERT_LOW_RVR.
+    """
+    from src.alert_engine import check_alerts
+
+    body = {"ns2:RVRDataUpdateMessage": {"airport": "KBWI", "runwayData": [
+        {"runwayID": {"numericRunwayID": 10},
+         "touchdownVisualRange": 0, "midpointVisualRange": 0, "rolloutVisualRange": 0},
+        {"runwayID": {"numericRunwayID": 15, "runwaySubID": "R"},
+         "touchdownVisualRange": 55, "midpointVisualRange": 0, "rolloutVisualRange": 60},
+        {"runwayID": {"numericRunwayID": 33, "runwaySubID": "L"}, "touchdownVisualRange": 10},
+    ]}}
+    records, error = _parse_file(_kit_file(tmp_path, "1790379092990", "APDS", "RR", body))
+
+    assert error is None
+    by_runway = {r["runway"]: r for r in records}
+    assert "10" not in by_runway, "a runway reporting only zeros carries no reading"
+    assert (by_runway["15R"]["rvr_touchdown"], by_runway["15R"]["rvr_midpoint"]) == (5500, None)
+    events = [_normalise_record(r, "rvr")[0] for r in records]
+    low = [a for a in check_alerts(events) if a.alert_type == "ALERT_LOW_RVR"]
+    assert [a.airport_code for a in low] == ["KBWI"], "a real 1000 ft reading still alerts once"
+
+
 def test_implausible_rvr_refuses_the_message_instead_of_misreading_it(tmp_path: Path):
     """
     If the wire value were already in feet, a real 1800 ft reading would scale
@@ -334,20 +359,122 @@ def test_smes_single_report_as_object_is_not_dropped(tmp_path: Path):
 
 def test_smes_unverified_report_type_is_refused_not_partly_ingested(tmp_path: Path):
     """
-    Only adsbReport has been seen in captured traffic. A message that also
-    carries another report type must be refused whole, naming the unverified
-    key, rather than ingesting the ADS-B half and dropping the rest.
+    A message that also carries a report type no one has verified must be
+    refused whole, naming the unverified key, rather than ingesting the known
+    half and dropping the rest.
     """
     body = {"ns2:asdexMsg": {
         "airport": "KIAD",
         "adsbReport": [{"report": {"basicReport": {
             "time": "2026-08-27T20:42:24.563Z", "track": 1}}}],
-        "positionReport": [{"track": 2}],
+        "mlatReport": [{"track": 2}],
     }}
     records, error = _parse_file(_kit_file(tmp_path, "1787863344880", "SMES", "AD", body))
     assert records == []
     assert error is not None
-    assert "positionReport" in error
+    assert "mlatReport" in error
+
+
+def test_real_position_report_message_yields_one_event_per_track():
+    """ns2:asdexMsg positionReport (msgType AT), from live KBWI traffic, 2026-09-25."""
+    from src.validators import validate_event
+
+    records, error = _parse_file(FIXTURES / "smes_position_sample")
+    assert error is None
+    by_track = {r["track_id"]: r for r in records}
+    assert set(by_track) == {"676", "1479"}
+    arriving = by_track["676"]
+    assert (arriving["airport_code"], arriving["message_type"]) == ("KBWI", "SMES_AT")
+    assert arriving["surface_event_type"] == "POSITION_REPORT"
+    assert arriving["aircraft_id"] == "ZQR5087"
+    assert (arriving["lat"], arriving["lon"]) == (pytest.approx(39.05144), pytest.approx(-76.5581))
+    assert arriving["event_time_utc"] == "2026-09-25T23:31:30.000Z"
+    assert by_track["1479"]["aircraft_id"] is None
+
+    for raw in records:
+        event, err = _normalise_record(raw, "smes_position_sample")
+        assert event is not None, err
+        assert validate_event(event).passed
+
+
+def test_position_reports_are_sampled_per_track_and_callsigns_unwrapped(tmp_path: Path, monkeypatch):
+    """One report per track every N seconds, chosen by time so re-ingesting is identical."""
+    from src import config
+
+    def message(second: int):
+        time = f"2026-09-25T23:31:{second:02d}.000Z"
+        return {"ns2:asdexMsg": {"airport": "KIAD", "positionReport": [
+            {"time": time, "track": 7, "position": {"latitude": 38.94, "longitude": -77.45},
+             "flightId": {"aircraftId": {"content": "UAL1831", "r": 1}}},
+            {"time": time, "track": 8, "position": {"latitude": 38.95, "longitude": -77.46},
+             "flightId": {"aircraftId": "UNKN"}},
+        ]}}
+
+    monkeypatch.setattr(config.settings, "SMES_POSITION_SAMPLE_SECONDS", 10)
+    kept, error = _parse_file(_kit_file(tmp_path, "1790379092981", "SMES", "AT", message(30)))
+    assert error is None
+    assert [(r["track_id"], r["aircraft_id"]) for r in kept] == [("7", "UAL1831"), ("8", None)]
+    skipped, error = _parse_file(_kit_file(tmp_path, "1790379092982", "SMES", "AT", message(31)))
+    assert (skipped, error) == ([], None), "a sampled-out message is normal, not a failure"
+
+    monkeypatch.setattr(config.settings, "SMES_POSITION_SAMPLE_SECONDS", 1)
+    everything, _ = _parse_file(_kit_file(tmp_path, "1790379092983", "SMES", "AT", message(31)))
+    assert len(everything) == 2
+
+
+def test_real_surface_event_message_yields_one_discrete_event():
+    """ns2:SurfaceMovementEventMessage (msgType SE): a real KIAD takeoff, 2026-09-25."""
+    from src.models import is_surface_event
+    from src.validators import validate_event
+
+    records, error = _parse_file(FIXTURES / "smes_event_sample")
+    assert error is None
+    [raw] = records
+    assert (raw["airport_code"], raw["message_type"], raw["surface_event_type"]) == ("KIAD", "SMES_SE", "WHEELS_OFF")
+    assert (raw["runway"], raw["aircraft_id"], raw["beacon_code"]) == ("12/30", "ZXU339", "7056")
+    assert (raw["altitude_ft"], raw["status_code"]) == (419, "status=airborne")
+    assert raw["event_time_utc"] == "2026-09-25T23:09:11.665Z"
+
+    event, err = _normalise_record(raw, "smes_event_sample")
+    assert event is not None, err
+    assert validate_event(event).passed
+    assert is_surface_event(event), "a takeoff is a discrete surface event and counts toward spikes"
+
+
+@pytest.mark.parametrize("wire, named", [
+    ("on", "WHEELS_ON"), ("off", "WHEELS_OFF"), ("runwayin", "RUNWAY_ENTRY"),
+    ("runwayout", "RUNWAY_EXIT"), ("spotin", "SPOT_IN"), ("spotout", "SPOT_OUT"),
+    ("holdshort", "SURFACE_HOLDSHORT"),
+])
+def test_surface_event_vocabulary(tmp_path: Path, wire, named):
+    """Seen events get plain names; an unseen one is kept verbatim rather than guessed at."""
+    body = {"ns2:SurfaceMovementEventMessage": {
+        "airport": "KDCA", "time": "2026-09-25T23:00:00.000Z", "track": 5, "callsign": "UNKN",
+        "mode3ACode": 566, "event": wire, "status": "onsurface",
+        "position": {"latitude": 38.85, "longitude": -77.04},
+    }}
+    [raw], error = _parse_file(_kit_file(tmp_path, "1790380000000", "SMES", "SE", body))
+    assert error is None
+    assert raw["surface_event_type"] == named
+    assert (raw["aircraft_id"], raw["beacon_code"]) == (None, "0566")
+
+
+def test_real_asdex_system_status_is_recorded_verbatim_not_as_feed_status():
+    """systemStatus (msgType AY) read state=degraded all day; mapping it would mark SMES degraded forever."""
+    from src.feed_health import compute_feed_health
+    from src.validators import validate_event
+
+    records, error = _parse_file(FIXTURES / "smes_status_sample")
+    assert error is None
+    [raw] = records
+    assert raw["surface_event_type"] == "ASDEX_SYSTEM_STATUS"
+    assert raw["status_code"] == "mode=operational;state=degraded"
+    assert raw["feed_status"] == "operational"
+
+    event, err = _normalise_record(raw, "smes_status_sample")
+    assert event is not None, err
+    assert validate_event(event).passed, "equipment status names no moving entity by design"
+    assert compute_feed_health([event])["smes_counts"] == {}
 
 
 # ── The ten-message live capture (2026-08-27, KBWI/KDCA/KIAD) ──────────────────
@@ -404,7 +531,7 @@ def test_real_capture_scan_quarantines_nothing(tmp_path: Path, monkeypatch):
     # Isolate from the ingest_log table: nothing has been seen before, and
     # log writes go nowhere.
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
 
     events, stats = swim_file_ingest.scan_swim_folder(
         src_dir, processed_dir=processed, failed_dir=failed
@@ -508,6 +635,28 @@ def test_holdbar_status_does_not_count_toward_a_surface_spike():
     assert not [a for a in check_alerts(burst) if a.alert_type == "ALERT_SURFACE_EVENT_SPIKE"]
 
 
+@pytest.mark.parametrize("surface_event_type, spikes", [("POSITION_REPORT", False), ("ADSB_REPORT", False), ("TAKEOFF", True)])
+def test_only_discrete_surface_events_count_toward_a_spike(surface_event_type, spikes):
+    """ASDE-X sends a position update per target per second; that is routine traffic, not a spike."""
+    from datetime import datetime, timezone
+
+    from src import config
+    from src.alert_engine import check_alerts
+    from src.models import NASEvent
+
+    now = datetime.now(timezone.utc)
+    burst = [
+        NASEvent(
+            airport_code="KIAD", tracon="PCT", service_name="SMES", message_type="SMES_AT",
+            event_time_utc=now, received_time_utc=now, latency_ms=0.0, track_id=str(n),
+            surface_event_type=surface_event_type, feed_status="operational",
+        )
+        for n in range(config.SURFACE_SPIKE_COUNT * 2)
+    ]
+    found = [a for a in check_alerts(burst) if a.alert_type == "ALERT_SURFACE_EVENT_SPIKE"]
+    assert bool(found) is spikes
+
+
 def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monkeypatch):
     """
     With SWIM_WATCH_POLLING (on in compose), a file the kit writes is picked up
@@ -524,7 +673,7 @@ def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monke
     monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
     monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.5)
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
     monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "processed")
     monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "failed")
 
@@ -556,7 +705,7 @@ def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monke
 def _isolate_ingest_log(monkeypatch):
     from src import swim_file_ingest
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
 
 
 @pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
@@ -711,7 +860,7 @@ def test_scan_archives_a_withheld_message_and_records_why(tmp_path: Path, monkey
 
     logged: list[dict] = []
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", logged.append)
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", logged.extend)  # one batch per scan
     src_dir, processed, failed = tmp_path / "in", tmp_path / "processed", tmp_path / "failed"
     src_dir.mkdir()
     _with_block_flag(src_dir, "true")
