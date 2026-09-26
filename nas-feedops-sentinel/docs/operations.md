@@ -16,11 +16,12 @@ PgBouncer, Vault, LiteLLM), waits for them, then starts this stack. In this
 stack, `migrate` runs first and every application service waits for it to
 finish successfully.
 
-The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`,
-with a self-signed certificate for localhost written to `./tls/` by
-`python -m src.devcert` on first start (kept across restarts). Trust
-`tls/edge.crt` once in the Windows certificate store to silence the browser
-warning, or replace the pair with a certificate from your CA.
+The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`.
+On first start `python -m src.devcert` creates a local certificate authority
+in `./tls/` (`edge-ca.crt`, kept across restarts) and signs the localhost
+server certificate with it, re-issuing that certificate when it is missing or
+near expiry. Trust `tls/edge-ca.crt` once in the Windows certificate store and
+renewals stay trusted, or replace the pair with a certificate from your own CA.
 
 | Service | URL |
 |---|---|
@@ -103,6 +104,17 @@ docstring for what each step asserts.
   aggregates spanning origins). The dashboard warns on every page when
   non-live data is present, the review queue labels non-live actions, and the
   Red-Team Critic challenges any alert that is not from the live feed.
+* **blockAtFAA.** A message whose `blockAtFAA` JMS property is `true` is
+  withheld: nothing from it is stored, shown or sent to a model. The file is
+  archived to `data/processed/`, logged in `ingest_log` with status
+  `withheld`, and counted in `nas_swim_messages_withheld_total`. Any value
+  other than `true`/`false` fails the file into `data/failed/`; an absent
+  property is not a flag (the kit writes properties only with
+  `-Dheaders=true`).
+* **Beacon codes.** Per the FAA's STDDS beacon code notice (2017-10-11), a
+  TAIS flight plan's beacon code is stored and shown only once the plan is
+  active; Pending, Passive, missing or unknown status withholds it. A track
+  with no flight plan keeps the code its own transponder broadcasts.
 
 ## Escalation integrity
 
