@@ -25,7 +25,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 import pandas as pd
 import streamlit as st
 
-from lib import theme
+from lib import agent_eval, theme
 from lib.data import format_ts, parse_json_str_list
 from lib.investigation_view import load_investigation, render_investigation
 from lib.page_setup import bootstrap_page
@@ -255,6 +255,8 @@ else:
                 st.markdown(f"**Recommended action:** {_action.recommended_action}")
 
             render_investigation(load_investigation(_action.action_id))
+            # Layer 2: how this investigation was evaluated, and its gates.
+            agent_eval.render_evaluation(agent_eval.load_for_action(_action.action_id))
 
             if _ticket:
                 pc1, pc2 = st.columns(2)
