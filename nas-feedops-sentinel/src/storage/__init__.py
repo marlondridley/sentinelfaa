@@ -89,6 +89,7 @@ __all__ = [
     "get_ingested_file_names",
     "record_ingest_log_entries",
     "get_recent_ingest_log",
+    "get_ingest_failure_reasons",
     "create_staged_action",
     "get_pending_staged_actions",
     "get_recent_staged_actions",
@@ -220,6 +221,11 @@ async def record_ingest_log_entries(entries: list[dict]) -> None:
 async def get_recent_ingest_log(limit: int = 100) -> list[dict]:
     repo = IngestLogRepository(await get_db_pool())
     return await repo.get_recent(limit)
+
+
+async def get_ingest_failure_reasons(limit: int = 10) -> list[dict]:
+    repo = IngestLogRepository(await get_db_pool())
+    return await repo.failure_reasons(limit)
 
 
 # ── Model behaviour (model_calls) and what readiness reads ─────────────────────

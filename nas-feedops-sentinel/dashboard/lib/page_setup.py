@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from urllib.parse import urlencode
 
 import streamlit as st
 
@@ -49,6 +50,25 @@ _log = get_logger(__name__)
 # Public (edge TLS) URLs, set in docker-compose.yml; defaults for a local run.
 GRAFANA_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_PUBLIC_URL", "http://localhost:9090")
+
+# What an operator asks Prometheus first, preloaded when the console opens
+# (Prometheus 3 query page: one panel per g<n>.expr). The gauges are exported
+# by every app process, so max() takes the one that sets them.
+PROMETHEUS_QUERIES = (
+    "sum by (service) (rate(nas_events_ingested_total[5m])) * 60",                      # events/min, by service
+    'sum by (alert_type) (increase(nas_alerts_triggered_total{severity="CRITICAL"}[1h]))',  # CRITICAL alerts, last hour
+    "max(nas_hitl_queue_depth)",                                                          # actions awaiting review
+    "max(nas_hitl_oldest_pending_age_seconds) / 3600",                                    # oldest review wait, hours
+    "max by (airport) (nas_airport_overall_status)",  # 0 OK, 1 STALE, 2 DEGRADED, 3 UNAVAILABLE, 4 DISCONNECTED
+)
+
+
+def prometheus_queries_url(base: str = PROMETHEUS_URL) -> str:
+    """The Prometheus query page with PROMETHEUS_QUERIES open, each graphed over the last 6 hours."""
+    params = {}
+    for i, expr in enumerate(PROMETHEUS_QUERIES):
+        params.update({f"g{i}.expr": expr, f"g{i}.tab": "graph", f"g{i}.range_input": "6h"})
+    return f"{base.rstrip('/')}/query?{urlencode(params)}"
 
 
 def require_oidc_auth() -> None:
@@ -123,7 +143,7 @@ def _console_links() -> None:
         f'text-transform:uppercase;color:{theme.GRAY1};margin:2px 0 6px 0;">Consoles</div>'
         f'<a href="{GRAFANA_URL}" target="_blank" style="display:block;font-size:12.5px;'
         f'color:{theme.BLUE5};text-decoration:none;padding:3px 0;">Grafana metrics &#8599;</a>'
-        f'<a href="{PROMETHEUS_URL}" target="_blank" style="display:block;font-size:12.5px;'
+        f'<a href="{theme._esc(prometheus_queries_url())}" target="_blank" style="display:block;font-size:12.5px;'
         f'color:{theme.BLUE5};text-decoration:none;padding:3px 0;">Prometheus queries &#8599;</a>',
         unsafe_allow_html=True,
     )
