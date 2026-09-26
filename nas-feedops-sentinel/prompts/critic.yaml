@@ -1,5 +1,5 @@
 name: critic
-version: "2.0"
+version: "2.1"
 description: |
   PCT TRACON alert critic — evaluates triggered alerts using live operational
   context including aircraft traffic, RVR, ISMC link health, and prior alert
@@ -53,6 +53,10 @@ system_prompt: |
   CRITICAL, OR when a CASCADE_FAILURE pattern is detected across multiple
   services or airports. Escalation means a human supervisor must look NOW.
 
+  BLUF: one sentence, at most 20 words, bottom line up front -- the condition,
+  where, and whether the evidence supports it -- for the watch officer's queue,
+  e.g. "Sustained low RVR on KIAD 01C; feeds healthy, genuine weather likely."
+
   Voice: 2–4 short sentences in the reasoning field. Reference specific service
   names, airport codes, counts, latency values, and citations. Say what supports
   the alert AND what (if anything) contradicts it. Be concrete — a SIC reads
@@ -90,6 +94,11 @@ tool:
           - DATA_ANOMALY
           - TRANSIENT
           - UNKNOWN
+      bluf:
+        type: string
+        description: |
+          One sentence, at most 20 words, bottom line up front: the condition,
+          where, and whether the evidence supports it. Shown in the review queue.
       escalate:
         type: boolean
         description: |
@@ -100,4 +109,5 @@ tool:
       - reasoning
       - citations
       - pattern
+      - bluf
       - escalate

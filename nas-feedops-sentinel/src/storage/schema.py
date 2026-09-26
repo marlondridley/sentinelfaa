@@ -197,6 +197,30 @@ _MIGRATIONS: list[tuple[str, str]] = [
             BEFORE UPDATE OR DELETE ON model_calls
             FOR EACH ROW EXECUTE FUNCTION model_calls_append_only();
     """),
+    # One review per condition, not per reading (src/execution_gate.py): a
+    # staged action is an incident for its condition -- alert type, airport,
+    # service -- and staged_action_alerts records every CRITICAL alert it
+    # covers, its own first alert included, so "is this alert staged?" has one
+    # answer. Existing actions cover the alert they were staged from.
+    ("2026_09_critic_results_bluf", """
+        ALTER TABLE critic_results ADD COLUMN IF NOT EXISTS bluf TEXT;
+    """),
+    ("2026_09_staged_action_conditions", """
+        ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS condition_key TEXT;
+        UPDATE staged_actions SET condition_key = concat_ws('|', alert_type, airport_code, service_name)
+            WHERE condition_key IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_staged_actions_condition ON staged_actions (condition_key, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS staged_action_alerts (
+            alert_id    TEXT PRIMARY KEY REFERENCES alert_events(alert_id) ON DELETE CASCADE,
+            action_id   TEXT NOT NULL REFERENCES staged_actions(action_id) ON DELETE CASCADE,
+            attached_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_staged_action_alerts_action ON staged_action_alerts (action_id, attached_at);
+        INSERT INTO staged_action_alerts (alert_id, action_id, attached_at)
+            SELECT alert_id, action_id, coalesce(created_at, now()) FROM staged_actions WHERE alert_id IS NOT NULL
+            ON CONFLICT (alert_id) DO NOTHING;
+    """),
 ]
 
 

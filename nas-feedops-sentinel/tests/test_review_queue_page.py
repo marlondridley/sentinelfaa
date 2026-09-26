@@ -1,0 +1,57 @@
+"""
+The review queue renders as a triage table (dashboard/pages/3_AI_Critic_and_Review.py).
+
+Run headlessly through Streamlit's AppTest against a test database: one row
+per review, not per reading; filter pills counted by facility and AI
+suggestion; the AI summary, or an honest "No AI summary yet". No sign-in is
+configured here, so the page runs with a self-declared operator.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("streamlit", reason="the page renders through Streamlit")
+from streamlit.testing.v1 import AppTest  # noqa: E402
+
+from src import storage  # noqa: E402
+from src.execution_gate import stage_critical_alert  # noqa: E402
+from src.models import AlertEvent, CriticResult  # noqa: E402
+
+PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "pages" / "3_AI_Critic_and_Review.py"
+
+
+@pytest.fixture
+def db():
+    storage.override_db_path(":memory:")
+    yield storage
+    storage.override_db_path(":memory:")
+
+
+def _rvr(airport: str) -> AlertEvent:
+    return AlertEvent(alert_type="ALERT_LOW_RVR", severity="CRITICAL", airport_code=airport,
+                      service_name="APDS_RVR", description=f"Low RVR 600 ft at touchdown on runway 10 at {airport}")
+
+
+async def test_the_queue_is_one_row_per_review_with_counted_filters_and_summaries(db):
+    kbwi = [_rvr("KBWI") for _ in range(3)]
+    kiad = _rvr("KIAD")
+    await db.save_alerts([*kbwi, kiad])
+    for alert in (*kbwi, kiad):
+        await stage_critical_alert(alert)
+    await db.save_critic_result(CriticResult(
+        alert_id=kbwi[0].alert_id, confidence=0.86, escalate=True, pattern="WEATHER_CORRELATED",
+        reasoning="r", bluf="Sustained low RVR on KBWI 10; feeds healthy, genuine weather likely."))
+
+    at = AppTest.from_file(str(PAGE), default_timeout=60).run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    [queue] = [d.value for d in at.dataframe if "AI suggests" in d.value.columns]
+    assert len(queue) == 2, "one row per review: three KBWI readings are one review"
+    rows = {r["Facility"]: r for r in queue.to_dict("records")}
+    assert rows["KBWI"]["Readings"] == 3 and rows["KBWI"]["AI suggests"] == "Escalate"
+    assert rows["KBWI"]["AI summary"].startswith("Sustained low RVR on KBWI 10")
+    assert rows["KIAD"]["AI suggests"] == "No AI review" and rows["KIAD"]["AI summary"] == "No AI summary yet"
+    labels = [o for p in at.get("button_group") for o in p.proto.options] if at.get("button_group") else []
+    assert not labels or any("KBWI (1)" in str(o) for o in labels)

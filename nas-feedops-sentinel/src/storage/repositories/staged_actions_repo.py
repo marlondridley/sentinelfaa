@@ -13,7 +13,7 @@ were two independent, unlocked pool.execute() calls.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
@@ -25,7 +25,10 @@ _STAGED_ACTION_COLUMNS = """
     action_id, alert_id, event_id, airport_code, service_name, severity, alert_type,
     recommended_action, rationale, critic_confidence, critic_pattern, status,
     idempotency_key, created_at, decided_at, decided_by, decision_note,
-    overridden_recommendation, overridden_severity
+    overridden_recommendation, overridden_severity, condition_key,
+    (SELECT count(*) FROM staged_action_alerts x WHERE x.action_id = staged_actions.action_id) AS occurrences,
+    (SELECT min(attached_at) FROM staged_action_alerts x WHERE x.action_id = staged_actions.action_id) AS first_seen_at,
+    (SELECT max(attached_at) FROM staged_action_alerts x WHERE x.action_id = staged_actions.action_id) AS last_seen_at
 """  # every column _row_to_staged_action() reads; kept as one constant so the
 # get_pending/get_recent queries and the mapper stay in sync as an explicit contract
 # instead of SELECT *. The idempotency-key lookup and the decide-path fetches below
@@ -55,6 +58,10 @@ def _row_to_staged_action(row) -> StagedAction:
         decision_note=d.get("decision_note"),
         overridden_recommendation=d.get("overridden_recommendation"),
         overridden_severity=d.get("overridden_severity"),
+        condition_key=d.get("condition_key"),
+        occurrences=d.get("occurrences") or 1,
+        first_seen_at=d.get("first_seen_at"),
+        last_seen_at=d.get("last_seen_at"),
     )
 
 
@@ -63,53 +70,141 @@ class StagedActionsRepository:
         self._pool = pool
         self._audit = AuditLogRepository(pool)
 
-    async def create(self, action: StagedAction, note: str = "staged from CRITICAL alert") -> StagedAction:
+    async def create(
+        self,
+        action: StagedAction,
+        note: str = "staged from CRITICAL alert",
+        *,
+        condition_window: timedelta | None = None,
+    ) -> StagedAction:
         """
-        Insert a new staged action and its "(new) -> PENDING" audit row, atomically,
-        or return the action already staged under the same idempotency key.
+        Stage `action` for review, or return the action that already covers it.
 
-        ``ON CONFLICT (idempotency_key) DO NOTHING`` rather than a SELECT followed
-        by an INSERT. With check-then-insert, concurrent pipeline passes staging
-        the same CRITICAL alert all passed the SELECT, and every one but the first
-        raised UniqueViolationError out of stage_critical_alert() -- which, in
-        src/pipeline.py's staging loop, abandoned every remaining alert in that
-        batch. Now the losers get the winner's action back, which is the contract
-        stage_critical_alert() documents, and only the call that actually inserted
-        writes the audit row.
+        Every CRITICAL alert an action covers is a row in staged_action_alerts,
+        so an alert is staged at most once. With `condition_window`, an alert
+        joins the latest action for its condition when that condition last
+        fired within the window -- one review per condition, not per reading --
+        and a new action is opened only after that much quiet. A per-condition
+        advisory lock serialises this, so concurrent passes cannot open two.
+
+        The returned action is the one covering the alert: `action` itself only
+        when this call opened it. Opening writes the "(new) -> PENDING" audit
+        row in the same transaction; ``ON CONFLICT (idempotency_key) DO NOTHING``
+        still returns the winner's action to a concurrent loser.
         """
         if not action.idempotency_key:
             raise ValueError("StagedAction.idempotency_key is required")
 
-        query = """
-            INSERT INTO staged_actions (
-                action_id, alert_id, event_id, airport_code, service_name,
-                severity, alert_type, recommended_action, rationale,
-                critic_confidence, critic_pattern, status, idempotency_key,
-                created_at, decided_at, decided_by, decision_note
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-            ON CONFLICT (idempotency_key) DO NOTHING
-            RETURNING action_id
-        """
         async with UnitOfWork(self._pool) as uow:
-            inserted = await uow.conn.fetchval(
-                query,
+            conn = uow.conn
+            if condition_window is not None and action.condition_key:
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", action.condition_key)
+            if action.alert_id:
+                covering = await conn.fetchval(
+                    "SELECT action_id FROM staged_action_alerts WHERE alert_id = $1", action.alert_id)
+                if covering:
+                    return await self._fetch(conn, covering)
+            if condition_window is not None and action.condition_key:
+                ongoing = await conn.fetchval(
+                    """SELECT s.action_id FROM staged_actions s
+                       JOIN staged_action_alerts x ON x.action_id = s.action_id
+                       WHERE s.condition_key = $1
+                       GROUP BY s.action_id, s.created_at
+                       HAVING max(x.attached_at) >= $2
+                       ORDER BY s.created_at DESC LIMIT 1""",
+                    action.condition_key, action.created_at - condition_window,
+                )
+                if ongoing:
+                    await self._cover(conn, action.alert_id, ongoing, action.created_at)
+                    return await self._fetch(conn, ongoing)
+
+            inserted = await conn.fetchval(
+                """
+                INSERT INTO staged_actions (
+                    action_id, alert_id, event_id, airport_code, service_name,
+                    severity, alert_type, recommended_action, rationale,
+                    critic_confidence, critic_pattern, status, idempotency_key,
+                    created_at, decided_at, decided_by, decision_note, condition_key
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING action_id
+                """,
                 action.action_id, action.alert_id, action.event_id, action.airport_code, action.service_name,
                 action.severity, action.alert_type, action.recommended_action, action.rationale,
                 action.critic_confidence, action.critic_pattern, action.status, action.idempotency_key,
-                action.created_at, action.decided_at, action.decided_by, action.decision_note,
+                action.created_at, action.decided_at, action.decided_by, action.decision_note, action.condition_key,
             )
             if inserted is None:
-                existing = await uow.conn.fetchrow(
-                    f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE idempotency_key = $1",
-                    action.idempotency_key,
-                )
-                return _row_to_staged_action(existing)
+                existing = await conn.fetchval(
+                    "SELECT action_id FROM staged_actions WHERE idempotency_key = $1", action.idempotency_key)
+                return await self._fetch(conn, existing)
 
+            await self._cover(conn, action.alert_id, action.action_id, action.created_at)
             await self._audit.write(
-                uow.conn, action.action_id, previous_status="(new)", new_status=action.status,
+                conn, action.action_id, previous_status="(new)", new_status=action.status,
                 actor="system", note=note,
             )
-        return action
+        return action.model_copy(update={"occurrences": 1, "first_seen_at": action.created_at,
+                                         "last_seen_at": action.created_at})
+
+    @staticmethod
+    async def _cover(conn, alert_id: str | None, action_id: str, at: datetime) -> None:
+        if alert_id:
+            await conn.execute(
+                """INSERT INTO staged_action_alerts (alert_id, action_id, attached_at) VALUES ($1, $2, $3)
+                   ON CONFLICT (alert_id) DO NOTHING""",
+                alert_id, action_id, at,
+            )
+
+    @staticmethod
+    async def _fetch(conn, action_id: str) -> StagedAction:
+        row = await conn.fetchrow(
+            f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE action_id = $1", action_id)
+        return _row_to_staged_action(row)
+
+    async def covered_alert_ids(self, action_id: str) -> list[str]:
+        """The CRITICAL alerts this review covers, oldest first."""
+        rows = await self._pool.fetch(
+            "SELECT alert_id FROM staged_action_alerts WHERE action_id = $1 ORDER BY attached_at, alert_id",
+            action_id)
+        return [r["alert_id"] for r in rows]
+
+    async def merge_pending_duplicates(self, condition_window: timedelta) -> int:
+        """
+        Fold PENDING actions of one condition, staged within `condition_window`
+        of each other, into the earliest: its readings move to it, and each
+        folded action becomes MERGED with an audit row naming the survivor.
+        Brings actions staged before one-review-per-condition (2026-09-25: 340
+        reviews for two low-RVR episodes) to it; idempotent. Returns the number
+        merged.
+        """
+        merged = 0
+        async with UnitOfWork(self._pool) as uow:
+            conn = uow.conn
+            rows = await conn.fetch(
+                """SELECT action_id, condition_key, created_at FROM staged_actions
+                   WHERE status = 'PENDING' AND condition_key IS NOT NULL
+                   ORDER BY condition_key, created_at, action_id FOR UPDATE"""
+            )
+            survivor, survivor_key, last_at = None, None, None
+            now = datetime.now(timezone.utc)
+            for r in rows:
+                if r["condition_key"] == survivor_key and r["created_at"] - last_at <= condition_window:
+                    await conn.execute(
+                        "UPDATE staged_action_alerts SET action_id = $1 WHERE action_id = $2",
+                        survivor, r["action_id"])
+                    note = f"merged into {survivor}: the same condition ({survivor_key}), one review"
+                    await conn.execute(
+                        """UPDATE staged_actions SET status = 'MERGED', decided_at = $2, decided_by = 'system',
+                           decision_note = $3 WHERE action_id = $1""",
+                        r["action_id"], now, note)
+                    await self._audit.write(conn, r["action_id"], previous_status="PENDING",
+                                            new_status="MERGED", actor="system", note=note)
+                    merged += 1
+                else:
+                    survivor, survivor_key = r["action_id"], r["condition_key"]
+                last_at = r["created_at"]
+        return merged
 
     async def get_pending(self) -> list[StagedAction]:
         rows = await self._pool.fetch(
@@ -166,7 +261,7 @@ class StagedActionsRepository:
             return None, False
 
         current_status = row["status"]
-        if current_status in ("APPROVED", "REJECTED", "OVERRIDDEN", "EXPIRED"):
+        if current_status in ("APPROVED", "REJECTED", "OVERRIDDEN", "EXPIRED", "MERGED"):
             return _row_to_staged_action(row), False
 
         now = datetime.now(timezone.utc)

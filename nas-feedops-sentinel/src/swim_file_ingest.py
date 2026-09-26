@@ -1258,22 +1258,7 @@ def scan_swim_folder(
     all_events: list[NASEvent] = []
     _release_stale_claims(source_dir)
 
-    # Dotfiles are skipped: the kit writes extensionless files, so "" is in
-    # SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
-    # extension either -- it was being ingested as a message, and its empty
-    # record crashed the watcher.
-    #
-    # scandir, not iterdir + is_file: the entry type comes with the directory
-    # read. On the Windows host bind mount every stat is a round trip, and
-    # stat-ing a 22,000-file backlog took ~27 s per scan -- longer than the
-    # scan's own work, so the backlog could only grow.
-    with os.scandir(source_dir) as entries:
-        all_candidates = [
-            Path(e.path) for e in entries
-            if e.is_file(follow_symlinks=False)
-            and not e.name.startswith(".")
-            and Path(e.name).suffix.lower() in SCAN_EXTENSIONS
-        ]
+    all_candidates = message_files(source_dir)
     stats.files_detected = len(all_candidates)
 
     already_processed = _get_already_processed([f.name for f in all_candidates])
@@ -1546,9 +1531,37 @@ def watch_swim_folder(
         _log.info("swim_watch_stopped")
 
 
+def message_files(source_dir: Path) -> list[Path]:
+    """
+    The messages waiting in a Kit folder: what a scan would take.
+
+    Dotfiles are skipped: the kit writes extensionless files, so "" is in
+    SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
+    extension either -- it was being ingested as a message, and its empty
+    record crashed the watcher. The Kit's own messages.log is not a message.
+
+    scandir, not iterdir + is_file: the entry type comes with the directory
+    read. On the Windows host bind mount every stat is a round trip, and
+    stat-ing a 22,000-file backlog took ~27 s per scan -- longer than the
+    scan's own work, so the backlog could only grow.
+    """
+    with os.scandir(source_dir) as entries:
+        return [
+            Path(e.path) for e in entries
+            if e.is_file(follow_symlinks=False)
+            and not e.name.startswith(".")
+            and Path(e.name).suffix.lower() in SCAN_EXTENSIONS
+        ]
+
+
 def read_ingest_log(limit: int = 100) -> list[dict]:
     """Return the most recent ingest log entries (newest first)."""
     return run_async(storage.get_recent_ingest_log(limit))
+
+
+def read_failure_reasons(limit: int = 10) -> list[dict]:
+    """Failed ingest attempts grouped by their recorded reason, most frequent first."""
+    return run_async(storage.get_ingest_failure_reasons(limit))
 
 
 # ── Single consumer per file ──────────────────────────────────────────────────

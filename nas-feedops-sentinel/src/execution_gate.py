@@ -69,6 +69,7 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from typing import Any
 
 from src import storage
@@ -116,6 +117,16 @@ def _strict_bool(value: Any) -> bool:
         return value != 0
 
     return False
+
+
+def condition_key(alert: AlertEvent) -> str:
+    """
+    The condition a CRITICAL alert reports: alert type, airport, service.
+    One review covers a condition while it keeps firing (see
+    CONDITION_QUIET_MINUTES). Matches the migration's backfill,
+    concat_ws('|', alert_type, airport_code, service_name).
+    """
+    return "|".join(str(v) for v in (alert.alert_type, alert.airport_code, alert.service_name) if v is not None)
 
 
 def _idempotency_key(alert: AlertEvent) -> str:
@@ -238,12 +249,15 @@ async def stage_critical_alert(
     Deterministic rule:
 
         severity != CRITICAL -> no staged action
-        severity == CRITICAL -> PENDING staged action
+        severity == CRITICAL -> covered by a PENDING review of its condition
 
-    The critic/LLM cannot change that rule.
+    One review per condition, not per reading: an alert whose condition
+    (condition_key) fired within CONDITION_QUIET_MINUTES joins that review;
+    otherwise it opens a new one. The critic/LLM cannot change the rule.
 
-    Idempotency is enforced by the deterministic idempotency_key and the
-    storage layer.
+    Returns the review only when this call opened it -- the caller builds its
+    ticket and investigation once -- and None when the alert is not CRITICAL,
+    joined an open review, or was already staged.
 
     No execution occurs here.
     """
@@ -291,11 +305,15 @@ async def stage_critical_alert(
         status="PENDING",
 
         idempotency_key=idempotency_key,
+        condition_key=condition_key(alert),
     )
 
-    # Storage is responsible for enforcing uniqueness and returning the
-    # existing action when this alert has already been staged.
-    result = await storage.create_staged_action(action)
+    # Storage opens the review, or returns the one already covering this
+    # alert's condition (or this alert).
+    result = await storage.create_staged_action(
+        action, condition_window=timedelta(minutes=settings.CONDITION_QUIET_MINUTES))
+    if result.action_id != action.action_id:
+        return None
 
     await _refresh_hitl_queue_metric()
 

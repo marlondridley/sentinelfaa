@@ -36,7 +36,8 @@ async def test_stage_critical_alert_awaits_create_staged_action():
          patch("src.storage.get_pending_staged_actions", new_callable=AsyncMock) as mock_pending, \
          patch("src.execution_gate._build_escalation_package", new_callable=AsyncMock) as mock_esc:
 
-        mock_create.return_value = fake_staged
+        # Storage returns the proposed action when it opens it (a new condition).
+        mock_create.side_effect = lambda action, **kw: action
         mock_pending.return_value = [fake_staged]
         mock_esc.return_value = None
 
@@ -49,13 +50,13 @@ async def test_stage_critical_alert_awaits_create_staged_action():
         assert created_arg.alert_id == "ALT-CRIT-001"
         assert created_arg.status == "PENDING"
 
-        # Verify result is the StagedAction returned by storage, not a coroutine
+        # Verify result is the StagedAction storage opened, not a coroutine
         assert isinstance(result, StagedAction)
-        assert result.action_id == "act-test-123"
+        assert result.action_id == created_arg.action_id
 
         # Verify escalation package and metric refresh were awaited
         mock_pending.assert_awaited_once()
-        mock_esc.assert_awaited_once_with(fake_staged, alert, None)
+        mock_esc.assert_awaited_once_with(result, alert, None)
 
 
 @pytest.mark.asyncio
@@ -232,7 +233,7 @@ async def test_dismissive_critic_cannot_suppress_critical_alert():
          patch("src.storage.get_pending_staged_actions", new_callable=AsyncMock) as mock_pending, \
          patch("src.execution_gate._build_escalation_package", new_callable=AsyncMock):
 
-        mock_create.return_value = staged
+        mock_create.side_effect = lambda action, **kw: action
         mock_pending.return_value = [staged]
 
         result = await stage_critical_alert(alert, critic_result=dismissive)
@@ -263,7 +264,7 @@ async def test_staged_severity_is_copied_from_alert_not_derived_from_critic():
          patch("src.storage.get_pending_staged_actions", new_callable=AsyncMock) as mock_pending, \
          patch("src.execution_gate._build_escalation_package", new_callable=AsyncMock):
 
-        mock_create.side_effect = lambda action: action
+        mock_create.side_effect = lambda action, **kw: action
         mock_pending.return_value = []
 
         await stage_critical_alert(alert, critic_result=critic)

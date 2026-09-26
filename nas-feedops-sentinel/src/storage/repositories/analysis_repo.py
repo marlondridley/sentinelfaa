@@ -53,9 +53,10 @@ class AnalysisRepository:
     async def save_critic_result(self, result: CriticResult) -> None:
         query = """
             INSERT INTO critic_results (
-                alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at, bluf
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (alert_id) DO UPDATE SET
+                bluf = EXCLUDED.bluf,
                 confidence = EXCLUDED.confidence,
                 reasoning = EXCLUDED.reasoning,
                 citations = EXCLUDED.citations,
@@ -66,7 +67,7 @@ class AnalysisRepository:
         await self._pool.execute(
             query,
             result.alert_id, result.confidence, result.reasoning, json.dumps(result.citations),
-            result.pattern, bool(result.escalate), result.evaluated_at,
+            result.pattern, bool(result.escalate), result.evaluated_at, result.bluf,
         )
 
     async def get_critic_verdicts_since(self, since: datetime) -> list[dict]:
@@ -92,7 +93,7 @@ class AnalysisRepository:
         if not alert_ids:
             return []
         rows = await self._pool.fetch(
-            """SELECT alert_id, confidence, escalate, pattern, evaluated_at
+            """SELECT alert_id, confidence, escalate, pattern, bluf, evaluated_at
                FROM critic_results WHERE alert_id = ANY($1::text[]) ORDER BY evaluated_at DESC""",
             list(alert_ids),
         )
@@ -102,7 +103,7 @@ class AnalysisRepository:
         # NOTE: column list mirrors the full critic_results schema, including the citations
         # JSONB blob (dropping it here requires confirming the dashboard doesn't render it).
         rows = await self._pool.fetch(
-            """SELECT alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at
+            """SELECT alert_id, confidence, reasoning, citations, pattern, escalate, bluf, evaluated_at
                FROM critic_results ORDER BY evaluated_at DESC LIMIT $1""",
             limit,
         )
