@@ -1,12 +1,19 @@
 name: Sentinel CI
 
-# Every push and PR touching the application or its infrastructure:
-#   test        build the test image once; lint, then the full suite
-#               (including scripts/e2e_proof.py) against a real Postgres
-#   audit       pip-audit over the hash-locked runtime dependencies
-#   compose     both compose files render with the example env files
-#   image-scan  Trivy over the shipped runtime image; a fixable HIGH or
-#               CRITICAL finding fails the build
+# Every push touching the application or its infrastructure, and every PR
+# whatever its base (main, dev, test, or a stacked branch):
+#   test          build the test image once; lint, then the full suite
+#                 (including scripts/e2e_proof.py) against a real Postgres;
+#                 coverage of src/ and dashboard/, with a floor for src/
+#   audit         pip-audit over the hash-locked runtime dependencies
+#   compose       both compose files render with the example env files
+#   deploy-smoke  containers, not code: a fresh checkout brings Keycloak up
+#                 over TLS, and an md5 database upgrades to SCRAM behind
+#                 PgBouncer (.github/scripts/deploy-smoke.sh)
+#   image-scan    Trivy over the shipped runtime image; a fixable HIGH or
+#                 CRITICAL finding fails the build
+# Every job has a timeout: a hung test or container must not hold a runner
+# for GitHub's six-hour default.
 
 on:
   push:
@@ -14,8 +21,8 @@ on:
       - 'nas-feedops-sentinel/**'
       - 'instraclustr/**'
       - '.github/workflows/pyapp-ci.yml'
+      - '.github/scripts/**'
   pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +36,7 @@ jobs:
   test:
     name: Lint and test (test image, Postgres 16)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -64,18 +72,26 @@ jobs:
         run: docker run --rm -v "$PWD:/w:ro" -w /w nas-feedops-sentinel:test ruff check --no-cache src tests scripts dashboard
 
       - name: Test suite and end-to-end proof
+        # Coverage counts lines and branches, for src/ and dashboard/ (the
+        # dashboard is reported, not gated). The floor is src/'s coverage when
+        # it was set: raise it as tests are added; never lower it to pass.
         run: |
           docker run --rm --network host \
             -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=5432 \
             -e POSTGRES_USER=sentinel_ci -e POSTGRES_PASSWORD=ci-only-not-a-secret \
             -e POSTGRES_DB=sentinel_ci -e DATABASE_URL= \
             -e VAULT_ADDR= -e VAULT_TOKEN= -e CRITIC_ENABLED=0 \
-            nas-feedops-sentinel:test \
-            python -m pytest -p no:cacheprovider -q --cov=src --cov-report=term
+            -e COVERAGE_FILE=/tmp/.coverage \
+            nas-feedops-sentinel:test sh -c '
+              python -m pytest -p no:cacheprovider -q \
+                --cov=src --cov=dashboard --cov-branch --cov-report=term-missing:skip-covered &&
+              echo "src/ coverage (floor 84%):" &&
+              coverage report --include="src/*" --fail-under=84 --format=total'
 
   audit:
     name: Dependency CVE audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -92,6 +108,7 @@ jobs:
   compose:
     name: Compose files render
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: docker compose config
@@ -100,9 +117,23 @@ jobs:
           docker compose -f instraclustr/docker-compose.yml --env-file instraclustr/.env.example config -q
           docker compose -f nas-feedops-sentinel/docker-compose.yml --env-file nas-feedops-sentinel/.env.example config -q
 
+  deploy-smoke:
+    name: Deployment smoke (fresh checkout; md5 to SCRAM upgrade)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Rendering the compose files (above) cannot catch how containers are
+    # created and wired. Both failures this runs were invisible to the test
+    # suite: file mounts Docker turned into directories on a fresh checkout,
+    # and PgBouncer on SCRAM in front of an md5 database. See the script.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh checkout starts Keycloak over TLS; md5 database upgrades to SCRAM
+        run: bash .github/scripts/deploy-smoke.sh
+
   image-scan:
     name: Runtime image scan (Trivy)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Blocking. A HIGH or CRITICAL finding with a published fix fails the
     # build: rebuild on the patched base image, or bump the locked package.
     # Findings with no fix released (today: Debian OS packages in
