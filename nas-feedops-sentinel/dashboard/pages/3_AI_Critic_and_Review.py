@@ -20,6 +20,7 @@ row, decided by the same gate call.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -404,7 +405,10 @@ else:
     _view = _rows[_keep].reset_index(drop=True)
 
     _picked = st.dataframe(
-        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True, key="q_table",
+        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True,
+        # A selection is only meaningful for the rows it was made on: a decision
+        # or a filter that changes them starts a fresh table (and selection).
+        key="q_table_" + hashlib.sha1("|".join(_view["action_id"]).encode()).hexdigest()[:12],
         on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
         column_config={
             "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
@@ -413,7 +417,7 @@ else:
             "AI summary": st.column_config.TextColumn(width="large"),
         },
     )
-    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows]
+    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows if 0 <= i < len(_view)]
 
     a1, a2, a3, a4 = st.columns([1.2, 1.5, 2.1, 2.4])
     if a1.button("Open review", type="primary", use_container_width=True, disabled=len(_chosen) != 1,
