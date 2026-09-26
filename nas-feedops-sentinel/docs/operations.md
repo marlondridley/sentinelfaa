@@ -139,11 +139,58 @@ by hand with `python -m src.reconcile`.
 
 ## Alerts
 
-Rules are in `monitoring/alert-rules.yml`: unstaged CRITICAL alerts, a stale
-review queue, degraded airport feeds, no ingest for 30 minutes, a high model
-error rate, and scrape targets down. Prometheus evaluates them and shows them
-at https://localhost:8447/alerts. No Alertmanager is configured yet, so
-nothing pages anyone.
+Rules are in `monitoring/alert-rules.yml`; each has a runbook in
+`docs/runbooks.md`. They cover:
+- unstaged CRITICAL alerts;
+- a stale review queue;
+- degraded airport feeds;
+- no ingest for 30 minutes;
+- model errors, both the legacy `nas_llm_*` series and the GenAI
+  `error.type`;
+- model p95 latency;
+- agents falling back to rules;
+- model calls refused by policy;
+- an agent blocked from deciding or writing;
+- scrape targets down.
+
+Prometheus evaluates them and shows them at https://localhost:8447/alerts.
+No Alertmanager is configured yet, so nothing pages anyone. Grafana's
+"Agents" row charts the GenAI and AGT metrics.
+
+## Agent governance, telemetry and evaluation
+
+How the AI layer is governed, boundary by boundary, is
+`docs/agent-governance.md`. Which component computes each metric is
+`docs/agent-metrics.md`. Operationally:
+
+* **Policies.** Both are Microsoft Agent Governance Toolkit (AGT) policies,
+  deny by default:
+  - `policies/model-use.yaml` decides every model call;
+  - `policies/tool-use.yaml` decides every tool an agent uses.
+
+  A policy that fails to load refuses every call. Changes are code changes;
+  the tests pin every decision.
+* **Telemetry.** OpenTelemetry (`src/telemetry.py`) with the GenAI
+  conventions:
+  - traces: `invoke_workflow`, `invoke_agent`, `chat` and `execute_tool`
+    spans;
+  - metrics: `gen_ai.client.*` and AGT's `agent.*`, on each service's
+    `/metrics`;
+  - AGT's audit log records of every policy decision.
+
+  Set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` to also send everything to an
+  OTLP collector. `OTEL_SERVICE_NAME` names the service. No prompt or
+  response text is on any span or record.
+* **Evaluation and readiness.**
+  - `python -m src.readiness` prints the verdict for the last 24 hours.
+    `--hours N`, `--json` and `--gate` are available; `--gate` exits 0 only
+    when READY.
+  - The dashboard's Agent Evaluation & Governance page shows the same
+    figures. Targets and per-investigation gate limits are in
+    `policies/model-slos.yaml`.
+* **Records.** `model_calls` (one row per model call), `investigations`
+  (sealed) and `action_audit_log` are append-only. The application role may
+  only SELECT and INSERT them.
 
 ## Models
 
