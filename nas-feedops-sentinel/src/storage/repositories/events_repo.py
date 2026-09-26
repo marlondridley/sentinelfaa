@@ -166,6 +166,19 @@ class EventsRepository:
         rows = await self._pool.fetch(query)
         return [dict(r) for r in rows]
 
+    async def get_by_ids(self, event_ids: list[str]) -> dict[str, dict]:
+        """The named events, keyed by id (ids no longer stored are absent)."""
+        if not event_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT event_id, event_time_utc, airport_code, service_name, message_type, runway,
+                      rvr_touchdown, rvr_midpoint, rvr_rollout, aircraft_id, flight_phase, altitude_ft,
+                      surface_event_type, feed_status
+               FROM nas_events WHERE event_id = ANY($1::text[])""",
+            list(event_ids),
+        )
+        return {r["event_id"]: dict(r) for r in rows}
+
     async def get_event_counts_by_service(self) -> list[dict]:
         query = """
             SELECT service_name, airport_code, COUNT(*) AS count
