@@ -71,6 +71,12 @@ __all__ = [
     "record_model_call",
     "get_model_calls_since",
     "get_investigations_since",
+    "get_investigation_for_action",
+    "get_latest_investigation",
+    "get_model_calls_for_subjects",
+    "get_staged_actions_by_ids",
+    "get_audit_log_for_actions",
+    "get_critic_verdicts_for_alerts",
     "save_planner_result",
     "get_recent_planner_results",
     "save_critic_result",
@@ -232,11 +238,48 @@ async def get_critic_verdicts_since(since: datetime) -> list[dict]:
 
 
 async def get_investigations_since(since: datetime) -> list:
-    """COMPLETE investigations since `since`, each verified against its SHA-256."""
+    """Investigations (COMPLETE and FAILED) since `since`, each verified against its SHA-256."""
     from src.storage.repositories.investigations_repo import InvestigationsRepository
 
     repo = InvestigationsRepository(await get_db_pool())
-    return await repo.get_complete_since(since)
+    return await repo.get_since(since)
+
+
+async def get_investigation_for_action(action_id: str):
+    """The COMPLETE investigation of one staged action, verified; None if there is none."""
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_by_action_id(action_id)
+
+
+async def get_latest_investigation():
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_latest()
+
+
+async def get_model_calls_for_subjects(subjects: list[str]) -> list[dict]:
+    repo = ModelCallsRepository(await get_db_pool())
+    return await repo.get_for_subjects(subjects)
+
+
+async def get_staged_actions_by_ids(action_ids: list[str]) -> list[StagedAction]:
+    repo = StagedActionsRepository(await get_db_pool())
+    return await repo.get_by_ids(action_ids)
+
+
+async def get_audit_log_for_actions(action_ids: list[str]) -> list[dict]:
+    from src.storage.repositories.audit_repo import AuditLogRepository
+
+    repo = AuditLogRepository(await get_db_pool())
+    return await repo.get_for_actions(action_ids)
+
+
+async def get_critic_verdicts_for_alerts(alert_ids: list[str]) -> list[dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_critic_verdicts_for_alerts(alert_ids)
 
 
 # ── Agent analysis (critic_results / planner_results) ─────────────────────────

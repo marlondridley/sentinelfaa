@@ -73,10 +73,12 @@ LLM_CALLS = Counter(
 )
 
 
-# Model calls and model-use policy decisions are measured with OpenTelemetry
-# (src/telemetry.py): gen_ai.client.operation.duration, gen_ai.client.token.usage,
-# sentinel.gen_ai.client.cost and sentinel.governance.decisions, served on this
-# same /metrics endpoint by OpenTelemetry's Prometheus reader.
+# Agent metrics are computed by the Agent Governance Toolkit and carried by
+# OpenTelemetry (src/telemetry.py): gen_ai.client.operation.duration and
+# gen_ai.client.token.usage per model call, and AGT's agent.tasks.total,
+# agent.task.duration, agent.llm.latency, agent.tool_calls.total,
+# agent.tool.latency, agent.policy.violations and agent.sre.cost.total_usd --
+# served on this same /metrics endpoint by OpenTelemetry's Prometheus reader.
 
 
 # ── Gate metrics ──────────────────────────────────────────────────────────────

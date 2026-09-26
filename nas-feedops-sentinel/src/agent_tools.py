@@ -28,6 +28,7 @@ output says.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -113,6 +114,7 @@ def authorize(tool: str, *, role: str | None = None) -> governance.GovernanceDec
 async def invoke(tool: str, fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
     """Run a read tool for the current agent: the policy first, then the tool, in an execute_tool span."""
     agent = current_agent()
+    started = time.perf_counter()
     with telemetry.tracer().start_as_current_span(
         f"execute_tool {tool}", kind=SpanKind.INTERNAL,
         attributes=telemetry.span_attributes({
@@ -128,10 +130,14 @@ async def invoke(tool: str, fn: Callable[..., Awaitable[T]], *args: Any, **kwarg
                 telemetry.ERROR_TYPE: "policy_denied",
             }))
             span.set_status(Status(StatusCode.ERROR, "policy_denied"))
+            telemetry.record_tool_call(tool, agent, time.perf_counter() - started, exc.decision.action)
             raise
         span.set_attributes(telemetry.span_attributes(
             {telemetry.AGT_DECISION: decision.action, telemetry.AGT_RULE: decision.rule}))
-        return await fn(*args, **kwargs)
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            telemetry.record_tool_call(tool, agent, time.perf_counter() - started, decision.action)
 
 
 def guard_human_gate(tool: str) -> None:

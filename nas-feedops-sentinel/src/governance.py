@@ -20,9 +20,9 @@ deterministic rules exactly as it does for any model failure.
 Every decision is written to the toolkit's own audit trail -- AGT's
 GovernanceAuditLogger with its OpenTelemetry backend (OTelLogsBackend), so
 decisions reach any OTLP collector as log records under AGT's agt.* names,
-correlated with the model call's trace -- and counted on the
-sentinel.governance.decisions metric (src/telemetry.py). The same decision is
-on the call's chat span and in its model_calls row.
+correlated with the call's trace -- and every refusal counts on AGT's
+agent.policy.violations metric (src/telemetry.py). A model call's decision is
+also on its chat span and in its model_calls row.
 
 This module adds three guarantees the toolkit leaves to its host:
 
@@ -203,7 +203,8 @@ def _audit(decision: GovernanceDecision, context: dict[str, Any], *, latency_ms:
     """Write the decision to AGT's audit trail and count it. Never changes the decision."""
     details = {k: v for k, v in context.items() if k not in ("action", "role")}
     try:
-        telemetry.record_policy_decision(context["role"], decision.action, decision.rule)
+        telemetry.record_policy_decision(context["role"], decision.action, decision.rule,
+                                         allowed=decision.allowed, action=context["action"])
         audit_logger().log_decision(
             agent_id=context["role"], action=context["action"], decision=decision.action,
             reason=decision.reason, latency_ms=round(latency_ms, 3),

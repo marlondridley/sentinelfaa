@@ -1,59 +1,156 @@
-# Model-behavior objectives: what "ready to deploy" means for the parts of
-# Sentinel that call a model.
+# What "ready to deploy" means for the parts of Sentinel that use a model,
+# and the limits every investigation is held to.
 #
-# `python -m src.readiness` measures the last `window_hours` of real calls
-# (model_calls), sealed investigations and operator decisions against these,
-# and prints one verdict: READY, AT RISK, NOT READY or INSUFFICIENT DATA.
-# `--gate` turns the verdict into an exit code for a deployment pipeline.
+# `python -m src.readiness` measures the last `window_hours` of real
+# behaviour against the objectives below and prints one verdict: READY,
+# AT RISK, NOT READY or INSUFFICIENT DATA. `--gate` turns it into an exit
+# code for a deployment pipeline. The same numbers fill the Agent Evaluation
+# & Governance page.
+#
+# Every value is measured by an evaluator, never reported by an agent about
+# itself: the grounding gate, the operator's recorded decision, the
+# gateway's usage and cost, the sealed record's hash. Where each measurement
+# comes from -- an Agent Governance Toolkit component, or in-repo code and
+# why -- is in docs/agent-metrics.md.
+#
+# The targets are starting points, set from what an advisory system in an
+# operations centre needs, not from measured performance. Revisit them once
+# there is a baseline.
 #
 # Ratio objectives (`target`) use the standard error budget: a target T
-# allows an error rate of 1 - T; using more than all of that allowance misses
-# the objective, more than `at_risk_budget` of it puts it at risk. Limit
-# objectives (`max`) miss above the limit and are at risk above
-# `at_risk_budget` of it.
+# allows an error rate of 1 - T; using more than all of that allowance
+# misses the objective, more than `at_risk_budget` of it puts it at risk.
+# Limit objectives (`max`) miss above the limit and are at risk above
+# `at_risk_budget` of it. The error-budget arithmetic is in-repo
+# (src/readiness.py): agent-sre's ErrorBudget reports one failure in a
+# hundred calls against a 95% objective as an exhausted budget
+# (tests/test_agt_known_bugs.py).
 #
 # `required: false` objectives never block a verdict for lack of evidence
 # (operators decide rarely; not every gateway reports cost), but a miss on
-# one still means NOT READY.
+# one still means NOT READY. `min_samples` is how much evidence an
+# objective needs before it is judged at all.
 
 window_hours: 24
-min_calls: 20            # fewer answered-or-failed calls than this: INSUFFICIENT DATA
+min_calls: 20            # fewer model calls than this: INSUFFICIENT DATA
 at_risk_budget: 0.75
 
 objectives:
+  # ── The health table (Agent Evaluation & Governance page) ───────────────
+  - name: decision_quality
+    label: Decision quality
+    description: >
+      Mean score of each investigation's evaluation (agent-sre
+      EvaluationEngine): grounding of the model's claims, and whether the
+      operator's decision matched the recommendation once one is recorded.
+    target: 0.85
+    min_samples: 10
+
+  - name: evidence_grounding
+    label: Evidence grounding
+    description: >
+      Mean share of each investigation's model claims that cite only
+      evidence that was collected.
+    target: 0.95
+    min_samples: 10
+
+  - name: human_override_rate
+    label: Human override
+    description: Decided actions the operator overrode (edited the recommendation before sign-off).
+    max: 0.20
+    min_samples: 10
+    required: false
+
+  - name: unsupported_claim_rate
+    label: Unsupported claims
+    description: >
+      Model claims the grounding gate rejected for citing nothing, or
+      evidence never collected: the measured hallucination rate.
+    max: 0.05
+    min_samples: 20
+
+  - name: investigation_latency_p95_seconds
+    label: P95 investigation time
+    description: 95th percentile time from an investigation opening to its sealed record.
+    max: 120
+    min_samples: 5
+
+  - name: cost_per_investigation_usd
+    label: Cost / investigation
+    description: Mean gateway-reported model spend per investigation that used a model.
+    max: 0.25
+    min_samples: 5
+    required: false
+
+  - name: agent_failure_rate
+    label: Agent failure
+    description: >
+      Agent invocations that tried a model and fell back to rules, or
+      errored.
+    max: 0.05
+    min_samples: 20
+
+  - name: missed_escalation_rate
+    label: Missed escalation
+    description: >
+      Actions an operator approved for escalation where the Critic had said
+      not to escalate.
+    max: 0.05
+    min_samples: 10
+    required: false
+
+  - name: audit_completeness
+    label: Audit completeness
+    description: >
+      Investigations whose audit gate passed: sealed record verifies,
+      model provenance recorded, every model call on record, human decision
+      captured.
+    target: 1.0
+    min_samples: 1
+
+  # ── Reliability and governance ──────────────────────────────────────────
+  - name: policy_compliance
+    label: Policy compliance
+    description: Model calls the model-use and tool-use policies allowed, out of all attempted.
+    target: 0.99
+
   - name: availability
-    description: Calls that came back with a usable answer, out of calls sent.
+    label: Model availability
+    description: Model calls sent that came back with a usable answer.
     target: 0.95
 
   - name: output_validity
+    label: Output validity
     description: Answers that met the output schema without the repair request.
     target: 0.90
 
-  - name: grounding
-    description: >
-      Claims a model made in an investigation that cite only evidence that was
-      collected. The rest were rejected by the grounding gate -- the measured
-      hallucination rate.
-    target: 0.95
-    min_samples: 10
-
-  - name: latency_p95_seconds
-    description: 95th percentile wall time of a call, retries and repair included.
+  - name: model_call_latency_p95_seconds
+    label: P95 model call
+    description: 95th percentile wall time of one model call, retries and repair included.
     max: 30
 
-  - name: cost_per_call_usd
-    description: Mean gateway-reported cost of a call that came back.
-    max: 0.05
-    required: false
-
-  - name: policy_compliance
-    description: Calls the model-use policy allowed, out of all attempted.
-    target: 0.99
-
-  - name: operator_agreement
-    description: >
-      Decided actions where the operator's decision matched the Critic's
-      escalation recommendation (escalate and approved, or not and rejected).
-    target: 0.70
+  - name: false_escalation_rate
+    label: False escalation
+    description: Escalations the Critic recommended that the operator rejected.
+    max: 0.30
     min_samples: 10
     required: false
+
+  - name: calibration_error
+    label: Confidence calibration (ECE)
+    description: >
+      Expected calibration error of the Critic's stated confidence against
+      whether the operator agreed with it.
+    max: 0.15
+    min_samples: 30
+    required: false
+
+# ── Governance gates for every investigation ─────────────────────────────
+# Cost and latency limits are checked with agent-os-kernel's BudgetTracker.
+investigation_gates:
+  max_cost_usd: 0.25          # model spend on one investigation
+  max_tokens: 60000           # prompt + completion tokens across its model calls
+  max_tool_calls: 8           # governed tool calls: model calls plus evidence collection
+  max_duration_seconds: 120   # opened to sealed
+  max_retries: 3              # re-sent model requests across the investigation
+  max_depth: 3                # sequential agent stages: specialists, Red-Team Critic, Watch Officer
