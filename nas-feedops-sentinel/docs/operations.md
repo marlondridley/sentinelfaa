@@ -18,10 +18,11 @@ finish successfully.
 
 The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`.
 On first start `python -m src.devcert` creates a local certificate authority
-in `./tls/` (`edge-ca.crt`, kept across restarts) and signs the localhost
-server certificate with it, re-issuing that certificate when it is missing or
-near expiry. Trust `tls/edge-ca.crt` once in the Windows certificate store and
-renewals stay trusted, or replace the pair with a certificate from your own CA.
+in `./tls/` (`edge-ca.crt`, kept across restarts) and signs two server
+certificates with it: the edge proxy's (localhost) and Keycloak's (keycloak,
+localhost, 127.0.0.1). Each is re-issued when missing or near expiry. Trust
+`tls/edge-ca.crt` once in the Windows certificate store and renewals stay
+trusted, or replace the pairs with certificates from your own CA.
 
 | Service | URL |
 |---|---|
@@ -30,9 +31,20 @@ renewals stay trusted, or replace the pair with a certificate from your own CA.
 | Grafana | https://localhost:8445 |
 | Temporal UI | https://localhost:8446 |
 | Prometheus (and its alerts) | https://localhost:8447/alerts |
-| Keycloak admin (HTTP, loopback) | http://localhost:8081/admin |
+| Keycloak admin (HTTPS, loopback) | https://localhost:8081/admin |
 
-Internal traffic between containers stays plain HTTP on `nas-network`, which
+The identity service is HTTPS end to end. Keycloak terminates TLS itself
+(`KC_HTTP_ENABLED=false`); the dashboard's sign-in reaches it at
+`https://keycloak:8443` and verifies it against `tls/edge-ca.crt`
+(`KEYCLOAK_CA_FILE`), and refuses an `http://` identity URL outright,
+because the sign-in sends the operator's password. Keycloak's health check
+runs over TLS too (`keycloak/TlsHealth.java`; the image has no curl).
+Upgrading from the HTTP setup: in `.streamlit/secrets.toml` set
+`server_metadata_url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"`
+and `ca_file = "/run/tls/edge-ca.crt"`, then recreate `edge-certs`,
+`keycloak` and `dashboard`.
+
+Other traffic between containers stays plain HTTP on `nas-network`, which
 nothing outside the host can reach. The API's `/metrics` and `/docs` are not
 routed by the proxy.
 

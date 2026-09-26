@@ -9,7 +9,7 @@ validation or a guard that must refuse before a request is ever made.
 The claim tests matter more than they look. The dashboard obtains its
 token over a connection it opened itself, which makes it tempting to skip
 verification entirely -- and skipping it would mean anything answering on
-port 8080 could mint an operator identity that lands in action_audit_log
+Keycloak's port could mint an operator identity that lands in action_audit_log
 next to a real one. These assertions are what pin an accepted token to
 this realm and this client.
 """
@@ -21,7 +21,7 @@ import time
 from src import keycloak_auth as ka
 from src.auth import Principal, PrincipalSource, format_actor
 
-ISSUER = "http://localhost:8081/realms/nas-sentinel"
+ISSUER = "https://localhost:8081/realms/nas-sentinel"
 CLIENT_ID = "nas-feedops-sentinel"
 
 
@@ -46,7 +46,7 @@ def test_well_formed_token_is_accepted():
 def test_token_from_a_different_realm_is_rejected():
     """A token signed by the same Keycloak but issued by another realm (master,
     say) must not authenticate an operator here."""
-    other = _claims(iss="http://localhost:8081/realms/master")
+    other = _claims(iss="https://localhost:8081/realms/master")
     assert "issuer" in ka._check_claims(other, issuer=ISSUER, client_id=CLIENT_ID)
 
 
@@ -133,7 +133,7 @@ def _unreachable_settings() -> ka.KeycloakSettings:
     return ka.KeycloakSettings(
         client_id=CLIENT_ID,
         client_secret="not-used",
-        metadata_url="http://127.0.0.1:1/realms/x/.well-known/openid-configuration",
+        metadata_url="https://127.0.0.1:1/realms/x/.well-known/openid-configuration",
     )
 
 
