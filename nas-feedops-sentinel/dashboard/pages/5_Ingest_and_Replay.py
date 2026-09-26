@@ -164,7 +164,8 @@ with col_ingest:
         st.success(
             f"Ingested {sw_stats.events_parsed} events from "
             f"{sw_stats.files_processed} file(s). "
-            f"{sw_stats.files_failed} failed. "
+            f"{sw_stats.files_failed} failed, "
+            f"{sw_stats.files_withheld} withheld (blockAtFAA). "
             f"{summary['alert_count'] if summary else 0} alert(s), "
             f"{summary['staged_count'] if summary else 0} staged for review."
         )

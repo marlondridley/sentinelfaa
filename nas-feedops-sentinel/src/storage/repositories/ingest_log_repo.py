@@ -62,7 +62,8 @@ class IngestLogRepository:
         """
         Record one ingest attempt. `entry` matches the shape scan_swim_folder() has
         always built: {"file", "status", "timestamp", plus one of "error" (failed)
-        or "event_count"/"services"/"parse_errors" (processed)}.
+        or "event_count"/"services"/"parse_errors" (processed)}. A "withheld" entry
+        (a message flagged blockAtFAA=true) carries its reason in "error".
 
         Prunes down to MAX_ROWS most-recent rows with the same probability on every
         call, rather than only on a dedicated schedule -- so the table self-bounds
