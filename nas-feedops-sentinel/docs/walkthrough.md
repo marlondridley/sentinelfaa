@@ -6,9 +6,9 @@ A scripted demonstration for someone who has five minutes and wants to know two 
 
 None of this counts against the five minutes.
 
-1. **Bring the stack up** from the repository root: `.\launch_nas_sentinel.ps1`. Add `-WithLiveFeed` if you have a SWIFT subscription and want live FAA data on screen.
-2. **Have an operator** with the `watch_officer` role: `.\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1`. For the auditor contrast in step 5, create a second login with `$env:APP_ROLES = 'auditor'` before running the script again.
-3. **Trust the local CA** once: import `nas-feedops-sentinel\tls\edge-ca.crt` into the Windows certificate store, then sign in at https://localhost:8443.
+1. **Bring the stack up** from the repository root: `.\launch_nas_sentinel.ps1`. Add `-WithLiveFeed` if you have a SWIM subscription and want live FAA data on screen.
+2. **Trust the local CA** once: import `nas-feedops-sentinel\tls\edge-ca.crt` into the Windows certificate store. The dashboard, the API and Keycloak (which serves HTTPS only) all present certificates it signed.
+3. **Have an operator** with the `watch_officer` role: `.\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1`, then sign in at https://localhost:8443. For the auditor contrast in step 5, create a second login with `$env:APP_ROLES = 'auditor'` before running the script again.
 4. **Put something in the review queue.** Live PCT data is usually quiet: the ten-message capture in the test fixtures raises 14 alerts, none of them CRITICAL. Inject the labelled synthetic cascade failure. It is the same scenario the end-to-end proof uses and stages 15 CRITICAL alerts:
    ```powershell
    cd nas-feedops-sentinel
@@ -25,6 +25,7 @@ None of this counts against the five minutes.
 **Show:**
 - The **verdict** at the top: GREEN, AMBER or RED. It is computed by fixed rules from schema conformance, ingest lag and open CRITICAL alerts. No model is consulted, so the verdict can never disagree with the numbers under it.
 - The **yellow banner**: "Not all data here is live FAA feed data". It counts the synthetic events you just injected. Every event is tagged with where it came from at ingest, and a file or API client cannot label itself live.
+- The **AI investigation** card: five indicators for the latest investigation, no more. Evidence quality, confidence, investigation time, cost, and "Human review: Required". Every figure is measured from the record, not reported by the agents.
 - The **Watch Officer brief** sits below the verdict and is visibly subordinate to it: a narrative, not a verdict.
 
 ### 0:45 · Isolated or sector-wide? (Feed Health)
@@ -56,6 +57,7 @@ Open **AI Critic & Review** and go to the **Human review queue**.
   - *Established by the evidence*, *Contested* and *Verify before deciding*. Every statement lists the evidence ids it cites.
   - The **Red-Team Critic**, whose job is the strongest contradicting explanation. Its rule-based challenges cannot be removed by the model; here it challenges the alert precisely because the data is not live.
   - The footer line: the record's SHA-256 and "integrity verified", checked against the stored record as the page renders.
+- Expand **How this investigation was evaluated**: its quality, safety, cost, latency and audit gates, each with what decided it (an Agent Governance Toolkit component, or Sentinel's own check), and where the time and the money went.
 
 **Say:** "Four specialists worked this: a feed diagnostician and a correlation analyst in isolation, then a red-team critic, then the Watch Officer's synthesis. They never talk to each other. They write to one structured record, and a claim that doesn't cite collected evidence is rejected before the record can be sealed. If the model is down, every specialist falls back to its rules and the step log says so."
 
@@ -98,6 +100,9 @@ Staging never depends on the model, so every CRITICAL alert is queued anyway. Ea
 
 **Where does the data go?**
 Every model call goes through one LiteLLM gateway, redacted first, under a scoped key with a budget and a rate limit. The provider is a line of gateway configuration. For real FAA operational data it would be an authorized endpoint such as Bedrock GovCloud, Azure OpenAI Government, or on-premises vLLM or NIM.
+
+**How is the AI governed, and how do you know it is any good?**
+Every model call and every tool an agent uses is decided first by a Microsoft Agent Governance Toolkit policy: deny by default, audited, and no agent may decide, write or stage, whatever credentials it presents. Quality is never self-reported. The **Agent Evaluation & Governance** page measures grounding, accuracy against operator decisions, missed escalations, calibration, latency, cost and reliability from the record, and gives one verdict that `python -m src.readiness --gate` turns into a deployment gate. [agent-governance.md](agent-governance.md) walks through the eight boundaries.
 
 **How do you know the audit log wasn't edited?**
 The database refuses UPDATE and DELETE on it, and the application role cannot even try. Investigation records are sealed with SHA-256 and re-verified on display. The log is not yet hash-chained or signed; that is on the known-limits list.

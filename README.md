@@ -12,7 +12,8 @@ That question sets every design choice below: what to ingest, when to call a mod
 
 - [Boundaries](#boundaries) — the contract the rest of the repository serves
 - [How it works](#how-it-works) · [The stack](#the-stack) · [Run it](#run-it) · [Prove it](#prove-it)
-- [Five-minute walkthrough](nas-feedops-sentinel/docs/walkthrough.md) · [Operations guide](nas-feedops-sentinel/docs/operations.md)
+- [Five-minute walkthrough](nas-feedops-sentinel/docs/walkthrough.md) · [Operations guide](nas-feedops-sentinel/docs/operations.md) · [Operator playbook](nas-feedops-sentinel/docs/playbook.md) · [Runbooks](nas-feedops-sentinel/docs/runbooks.md)
+- [How AI is governed](nas-feedops-sentinel/docs/agent-governance.md): eight boundaries, the Sentinel ↔ AGT crosswalk, custom vs off the shelf · [Where every agent metric comes from](nas-feedops-sentinel/docs/agent-metrics.md)
 
 ---
 
@@ -23,6 +24,8 @@ That question sets every design choice below: what to ingest, when to call a mod
 **What a model may do.** Explain, summarize, and challenge. Every model call is budgeted per pass, time-limited, redacted first (callsigns, beacon codes, positions and raw payloads are stripped from prompts), and routed through one gateway. A model outage degrades to deterministic rules, and the record says so.
 
 **What a model may not do.** Stage, approve, reject or execute anything. Every CRITICAL alert is staged for human review by rules, whether the model answers, fails, returns garbage or is not configured, and no code path lets model output change an action's status.
+
+**How AI is governed.** The Microsoft Agent Governance Toolkit (AGT) decides every model call (`policies/model-use.yaml`) and every tool an agent uses (`policies/tool-use.yaml`) before it happens: deny by default, fail closed, every decision in AGT's audit log. No agent can decide, write or stage, whatever credentials it presents; the human gate stays at escalation. Execution is carried as OpenTelemetry (GenAI conventions, one definition for every model provider), and AGT computes the agent metrics wherever it computes them correctly. Agents never grade themselves: quality is judged from the grounding gate, the operator's recorded decision, the gateway's usage and cost, and the sealed record. [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md) walks through it boundary by boundary.
 
 **Who decides.** A signed-in operator with a Keycloak realm role: `watch_officer` (approve, reject, continue monitoring), `supervisor` (also override), `auditor` (read only). Buttons an operator may not use are disabled with the reason, and the execution gate re-checks the role before it writes anything.
 
@@ -103,8 +106,8 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 | | `api` | FastAPI: `/health`, `/v1/ready`, `/v1/ingest` |
 | | `temporal`, `temporal-worker`, `temporal-ui` | ingest and pipeline workflows started through the API |
 | | `dashboard` | the Streamlit operator console |
-| | `keycloak` (+ its own Postgres) | operator identity and realm roles |
-| | `prometheus`, `grafana` | metrics and alert rules |
+| | `keycloak` (+ its own Postgres) | operator identity and realm roles; serves HTTPS only |
+| | `prometheus`, `grafana` | metrics and alert rules, including the GenAI and AGT agent metrics (OTLP export optional) |
 | | `edge` | nginx: the only published entry point, HTTPS on 127.0.0.1 |
 
 Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit together is in [docs/operations.md](nas-feedops-sentinel/docs/operations.md).
@@ -173,7 +176,7 @@ PROOF PASSED
 
 ## Tests and CI
 
-The suite (365 tests at this writing) lives in `nas-feedops-sentinel/tests/` and runs against a real Postgres. It refuses to touch any database whose name is not marked disposable; see [nas-feedops-sentinel/README.md](nas-feedops-sentinel/README.md) for how to run it.
+The suite (about 490 tests at this writing, 18 of them strict xfails that document bugs in the Agent Governance Toolkit) lives in `nas-feedops-sentinel/tests/` and runs against a real Postgres. It refuses to touch any database whose name is not marked disposable; see [nas-feedops-sentinel/README.md](nas-feedops-sentinel/README.md) for how to run it.
 
 [CI](.github/workflows/pyapp-ci.yml) runs on every push and pull request:
 
@@ -197,9 +200,9 @@ Production agentic systems are judged less by model quality than by how they hol
 | | How the design answers it |
 |---|---|
 | **Latency** | Ingest, validation and alerting are deterministic and come first; the watcher polls every 2 s; a model runs only for CRITICAL alerts or when an operator asks the planner, and every call has a 90 s timeout. |
-| **Cost** | No model call per message. The Critic sees at most `MAX_CRITIC_PER_PASS` (default 5) CRITICAL alerts per pass and investigations use the model for at most `MAX_LLM_INVESTIGATIONS_PER_PASS` (default 3); the rest run on rules. The gateway key has a budget and a rate limit. |
+| **Cost** | No model call per message. The Critic sees at most `MAX_CRITIC_PER_PASS` (default 5) CRITICAL alerts per pass and investigations use the model for at most `MAX_LLM_INVESTIGATIONS_PER_PASS` (default 3); the rest run on rules. The gateway key has a budget and a rate limit, and every investigation is held to a cost, token and tool-call budget (AGT `BudgetTracker`). Spend is measured per call, investigation, alert and model. |
 | **Failure** | Every step degrades to rules and records that it did. Unreadable files go to `data/failed/` with a reason, one bad record fails its own file and never the scan, unstaged CRITICAL alerts are reconciled every minute, and nothing auto-executes. |
-| **Evaluation** | The test suite, a one-command end-to-end proof on real captures plus a labelled synthetic fault, schema guardrails on every model output, and Prometheus metrics with alert rules for unstaged alerts, a stale review queue, degraded feeds, missing ingest and model errors. |
+| **Evaluation** | An evaluation layer measures every investigation from the record: decision quality, grounding, unsupported claims, accuracy against operator decisions, missed and false escalations, calibration, latency by stage, cost, reliability by agent and provider, and quality, safety, cost, latency and audit gates. A readiness verdict (`python -m src.readiness --gate`) turns it into a deployment gate. The dashboard shows it in three layers: five indicators on the Overview, one investigation's gates on the Review page, and everything on Agent Evaluation & Governance. Plus the test suite, a one-command end-to-end proof, and alert rules. |
 
 ---
 
@@ -210,8 +213,10 @@ Production agentic systems are judged less by model quality than by how they hol
 - **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
 - **Decisions.** One approver per action; there is no four-eyes workflow.
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
-- **Sign-in.** The dashboard signs operators in with Keycloak's direct access grant. Keycloak stays the identity authority, but the dashboard process sees the password for one request, and a second factor would need the redirect flow.
-- **Evaluation.** The eval harness covers deterministic scenarios and guardrails; it does not yet measure alert precision or detection latency against labelled replays.
+- **Sign-in.** The dashboard signs operators in with Keycloak's direct access grant, over verified TLS. Keycloak stays the identity authority, but the dashboard process sees the password for one request, and a second factor would need the redirect flow. The certificates come from a local authority; a shared deployment needs an internal PKI.
+- **Evaluation.** Model behaviour is measured from real runs, but the readiness targets are starting points, not baselines, and a quiet feed produces too little evidence to judge ("insufficient data" is the honest answer). Alert precision and detection latency are not yet measured against labelled replays.
+- **AGT.** Thirteen bugs in agent-sre and agent-os-kernel 3.7.0 are worked around or replaced in-repo, each with a failing test ([docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md)); a draft upstream issue is in `docs/upstream/`. The error-budget verdict is in-repo until agent-sre's `ErrorBudget` is fixed.
+- **Telemetry.** OpenTelemetry export to a collector is configured, not bundled: no collector ships in the stack.
 
 ---
 
@@ -234,7 +239,7 @@ The goal was not to prove that an LLM can summarize aviation data. The goal was 
 
 ## Technical Outcomes
 
-> Built **PCT TAIS FeedOps Sentinel**, a Python system that monitors the trustworthiness of live FAA SWIM / STDDS data (TAIS, TDES, APDS, SMES) for PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit with single-consumer file claims and idempotent event identities; Pydantic-validated normalization; deterministic alert and feed-health rules; FAA data-handling rules (blockAtFAA withholding, beacon codes released only for active flight plans); a four-specialist investigation workflow whose claims must cite evidence and whose records are sealed; a human-in-the-loop gate with Keycloak role-based authorization and a database-enforced append-only audit log; and a Streamlit operator console. Designed around Latency, Cost, Failure and Evaluation constraints, with every model call budgeted, redacted and routed through a LiteLLM gateway under a scoped key, and secrets held in Vault behind per-service AppRoles. Backed by a 365-test suite and a one-command end-to-end proof, run in CI alongside a dependency CVE audit and a blocking container image scan.
+> Built **PCT TAIS FeedOps Sentinel**, a Python system that monitors the trustworthiness of live FAA SWIM / STDDS data (TAIS, TDES, APDS, SMES) for PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit with single-consumer file claims and idempotent event identities; Pydantic-validated normalization; deterministic alert and feed-health rules; FAA data-handling rules (blockAtFAA withholding, beacon codes released only for active flight plans); a four-specialist investigation workflow whose claims must cite evidence and whose records are sealed; a human-in-the-loop gate with Keycloak role-based authorization (HTTPS only) and a database-enforced append-only audit log; Microsoft Agent Governance Toolkit policies over every model call and every agent tool call, with agents barred from deciding; OpenTelemetry GenAI telemetry; an evaluation layer and readiness gate that measure the AI from the record rather than from its own account; and a Streamlit operator console. Designed around Latency, Cost, Failure and Evaluation constraints, with every model call budgeted, redacted and routed through a LiteLLM gateway under a scoped key, and secrets held in Vault behind per-service AppRoles. Backed by a test suite of about 490 tests and a one-command end-to-end proof, run in CI alongside a dependency CVE audit and a blocking container image scan.
 
 ---
 
@@ -245,10 +250,11 @@ launch_nas_sentinel.ps1   one-command local launcher (Windows / PowerShell)
 instraclustr/             infrastructure: Postgres, PgBouncer, Vault, LiteLLM
 nas-feedops-sentinel/     the application
   src/                    ingest, pipeline, alert rules, gate, investigation, storage, API, Temporal
-  dashboard/              the Streamlit console: Overview and five pages
+  dashboard/              the Streamlit console: Overview and six pages, including Agent Evaluation
+  policies/               AGT model-use and tool-use policies; readiness objectives and gate limits
   tests/                  the pytest suite, with real SWIM captures in fixtures/swim_kit/
   scripts/                end-to-end proof, Keycloak setup, diagnostics
-  docs/                   operations guide and the five-minute walkthrough
+  docs/                   operations, playbook, runbooks, walkthrough, agent governance and metrics
   jumpstart/              the FAA SCDS Jumpstart Kit (L3Harris/swim-jumpstart), a live-run
                           script and one custom output class
   keycloak/  monitoring/  prompts/  docker/
