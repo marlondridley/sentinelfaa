@@ -217,9 +217,15 @@ Fix the file, then restart the service. Policies are cached per process.
 `edge-certs` renews the edge and Keycloak certificates when they are within
 30 days of expiry, on every start. The local authority (`tls/edge-ca.crt`)
 lasts 10 years. To move to your own CA:
-1. replace `tls/edge.crt` / `edge.key` and `tls/keycloak.crt` /
+1. replace `tls/edge/edge.crt` / `edge.key` and `tls/keycloak/keycloak.crt` /
    `keycloak.key` (Keycloak's needs `keycloak` and `localhost` in its names);
-2. put your CA in `tls/edge-ca.crt`.
+2. put your CA in `tls/edge-ca.crt`; `edge-certs` copies it to
+   `tls/keycloak/` and `tls/trust/`.
+
+A `tls/` directory from before the per-container layout (certificates beside
+`edge-ca.crt`, or empty directories named `keycloak.crt` / `keycloak.key`
+that Docker created) is cleared by `edge-certs` on its next run; the
+authority is kept, so nothing needs trusting again.
 
 ### Send telemetry to a collector
 
