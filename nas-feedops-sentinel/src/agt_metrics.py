@@ -2,15 +2,20 @@
 Agent metrics: the Agent Governance Toolkit computes them, OpenTelemetry
 carries them.
 
-Every agent metric Sentinel reports comes from an AGT component (agent-sre or
-agent-os-kernel) unless this module says otherwise, next to the code that
-replaces it, with one of two reasons:
+Every metric is one of three kinds (CATEGORIES), and each reported value
+names its kind in its source label. A metric is adopted only after it is
+checked against its semantic definition, lifecycle, population, aggregation
+and the installed AGT implementation -- never on a similar name alone.
 
-  AGT bug       a test in tests/test_agt_known_bugs.py shows AGT returning the
-                wrong value. Those tests are strict xfails: when an AGT
-                release fixes the bug they start passing, the suite fails,
-                and the in-repo code here should be removed in favor of AGT.
-  no equivalent AGT has no metric that measures this.
+  AGT-native        AGT defines the semantic and implements it correctly;
+                    the value comes from an AGT component (agent-sre or
+                    agent-os-kernel).
+  AGT-compatible    AGT defines the semantic, but the installed version has
+                    a known defect, shown by a strict xfail in
+                    tests/test_agt_known_bugs.py. Sentinel supplies a
+                    validated calculation until an AGT release fixes it; the
+                    test then passes, the suite fails, and this code goes.
+  Sentinel-specific a mission or workflow outcome AGT does not define.
 
 How AGT is used safely: every window builds fresh AGT objects from the
 durable record (model_calls, sealed investigations, the audit log) and reads
@@ -41,6 +46,10 @@ with warnings.catch_warnings():
 
 PERCENTILES = (0.50, 0.95, 0.99)
 
+
+# The three kinds of metric, as the first word of every source label.
+AGT_NATIVE, AGT_COMPATIBLE, SENTINEL_SPECIFIC = "AGT-native", "AGT-compatible", "Sentinel-specific"
+CATEGORIES = (AGT_NATIVE, AGT_COMPATIBLE, SENTINEL_SPECIFIC)
 
 # ── Latency: agent-sre ResponseLatency ───────────────────────────────────────
 
@@ -277,7 +286,7 @@ def new_engine() -> EvaluationEngine:
     return EvaluationEngine(EvidenceJudge())
 
 
-# ── In-repo: AGT has a bug here, or no equivalent ────────────────────────────
+# ── AGT-compatible and Sentinel-specific ────────────────────────────
 
 def expected_calibration_error(pairs: Iterable[tuple[float, bool]], bins: int = 10) -> tuple[float | None, int]:
     """
@@ -317,7 +326,7 @@ def share(items: Iterable[Any], predicate: Callable[[Any], bool]) -> tuple[float
     """
     (share matching, count) for a rate AGT has no metric for -- false and
     missed escalations, overrides, contradictions, timeouts, retries,
-    fallbacks, schema failures. In-repo: no equivalent.
+    fallbacks, schema failures. Sentinel-specific.
     """
     items = list(items)
     if not items:

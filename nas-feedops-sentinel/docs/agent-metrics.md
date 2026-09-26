@@ -1,13 +1,30 @@
 # Agent metrics: where each one comes from
 
 The Microsoft Agent Governance Toolkit (AGT) computes and governs. OpenTelemetry
-carries the data to Prometheus or any OTLP collector. A metric is built in this
-repository only for one of two reasons:
+carries the data to Prometheus or any OTLP collector.
 
-- **AGT bug.** A test in `tests/test_agt_known_bugs.py` shows AGT returning
-  the wrong value. Those tests are strict xfails. If an AGT release fixes the
-  bug, the test passes, the suite fails, and the workaround can go.
-- **No equivalent.** AGT has no metric that measures this.
+A metric is not adopted because an AGT metric has a similar name. Each one is
+checked against:
+- its **semantic definition**: what it means, including which direction is good;
+- its **lifecycle**: which window it covers;
+- its **population**: what is counted, and what an empty population reads as;
+- its **aggregation**: how individual observations combine;
+- the **installed AGT implementation**: what version 3.7.0 actually returns.
+
+Each metric then falls into one of three categories, and every value and gate
+on the Agent Evaluation page names its category first in its **Source** column
+(`src/agt_metrics.py` `CATEGORIES`):
+
+- **AGT-native.** AGT defines the semantic and implements it correctly. The
+  value comes from the AGT component named, read only through the paths the
+  tests show to be correct.
+- **AGT-compatible.** AGT defines the semantic, but the installed version has
+  a known implementation defect, so Sentinel supplies a validated calculation.
+  A test in `tests/test_agt_known_bugs.py` shows each defect. Those tests are
+  strict xfails: if an AGT release fixes the bug, the test passes, the suite
+  fails, and the compatibility calculation can go.
+- **Sentinel-specific.** The metric is a mission or workflow outcome that AGT
+  does not define.
 
 Agents never grade themselves. The flow is: execution telemetry, then the
 evaluation layer, then quality metrics, then the dashboard. Every judgment
@@ -66,74 +83,74 @@ OpenAI and Claude are measured the same way.
 
 ## Metric by metric
 
-| Group | Metric | Source |
+| Group | Metric | Category and source |
 |---|---|---|
-| Decision quality | Decision quality score | AGT `EvaluationEngine` mean score over each investigation's evaluation suite |
-| | Evidence grounding | AGT `EvaluationEngine` hallucination-criterion score, judged by the grounding gate |
-| | Recommendation accuracy | AGT `EvaluationEngine` correctness-criterion score, judged against the operator's decision |
-| | False-escalation rate | in-repo: no equivalent |
-| | Missed-escalation rate | in-repo: no equivalent |
-| | Confidence calibration (ECE) | in-repo: AGT bug `test_agt_calibration_delta_detects_offsetting_miscalibration` |
-| | Contradiction rate | in-repo: no equivalent |
-| | Unsupported-claim rate | AGT `HallucinationRate` via `collect()`, one evaluation per model claim, judged by the grounding gate |
-| | Human override rate | in-repo: no equivalent |
-| | Evidence improvement | in-repo: no equivalent |
-| Latency | Per agent, P50/P95/P99 | AGT `ResponseLatency`; live AGT `agent.task.duration` |
-| | Per investigation (end-to-end) | AGT `ResponseLatency`; live OTel `invoke_workflow` span |
-| | Model time | AGT `ResponseLatency`; live OTel `gen_ai.client.operation.duration` and AGT `agent.llm.latency` |
-| | Tool / evidence-retrieval time | AGT `ResponseLatency` over evidence collection; live AGT `agent.tool.latency` |
-| | Handoff time | in-repo: no equivalent |
-| | Queue time (alert to investigation) | AGT `ResponseLatency` |
-| | Time to human decision | AGT `ResponseLatency` |
-| | Timeout rate | in-repo: no equivalent (AGT has no provider error taxonomy) |
-| | Retry rate | in-repo: no equivalent |
-| Cost | Tokens in / out / total | measured by the gateway; live OTel `gen_ai.client.token.usage`; per investigation AGT `BudgetTracker` |
-| | Per invocation, by role | AGT `CostGuard` |
-| | Per investigation | AGT `CostGuard` |
-| | Per alert | AGT `CostGuard` |
-| | Per resolved investigation | in-repo: no equivalent (all spend divided by the resolved subset) |
-| | Per useful evidence item | in-repo: no equivalent |
-| | By model | AGT `CostGuard`, keyed by served model |
-| | Retry cost, failed-call cost | in-repo: no equivalent |
-| Reliability | Success and failure rate, per agent and overall | AGT `FleetManager` |
-| | Provider availability | AGT `FleetManager`, keyed by provider |
-| | Timeout, retry and fallback rates | in-repo: no equivalent |
-| | Schema / validation failures, malformed output | in-repo: no equivalent (outcome classes in `src/model_telemetry.py`) |
-| | Investigation completion | AGT `TaskSuccessRate` via `collect()` |
-| Orchestration | Agents invoked | AGT `FleetManager`; live AGT `agent.tasks.total` |
-| | Tool calls | AGT `BudgetTracker`; live AGT `agent.tool_calls.total` |
-| | Handoffs | in-repo: no equivalent |
-| | Dependency failures | in-repo: no equivalent |
-| | Duplicate work | in-repo: no equivalent |
-| | Dead-end investigations | in-repo: no equivalent |
-| | Context size and growth | in-repo: no equivalent |
-| | Max depth | AGT `DelegationChainDepth` |
-| | Termination reason | in-repo: no equivalent |
-| Governance gates | Quality | AGT `EvaluationEngine` report with grounding as a required criterion, plus the in-repo traceability check (no equivalent) |
-| | Safety | AGT `PolicyEvaluator` decisions, audited through `GovernanceAuditLogger`, plus an in-repo check that only a verified human decided (no equivalent: AGT's `EscalationManager` is in-memory, not a durable RBAC-verified decision) |
-| | Cost | AGT `BudgetTracker` (`max_cost_usd`, `max_tokens`, `max_tool_calls`) |
-| | Latency | AGT `BudgetTracker` (`max_duration_seconds`) |
-| | Audit | in-repo: no equivalent (sealed-record SHA-256, provenance hashes, complete call records) |
-| | Policy compliance rate | AGT `GovernanceMetrics` |
-| Readiness | Error budget, verdict | in-repo `src/readiness.py`: AGT bugs `test_agt_error_budget_one_failure_in_a_hundred_is_not_exhausted`, `test_agt_error_budget_burn_rate_is_error_rate_over_allowed_rate`, `test_agt_slo_at_99_percent_against_95_is_not_exhausted` |
+| Decision quality | Decision quality score | AGT-native: `EvaluationEngine` mean score over each investigation's evaluation suite |
+| | Evidence grounding | AGT-native: `EvaluationEngine` hallucination-criterion score, judged by the grounding gate |
+| | Recommendation accuracy | AGT-native: `EvaluationEngine` correctness-criterion score, judged against the operator's decision |
+| | False-escalation rate | Sentinel-specific |
+| | Missed-escalation rate | Sentinel-specific |
+| | Confidence calibration (ECE) | AGT-compatible: ECE, while AGT `CalibrationDeltaSLI` has bug G |
+| | Contradiction rate | Sentinel-specific |
+| | Unsupported-claim rate | AGT-native: `HallucinationRate` via `collect()`, one evaluation per model claim, judged by the grounding gate |
+| | Human override rate | Sentinel-specific |
+| | Evidence improvement | Sentinel-specific |
+| Latency | Per agent, P50/P95/P99 | AGT-native: `ResponseLatency`; live AGT `agent.task.duration` |
+| | Per investigation (end-to-end) | AGT-native: `ResponseLatency`; live OTel `invoke_workflow` span |
+| | Model time | AGT-native: `ResponseLatency`; live OTel `gen_ai.client.operation.duration` and AGT `agent.llm.latency` |
+| | Tool / evidence-retrieval time | AGT-native: `ResponseLatency` over evidence collection; live AGT `agent.tool.latency` |
+| | Handoff time | Sentinel-specific |
+| | Queue time (alert to investigation) | AGT-native: `ResponseLatency` |
+| | Time to human decision | AGT-native: `ResponseLatency` |
+| | Timeout rate | Sentinel-specific (AGT has no provider error taxonomy) |
+| | Retry rate | Sentinel-specific |
+| Cost | Tokens in / out / total | AGT-native: `BudgetTracker` per investigation, over the gateway's counts; live OTel `gen_ai.client.token.usage` |
+| | Per invocation, by role | AGT-native: `CostGuard` |
+| | Per investigation | AGT-native: `CostGuard` |
+| | Per alert | AGT-native: `CostGuard` |
+| | Per resolved investigation | Sentinel-specific (all spend divided by the resolved subset) |
+| | Per useful evidence item | Sentinel-specific |
+| | By model | AGT-native: `CostGuard`, keyed by served model |
+| | Retry cost, failed-call cost | Sentinel-specific |
+| Reliability | Success and failure rate, per agent and overall | AGT-native: `FleetManager` |
+| | Provider availability | AGT-native: `FleetManager`, keyed by provider |
+| | Timeout, retry and fallback rates | Sentinel-specific |
+| | Schema / validation failures, malformed output | Sentinel-specific (outcome classes in `src/model_telemetry.py`) |
+| | Investigation completion | AGT-native: `TaskSuccessRate` via `collect()` |
+| Orchestration | Agents invoked | AGT-native: `FleetManager`; live AGT `agent.tasks.total` |
+| | Tool calls | AGT-native: `BudgetTracker`; live AGT `agent.tool_calls.total` |
+| | Handoffs | Sentinel-specific |
+| | Dependency failures | Sentinel-specific |
+| | Duplicate work | Sentinel-specific |
+| | Dead-end investigations | Sentinel-specific |
+| | Context size and growth | Sentinel-specific |
+| | Max depth | AGT-native: `DelegationChainDepth` |
+| | Termination reason | Sentinel-specific |
+| Governance gates | Quality | AGT-native: `EvaluationEngine` report with grounding as a required criterion, plus a Sentinel-specific evidence-id traceability check |
+| | Safety | AGT-native: `PolicyEvaluator` decisions, audited through `GovernanceAuditLogger`, plus a Sentinel-specific check that only a verified human decided (AGT's `EscalationManager` is in-memory, not a durable RBAC-verified decision) |
+| | Cost | AGT-native: `BudgetTracker` (`max_cost_usd`, `max_tokens`, `max_tool_calls`) |
+| | Latency | AGT-native: `BudgetTracker` (`max_duration_seconds`) |
+| | Audit | Sentinel-specific (sealed-record SHA-256, provenance hashes, complete call records) |
+| | Policy compliance rate | AGT-native: `GovernanceMetrics` |
+| Readiness | Error budget, verdict | AGT-compatible: `src/readiness.py`, while AGT `ErrorBudget` and `SLO` have bugs A and B |
 
 ## AGT bugs, with the test that shows each
 
 All against 3.7.0. Each is a strict xfail in `tests/test_agt_known_bugs.py`.
 
-| | Component | Bug | Test | Sentinel's answer |
-|---|---|---|---|---|
-| A | agent-sre `ErrorBudget.record_event()` | adds 1.0 per failure against a budget of `1 - target` | `test_agt_error_budget_one_failure_in_a_hundred_is_not_exhausted` | in-repo readiness evaluator |
-| B | agent-sre `ErrorBudget.burn_rate()` | divides the budget by the window in seconds | `test_agt_error_budget_burn_rate_is_error_rate_over_allowed_rate` | in-repo readiness evaluator |
-| — | agent-sre `SLO.evaluate()` | EXHAUSTED at 99% against 95%, because of A | `test_agt_slo_at_99_percent_against_95_is_not_exhausted` | in-repo readiness evaluator |
-| C | agent-sre `TaskSuccessRate`, `ToolCallAccuracy`, `PolicyCompliance`, `HallucinationRate` | `current_value()` averages running rates: 99% reads as 94.8%, 1% as 5.2% | `test_agt_rate_sli_current_value_is_the_rate[...]`, `test_agt_hallucination_rate_current_value_is_the_rate` | a fresh SLI per window, read through `collect()` |
-| D | agent-sre `CostPerTask` | `current_value()` averages running averages | `test_agt_cost_per_task_current_value_is_the_mean_cost` | `CostGuard` |
-| E | agent-sre `ResponseLatency` | `current_value()` ignores its window | `test_agt_latency_outside_the_window_is_not_current` | a fresh instance per window |
-| F | agent-sre `ResponseLatency`, `CostPerTask` | `compliance()` treats lower-is-better values as higher-is-better | `test_agt_latency_under_its_target_is_compliant`, `test_agt_cost_under_its_target_is_compliant` | `compliance()` never read; grading in `src/readiness.py` |
-| G | agent-sre `CalibrationDeltaSLI` | over- and under-confidence cancel | `test_agt_calibration_delta_detects_offsetting_miscalibration` | in-repo ECE (`src/agt_metrics.py`) |
-| H | agent-sre `EvaluationEngine` | `pass_rate()` and `average_score()` are 0.0 with no evaluations | `test_agt_evaluation_engine_with_no_evaluations_has_no_score` | "no data" when the history is empty |
-| I | agent-sre `EvaluationEngine.get_stats()` | leaves out a criterion that always scores 0 | `test_agt_evaluation_stats_keep_a_criterion_that_always_fails` | `get_stats()` never read |
-| J | agent-sre `EvaluationEngine.run()` | a judge error on a required criterion does not fail the report | `test_agt_a_required_criterion_the_judge_could_not_evaluate_fails_the_report` | a judge error on a required criterion fails the report |
-| K | agent-os-kernel `PolicyDocument` | ignores unknown keys (`rule:` for `rules:` loads with no rules) | `test_agt_policy_document_rejects_an_unknown_key` | `src/governance.py` refuses the policy |
-| L | agent-os-kernel `PolicyDocument` | defaults to allow when `defaults` is absent | `test_agt_policy_document_without_defaults_does_not_allow_everything` | `src/governance.py` refuses the policy |
-| M | agent-os-kernel `PolicyEvaluator` | `PolicyDocument.tool_allowlist` is documented as enforced by the evaluator, and never read | `test_agt_policy_evaluator_enforces_the_tool_allowlist` | tool access is written as rules (`policies/tool-use.yaml`); `src/governance.py` refuses a policy that sets `tool_allowlist` |
+| | Component | Bug | Fails on | Test | Sentinel's answer |
+|---|---|---|---|---|---|
+| A | agent-sre `ErrorBudget.record_event()` | adds 1.0 per failure against a budget of `1 - target` | aggregation | `test_agt_error_budget_one_failure_in_a_hundred_is_not_exhausted` | AGT-compatible: `src/readiness.py` |
+| B | agent-sre `ErrorBudget.burn_rate()` | divides the budget by the window in seconds | aggregation | `test_agt_error_budget_burn_rate_is_error_rate_over_allowed_rate` | AGT-compatible: `src/readiness.py` |
+| — | agent-sre `SLO.evaluate()` | EXHAUSTED at 99% against 95%, because of A | aggregation | `test_agt_slo_at_99_percent_against_95_is_not_exhausted` | AGT-compatible: `src/readiness.py` |
+| C | agent-sre `TaskSuccessRate`, `ToolCallAccuracy`, `PolicyCompliance`, `HallucinationRate` | `current_value()` averages running rates: 99% reads as 94.8%, 1% as 5.2% | aggregation | `test_agt_rate_sli_current_value_is_the_rate[...]`, `test_agt_hallucination_rate_current_value_is_the_rate` | a fresh SLI per window, read through `collect()` |
+| D | agent-sre `CostPerTask` | `current_value()` averages running averages | aggregation | `test_agt_cost_per_task_current_value_is_the_mean_cost` | `CostGuard` |
+| E | agent-sre `ResponseLatency` | `current_value()` ignores its window | lifecycle | `test_agt_latency_outside_the_window_is_not_current` | a fresh instance per window |
+| F | agent-sre `ResponseLatency`, `CostPerTask` | `compliance()` treats lower-is-better values as higher-is-better | semantic definition | `test_agt_latency_under_its_target_is_compliant`, `test_agt_cost_under_its_target_is_compliant` | `compliance()` never read; grading in `src/readiness.py` |
+| G | agent-sre `CalibrationDeltaSLI` | over- and under-confidence cancel | aggregation | `test_agt_calibration_delta_detects_offsetting_miscalibration` | AGT-compatible: ECE (`src/agt_metrics.py`) |
+| H | agent-sre `EvaluationEngine` | `pass_rate()` and `average_score()` are 0.0 with no evaluations | population | `test_agt_evaluation_engine_with_no_evaluations_has_no_score` | "no data" when the history is empty |
+| I | agent-sre `EvaluationEngine.get_stats()` | leaves out a criterion that always scores 0 | population | `test_agt_evaluation_stats_keep_a_criterion_that_always_fails` | `get_stats()` never read |
+| J | agent-sre `EvaluationEngine.run()` | a judge error on a required criterion does not fail the report | semantic definition | `test_agt_a_required_criterion_the_judge_could_not_evaluate_fails_the_report` | a judge error on a required criterion fails the report |
+| K | agent-os-kernel `PolicyDocument` | ignores unknown keys (`rule:` for `rules:` loads with no rules) | implementation (policy loading) | `test_agt_policy_document_rejects_an_unknown_key` | `src/governance.py` refuses the policy |
+| L | agent-os-kernel `PolicyDocument` | defaults to allow when `defaults` is absent | implementation (policy default) | `test_agt_policy_document_without_defaults_does_not_allow_everything` | `src/governance.py` refuses the policy |
+| M | agent-os-kernel `PolicyEvaluator` | `PolicyDocument.tool_allowlist` is documented as enforced by the evaluator, and never read | implementation (documented control never enforced) | `test_agt_policy_evaluator_enforces_the_tool_allowlist` | tool access is written as rules (`policies/tool-use.yaml`); `src/governance.py` refuses a policy that sets `tool_allowlist` |

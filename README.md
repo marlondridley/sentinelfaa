@@ -193,6 +193,32 @@ Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.
 
 ---
 
+## AI Governance and Evaluation
+
+Sentinel separates mission execution from AI governance.
+
+The deterministic mission pipeline remains responsible for ingesting SWIM data, validating messages, determining alert conditions, managing escalation state, and enforcing human-controlled execution gates.
+
+Model-backed investigation roles operate through the common LLM client and are instrumented with provider-neutral telemetry. OpenTelemetry provides the common telemetry layer across model providers.
+
+The Microsoft Agent Governance Toolkit (AGT) provides standardized governance, evaluation, and SRE primitives for model-backed agent execution. Sentinel does not assume that an AGT metric with a similar name automatically represents the corresponding operational metric. Each metric is validated against its semantic definition, lifecycle, population, aggregation, and installed AGT implementation before it is adopted.
+
+Metrics therefore fall into three categories:
+
+- **AGT-native:** AGT defines and correctly implements the required semantic.
+- **AGT-compatible:** AGT defines the required semantic, but Sentinel temporarily supplies a validated compatibility calculation when the installed AGT version contains a known implementation defect.
+- **Sentinel-specific:** the metric represents a mission or workflow outcome that AGT does not define.
+
+AGT evaluates agent behavior; it does not provide the operational ground truth for that behavior. Agent outputs are evaluated against independently available evidence, deterministic results, or recorded human outcomes.
+
+Agents remain advisory. They cannot approve an escalation, stage an operational action, or override a human decision. The execution gate remains the authority for role-checked operational decisions.
+
+This separation allows Sentinel to standardize AI governance across different model providers without allowing the governance framework to redefine mission-specific operational semantics.
+
+Every metric and gate check on the Agent Evaluation page names its category in its **Source** column. Each metric's category, and the AGT defect behind each AGT-compatible one, is in [docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md); how each boundary is enforced, and which test proves it, is in [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md).
+
+---
+
 ## Latency, Cost, Failure, Evaluation
 
 Production agentic systems are judged less by model quality than by how they hold up against four operational constraints.
@@ -215,7 +241,7 @@ Production agentic systems are judged less by model quality than by how they hol
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
 - **Sign-in.** The dashboard signs operators in with Keycloak's direct access grant, over verified TLS. Keycloak stays the identity authority, but the dashboard process sees the password for one request, and a second factor would need the redirect flow. The certificates come from a local authority; a shared deployment needs an internal PKI.
 - **Evaluation.** Model behaviour is measured from real runs, but the readiness targets are starting points, not baselines, and a quiet feed produces too little evidence to judge ("insufficient data" is the honest answer). Alert precision and detection latency are not yet measured against labelled replays.
-- **AGT.** Thirteen bugs in agent-sre and agent-os-kernel 3.7.0 are worked around or replaced in-repo, each with a failing test ([docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md)); a draft upstream issue is in `docs/upstream/`. The error-budget verdict is in-repo until agent-sre's `ErrorBudget` is fixed.
+- **AGT.** Thirteen bugs in agent-sre and agent-os-kernel 3.7.0 are worked around, each with a failing test ([docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md)); a draft upstream issue is in `docs/upstream/`. The metrics they affect are AGT-compatible: Sentinel computes them, including the error-budget verdict, until the installed AGT is fixed.
 - **Telemetry.** OpenTelemetry export to a collector is configured, not bundled: no collector ships in the stack.
 
 ---
