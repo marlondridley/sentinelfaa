@@ -6,9 +6,16 @@
 #                and the dashboard use one secret. If both exist and differ,
 #                this stops rather than overwrite either.
 #                KEYCLOAK_DB_PASSWORD is generated if absent.
-#   2. Keycloak  keycloak-postgres + keycloak are started; the realm and the
-#                dashboard client are imported from keycloak/realm-nas-sentinel.json.
+#   2. Keycloak  the local certificates are issued (edge-certs: tls/edge-ca.crt
+#                and a certificate for Keycloak), then keycloak-postgres +
+#                keycloak are started. Keycloak serves HTTPS only; the realm and
+#                the dashboard client are imported from keycloak/realm-nas-sentinel.json.
 #   3. Operator  one login in the nas-sentinel realm (you choose it now).
+#
+# This script talks to https://localhost:8081, so Windows must trust
+# tls/edge-ca.crt (once, in Cert:\CurrentUser\Root). It checks, and tells you
+# the one command to run if it is not trusted yet; it does not change your
+# certificate store itself.
 #
 # -PrepareOnly runs step 1 only. Safe to re-run. Secrets are never printed
 # and never placed on a command line.
@@ -85,18 +92,30 @@ if (-not $adminPw) { throw "KEYCLOAK_ADMIN_PASSWORD is missing from $envFile" }
 if ($PrepareOnly) { Write-Host "Prepared .env (-PrepareOnly: Keycloak not started)."; return }
 
 # -- 2. Keycloak --------------------------------------------------------------
-Write-Host "Starting keycloak-postgres and keycloak (production mode)..." -ForegroundColor Yellow
+Write-Host "Issuing local certificates (edge-certs)..." -ForegroundColor Yellow
+docker compose -f $composeFile --env-file $envFile up edge-certs
+if ($LASTEXITCODE -ne 0) { throw "edge-certs could not issue the certificates (exit $LASTEXITCODE)." }
+$caFile = Join-Path (Join-Path $appDir 'tls') 'edge-ca.crt'
+if (-not (Test-Path $caFile)) { throw "Missing $caFile after edge-certs ran." }
+$ca = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $caFile
+if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object Thumbprint -eq $ca.Thumbprint)) {
+    throw ("Windows does not trust the local certificate authority yet, so https://localhost:8081 " +
+           "cannot be verified. Trust it once, then re-run this script:`n" +
+           "  Import-Certificate -FilePath `"$caFile`" -CertStoreLocation Cert:\CurrentUser\Root")
+}
+
+Write-Host "Starting keycloak-postgres and keycloak (production mode, HTTPS only)..." -ForegroundColor Yellow
 docker compose -f $composeFile --env-file $envFile up -d keycloak-postgres keycloak
 if ($LASTEXITCODE -ne 0) { throw "docker compose could not start Keycloak (exit $LASTEXITCODE)." }
 
 Write-Host "Waiting for the nas-sentinel realm (first start builds and imports; up to 3 minutes)..." -ForegroundColor Yellow
 $ready = $false
 for ($i = 0; $i -lt 90; $i++) {
-    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 'http://localhost:8081/realms/nas-sentinel' | Out-Null; $ready = $true; break }
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 'https://localhost:8081/realms/nas-sentinel' | Out-Null; $ready = $true; break }
     catch { Start-Sleep -Seconds 2 }
 }
-if (-not $ready) { throw "Realm nas-sentinel did not come up on http://localhost:8081. Check: docker logs nas-keycloak --tail 50" }
-Write-Host "  realm nas-sentinel is up" -ForegroundColor Green
+if (-not $ready) { throw "Realm nas-sentinel did not come up on https://localhost:8081. Check: docker logs nas-keycloak --tail 50" }
+Write-Host "  realm nas-sentinel is up (HTTPS, certificate verified)" -ForegroundColor Green
 
 # -- 3. Operator login --------------------------------------------------------
 $defaultUser = $env:USERNAME
@@ -129,12 +148,14 @@ finally {
 }
 
 # -- 4. Proof -----------------------------------------------------------------
-$disc = Invoke-RestMethod 'http://localhost:8081/realms/nas-sentinel/.well-known/openid-configuration'
+$disc = Invoke-RestMethod 'https://localhost:8081/realms/nas-sentinel/.well-known/openid-configuration'
 Write-Host ""
 Write-Host "Keycloak is ready. The browser will be sent to:" -ForegroundColor Green
 Write-Host "  issuer                 : $($disc.issuer)"
 Write-Host "  authorization_endpoint : $($disc.authorization_endpoint)"
 Write-Host ""
 Write-Host "Next: docker compose --env-file .env up -d dashboard   (picks up the new settings)" -ForegroundColor Cyan
-Write-Host "Then open http://localhost:8501 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
-Write-Host "Keycloak admin console: http://localhost:8081/admin  (user 'admin', KEYCLOAK_ADMIN_PASSWORD)" -ForegroundColor DarkGray
+Write-Host "  .streamlit/secrets.toml must use server_metadata_url = https://keycloak:8443/... and" -ForegroundColor Cyan
+Write-Host "  ca_file = /run/tls/edge-ca.crt (see .streamlit/secrets.toml.example)." -ForegroundColor Cyan
+Write-Host "Then open https://localhost:8443 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
+Write-Host "Keycloak admin console: https://localhost:8081/admin  (user 'admin', KEYCLOAK_ADMIN_PASSWORD)" -ForegroundColor DarkGray

@@ -32,6 +32,7 @@ from src import config
 from src.swim_file_ingest import (
     SCAN_EXTENSIONS,
     _JMS_PROPERTY_RE,
+    WithheldMessage,
     _normalise_record,
     _parse_file,
     _service_from_mex,
@@ -650,3 +651,116 @@ def test_a_read_only_folder_is_still_ingested_in_place(tmp_path: Path, monkeypat
         folder.chmod(stat.S_IRWXU)
     assert stats.files_processed == 1 and len(events) == 1
     assert (folder / "1787863348274").exists(), "left in place on a read-only mount"
+
+
+# ── FAA data-handling flags ───────────────────────────────────────────────────
+#
+# blockAtFAA: every captured message says false, so these tests set it on a
+# copy of a real capture. See _honor_block_at_faa() for why true is withheld,
+# absent is not flagged, and anything else fails closed.
+
+_FLAGGED = CAPTURE / "1787863346109"   # TDES departure at KDCA: yields one event
+_FLAG_LINE = "Property name = blockAtFAA; value = false\n"
+
+
+def _with_block_flag(directory: Path, value: str | None) -> Path:
+    """The real capture with blockAtFAA set to `value` (None removes the header)."""
+    text = _FLAGGED.read_text(encoding="utf-8")
+    assert _FLAG_LINE in text
+    replacement = "" if value is None else f"Property name = blockAtFAA; value = {value}\n"
+    path = directory / _FLAGGED.name
+    path.write_text(text.replace(_FLAG_LINE, replacement), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("value", ["false", "False", None])
+def test_block_at_faa_false_or_absent_is_ingested(tmp_path: Path, value):
+    records, error = _parse_file(_with_block_flag(tmp_path, value))
+    assert error is None
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE"])
+def test_block_at_faa_true_withholds_the_message(tmp_path: Path, value):
+    with pytest.raises(WithheldMessage):
+        _parse_file(_with_block_flag(tmp_path, value))
+
+
+@pytest.mark.parametrize("value", ["yes", "1", ""])
+def test_unrecognised_block_at_faa_value_fails_closed(tmp_path: Path, value):
+    records, error = _parse_file(_with_block_flag(tmp_path, value))
+    assert records == []
+    assert "blockAtFAA" in error
+
+
+def test_a_flagged_message_with_no_body_is_withheld_not_summarised(tmp_path: Path):
+    """The headers-only fallback would otherwise turn it into a metadata event."""
+    path = tmp_path / "1789928000099"
+    path.write_text(
+        "Property name = mex; value = TAIS\nProperty name = blockAtFAA; value = true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(WithheldMessage):
+        _parse_file(path)
+
+
+def test_scan_archives_a_withheld_message_and_records_why(tmp_path: Path, monkeypatch):
+    from prometheus_client import REGISTRY
+
+    from src import swim_file_ingest
+
+    logged: list[dict] = []
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", logged.append)
+    src_dir, processed, failed = tmp_path / "in", tmp_path / "processed", tmp_path / "failed"
+    src_dir.mkdir()
+    _with_block_flag(src_dir, "true")
+    before = REGISTRY.get_sample_value("nas_swim_messages_withheld_total") or 0.0
+
+    events, stats = swim_file_ingest.scan_swim_folder(
+        src_dir, processed_dir=processed, failed_dir=failed
+    )
+
+    assert events == []
+    assert (stats.files_withheld, stats.files_failed, stats.files_processed) == (1, 0, 0)
+    assert list(failed.iterdir()) == [], "withheld is not a parse failure"
+    assert (processed / _FLAGGED.name).exists(), "archived, so it is not rescanned"
+    assert [(e["status"], e["error"]) for e in logged] == [("withheld", "blockAtFAA=true")]
+    assert REGISTRY.get_sample_value("nas_swim_messages_withheld_total") == before + 1
+
+
+# Beacon codes: FAA STDDS beacon code notice (2017-10-11). A TAIS flight plan's
+# codes are released only once the plan is active.
+
+def _tais_records(tmp_path: Path, record: dict) -> list[dict]:
+    path = _kit_file(tmp_path, "1789928000100", "TAIS", "FP",
+                     {"ns2:TATrackAndFlightPlan": {"record": [record]}})
+    records, error = _parse_file(path)
+    assert error is None
+    return records
+
+
+@pytest.mark.parametrize("status, expected", [
+    ("active", "4521"),
+    ("ACTIVE", "4521"),
+    ("pending", None),
+    ("passive", None),
+    (None, None),
+])
+def test_tais_beacon_code_is_kept_only_for_an_active_flight_plan(tmp_path: Path, status, expected):
+    flight_plan = {"airport": "KDCA", "acid": "AAL123", "assignedBeaconCode": "4521"}
+    if status is not None:
+        flight_plan["status"] = status
+    records = _tais_records(tmp_path, {
+        "flightPlan": flight_plan,
+        "track": {"reportedBeaconCode": "4521", "lat": 38.85, "lon": -77.04},
+    })
+    assert [r["beacon_code"] for r in records] == [expected]
+
+
+def test_tais_track_without_a_flight_plan_keeps_its_reported_code(tmp_path: Path):
+    records = _tais_records(tmp_path, {
+        "enhancedData": {"destinationAirport": "KDCA"},
+        "track": {"reportedBeaconCode": "1200", "lat": 38.85, "lon": -77.04},
+    })
+    assert [r["beacon_code"] for r in records] == ["1200"]

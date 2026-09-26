@@ -16,11 +16,13 @@ PgBouncer, Vault, LiteLLM), waits for them, then starts this stack. In this
 stack, `migrate` runs first and every application service waits for it to
 finish successfully.
 
-The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`,
-with a self-signed certificate for localhost written to `./tls/` by
-`python -m src.devcert` on first start (kept across restarts). Trust
-`tls/edge.crt` once in the Windows certificate store to silence the browser
-warning, or replace the pair with a certificate from your CA.
+The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`.
+On first start `python -m src.devcert` creates a local certificate authority
+in `./tls/` (`edge-ca.crt`, kept across restarts) and signs two server
+certificates with it: the edge proxy's (localhost) and Keycloak's (keycloak,
+localhost, 127.0.0.1). Each is re-issued when missing or near expiry. Trust
+`tls/edge-ca.crt` once in the Windows certificate store and renewals stay
+trusted, or replace the pairs with certificates from your own CA.
 
 | Service | URL |
 |---|---|
@@ -29,9 +31,20 @@ warning, or replace the pair with a certificate from your CA.
 | Grafana | https://localhost:8445 |
 | Temporal UI | https://localhost:8446 |
 | Prometheus (and its alerts) | https://localhost:8447/alerts |
-| Keycloak admin (HTTP, loopback) | http://localhost:8081/admin |
+| Keycloak admin (HTTPS, loopback) | https://localhost:8081/admin |
 
-Internal traffic between containers stays plain HTTP on `nas-network`, which
+The identity service is HTTPS end to end. Keycloak terminates TLS itself
+(`KC_HTTP_ENABLED=false`); the dashboard's sign-in reaches it at
+`https://keycloak:8443` and verifies it against `tls/edge-ca.crt`
+(`KEYCLOAK_CA_FILE`), and refuses an `http://` identity URL outright,
+because the sign-in sends the operator's password. Keycloak's health check
+runs over TLS too (`keycloak/TlsHealth.java`; the image has no curl).
+Upgrading from the HTTP setup: in `.streamlit/secrets.toml` set
+`server_metadata_url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"`
+and `ca_file = "/run/tls/edge-ca.crt"`, then recreate `edge-certs`,
+`keycloak` and `dashboard`.
+
+Other traffic between containers stays plain HTTP on `nas-network`, which
 nothing outside the host can reach. The API's `/metrics` and `/docs` are not
 routed by the proxy.
 
@@ -103,6 +116,17 @@ docstring for what each step asserts.
   aggregates spanning origins). The dashboard warns on every page when
   non-live data is present, the review queue labels non-live actions, and the
   Red-Team Critic challenges any alert that is not from the live feed.
+* **blockAtFAA.** A message whose `blockAtFAA` JMS property is `true` is
+  withheld: nothing from it is stored, shown or sent to a model. The file is
+  archived to `data/processed/`, logged in `ingest_log` with status
+  `withheld`, and counted in `nas_swim_messages_withheld_total`. Any value
+  other than `true`/`false` fails the file into `data/failed/`; an absent
+  property is not a flag (the kit writes properties only with
+  `-Dheaders=true`).
+* **Beacon codes.** Per the FAA's STDDS beacon code notice (2017-10-11), a
+  TAIS flight plan's beacon code is stored and shown only once the plan is
+  active; Pending, Passive, missing or unknown status withholds it. A track
+  with no flight plan keeps the code its own transponder broadcasts.
 
 ## Escalation integrity
 
@@ -115,11 +139,58 @@ by hand with `python -m src.reconcile`.
 
 ## Alerts
 
-Rules are in `monitoring/alert-rules.yml`: unstaged CRITICAL alerts, a stale
-review queue, degraded airport feeds, no ingest for 30 minutes, a high model
-error rate, and scrape targets down. Prometheus evaluates them and shows them
-at https://localhost:8447/alerts. No Alertmanager is configured yet, so
-nothing pages anyone.
+Rules are in `monitoring/alert-rules.yml`; each has a runbook in
+`docs/runbooks.md`. They cover:
+- unstaged CRITICAL alerts;
+- a stale review queue;
+- degraded airport feeds;
+- no ingest for 30 minutes;
+- model errors, both the legacy `nas_llm_*` series and the GenAI
+  `error.type`;
+- model p95 latency;
+- agents falling back to rules;
+- model calls refused by policy;
+- an agent blocked from deciding or writing;
+- scrape targets down.
+
+Prometheus evaluates them and shows them at https://localhost:8447/alerts.
+No Alertmanager is configured yet, so nothing pages anyone. Grafana's
+"Agents" row charts the GenAI and AGT metrics.
+
+## Agent governance, telemetry and evaluation
+
+How the AI layer is governed, boundary by boundary, is
+`docs/agent-governance.md`. Which component computes each metric is
+`docs/agent-metrics.md`. Operationally:
+
+* **Policies.** Both are Microsoft Agent Governance Toolkit (AGT) policies,
+  deny by default:
+  - `policies/model-use.yaml` decides every model call;
+  - `policies/tool-use.yaml` decides every tool an agent uses.
+
+  A policy that fails to load refuses every call. Changes are code changes;
+  the tests pin every decision.
+* **Telemetry.** OpenTelemetry (`src/telemetry.py`) with the GenAI
+  conventions:
+  - traces: `invoke_workflow`, `invoke_agent`, `chat` and `execute_tool`
+    spans;
+  - metrics: `gen_ai.client.*` and AGT's `agent.*`, on each service's
+    `/metrics`;
+  - AGT's audit log records of every policy decision.
+
+  Set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` to also send everything to an
+  OTLP collector. `OTEL_SERVICE_NAME` names the service. No prompt or
+  response text is on any span or record.
+* **Evaluation and readiness.**
+  - `python -m src.readiness` prints the verdict for the last 24 hours.
+    `--hours N`, `--json` and `--gate` are available; `--gate` exits 0 only
+    when READY.
+  - The dashboard's Agent Evaluation & Governance page shows the same
+    figures. Targets and per-investigation gate limits are in
+    `policies/model-slos.yaml`.
+* **Records.** `model_calls` (one row per model call), `investigations`
+  (sealed) and `action_audit_log` are append-only. The application role may
+  only SELECT and INSERT them.
 
 ## Models
 

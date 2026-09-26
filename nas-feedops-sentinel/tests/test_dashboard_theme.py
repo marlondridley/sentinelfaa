@@ -69,7 +69,8 @@ def test_every_page_referenced_by_a_drilldown_has_a_slug():
 @pytest.mark.parametrize(
     "key,expected",
     [("alerts", "Alert_Log"), ("health", "Feed_Health"),
-     ("airspace", "Live_Airspace"), ("critic", "AI_Critic_and_Review")],
+     ("airspace", "Live_Airspace"), ("critic", "AI_Critic_and_Review"),
+     ("evaluation", "Agent_Evaluation")],
 )
 def test_slugs_match_the_page_filenames_streamlit_serves(key, expected):
     """Streamlit derives the URL from the filename under dashboard/pages/

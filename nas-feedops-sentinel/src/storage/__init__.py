@@ -28,6 +28,8 @@ not deprecated -- they're the stable public surface other modules already depend
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.models import (
     AlertEvent,
     CriticResult,
@@ -42,6 +44,7 @@ from src.storage.repositories.analysis_repo import AnalysisRepository
 from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
+from src.storage.repositories.model_calls_repo import ModelCallsRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
 from src.storage.test_support import override_db_path, reset_db
@@ -64,6 +67,16 @@ __all__ = [
     "get_events_for_critic",
     "get_alerts_for_critic",
     "get_recent_critic_results",
+    "get_critic_verdicts_since",
+    "record_model_call",
+    "get_model_calls_since",
+    "get_investigations_since",
+    "get_investigation_for_action",
+    "get_latest_investigation",
+    "get_model_calls_for_subjects",
+    "get_staged_actions_by_ids",
+    "get_audit_log_for_actions",
+    "get_critic_verdicts_for_alerts",
     "save_planner_result",
     "get_recent_planner_results",
     "save_critic_result",
@@ -205,6 +218,68 @@ async def record_ingest_log_entry(entry: dict) -> None:
 async def get_recent_ingest_log(limit: int = 100) -> list[dict]:
     repo = IngestLogRepository(await get_db_pool())
     return await repo.get_recent(limit)
+
+
+# ── Model behaviour (model_calls) and what readiness reads ─────────────────────
+
+async def record_model_call(row: dict) -> None:
+    repo = ModelCallsRepository(await get_db_pool())
+    await repo.insert(row)
+
+
+async def get_model_calls_since(since: datetime) -> list[dict]:
+    repo = ModelCallsRepository(await get_db_pool())
+    return await repo.get_since(since)
+
+
+async def get_critic_verdicts_since(since: datetime) -> list[dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_critic_verdicts_since(since)
+
+
+async def get_investigations_since(since: datetime) -> list:
+    """Investigations (COMPLETE and FAILED) since `since`, each verified against its SHA-256."""
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_since(since)
+
+
+async def get_investigation_for_action(action_id: str):
+    """The COMPLETE investigation of one staged action, verified; None if there is none."""
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_by_action_id(action_id)
+
+
+async def get_latest_investigation():
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_latest()
+
+
+async def get_model_calls_for_subjects(subjects: list[str]) -> list[dict]:
+    repo = ModelCallsRepository(await get_db_pool())
+    return await repo.get_for_subjects(subjects)
+
+
+async def get_staged_actions_by_ids(action_ids: list[str]) -> list[StagedAction]:
+    repo = StagedActionsRepository(await get_db_pool())
+    return await repo.get_by_ids(action_ids)
+
+
+async def get_audit_log_for_actions(action_ids: list[str]) -> list[dict]:
+    from src.storage.repositories.audit_repo import AuditLogRepository
+
+    repo = AuditLogRepository(await get_db_pool())
+    return await repo.get_for_actions(action_ids)
+
+
+async def get_critic_verdicts_for_alerts(alert_ids: list[str]) -> list[dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_critic_verdicts_for_alerts(alert_ids)
 
 
 # ── Agent analysis (critic_results / planner_results) ─────────────────────────

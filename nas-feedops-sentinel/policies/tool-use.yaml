@@ -1,0 +1,86 @@
+# Tool-use policy for NAS FeedOps Sentinel: the agent layer's tool boundary.
+#
+# Evaluated by the Microsoft Agent Governance Toolkit (agent-os-kernel's
+# PolicyEvaluator) on every tool invocation an advisory agent makes, in
+# src/governance.py, which src/agent_tools.py consults first. That covers
+# the structured-output tool an agent hands a model (access "respond") and
+# every read that builds an agent's context or evidence (access "read"). A
+# refused tool is never invoked; the agent falls back to its rules, as for
+# any model failure.
+#
+# The human gate is not here. It stays at escalation: a staged action is
+# approved, rejected or overridden only by a person with the right Keycloak
+# role (src/execution_gate.py). What this file guarantees is that no agent
+# can reach that gate from the other side: an agent never decides, executes,
+# writes or stages, whatever its prompt or output says.
+#
+# Semantics as in model-use.yaml: highest priority first, first match
+# decides, "audit" allows and records, anything no rule allows is refused.
+# Tool access is expressed as rules, not as tool_allowlist, which the
+# toolkit's PolicyEvaluator does not enforce (src/governance.py refuses a
+# policy that sets it; tests/test_agt_known_bugs.py).
+#
+# Context fields, always present (src/governance.py builds them):
+#   role     the agent invoking the tool, or "unregistered"
+#   tool     the tool's name (src/agent_tools.py TOOLS)
+#   access   read | respond | escalate | decide | write | unknown
+#   grant    "<role>:<tool>"
+#
+# tests/test_tool_boundary.py pins every decision below.
+
+version: "1.0"
+name: sentinel-tool-use
+description: >
+  Which tools each advisory agent may invoke. Agents read and respond; they
+  never decide, execute, write or escalate.
+
+defaults:
+  action: deny
+
+rules:
+  - name: agents-never-decide-or-write
+    priority: 100
+    condition: {field: access, operator: in, value: [decide, execute, write]}
+    action: block
+    message: >
+      Agents are advisory. Deciding on a staged action, executing and writing
+      belong to people and to the deterministic pipeline.
+
+  - name: escalation-belongs-to-the-rules
+    priority: 90
+    condition: {field: access, operator: eq, value: escalate}
+    action: deny
+    message: >
+      Agents recommend escalation; the alert rules stage an action for a
+      human (src/execution_gate.py).
+
+  - name: agents-must-identify-themselves
+    priority: 80
+    condition: {field: role, operator: eq, value: unregistered}
+    action: deny
+    message: A tool call must be made on behalf of a named agent.
+
+  - name: registered-grants
+    priority: 10
+    condition:
+      field: grant
+      operator: in
+      value:
+        # Per-alert Critic
+        - critic:read_alert_context
+        - critic:submit_critique
+        # Operator-question Planner
+        - planner:read_recent_activity
+        - planner:submit_operational_brief
+        # Watch Officer: the overview brief, and the investigation brief
+        - watch_officer:read_operating_picture
+        - watch_officer:submit_watch_officer_brief
+        - watch_officer:submit_investigation_brief
+        # Investigation: the orchestrator collects evidence; specialists
+        # only answer, on the evidence in their view
+        - investigation:collect_evidence
+        - feed_diagnostician:submit_feed_finding
+        - correlation_analyst:submit_correlation_finding
+        - red_team_critic:submit_critique
+    action: audit
+    message: A registered agent using a tool it is granted.

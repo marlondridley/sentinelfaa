@@ -50,6 +50,7 @@ from watchdog.observers.polling import PollingObserver
 
 from src import config, storage
 from src.async_bridge import run_async
+from src.metrics import SWIM_MESSAGES_WITHHELD
 from src.models import NASEvent, content_key, stable_id
 from src.logging_config import get_logger
 
@@ -197,6 +198,42 @@ def _parse_xml_file(path: Path) -> list[dict]:
 _JMS_PROPERTY_RE = re.compile(r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$")
 
 
+class WithheldMessage(Exception):
+    """
+    Raised by the parser for a message this system must not ingest. The scan
+    archives the file and logs it as withheld: it is neither data nor a failure.
+    """
+
+
+def _honor_block_at_faa(headers: dict[str, str]) -> None:
+    """
+    Refuse a message the FAA flagged blockAtFAA=true.
+
+    Every STDDS message on this subscription (TAIS, TDES, APDS, SMES) carries
+    the blockAtFAA JMS property, and its value is also a level of the Solace
+    routing topic (TAIS/all/false/FP/PCT/PCT) -- the FAA routes on it. Its
+    exact semantics are in each service's JMS description document, which is
+    not public, and every captured message says false. The name and the
+    routing settle the handling anyway: a message marked true was not meant
+    to leave the FAA, so if one ever reaches this consumer, nothing from it is
+    stored, shown, or sent to a model.
+
+    Absent is not flagged: the kit writes JMS properties only when run with
+    -Dheaders=true, and a message without them cannot carry the flag. Any
+    value other than true/false fails the file into data/failed/ rather than
+    guessing which way it was meant.
+    """
+    raw = headers.get("blockAtFAA")
+    if raw is None:
+        return
+    value = raw.strip().lower()
+    if value == "false":
+        return
+    if value == "true":
+        raise WithheldMessage("blockAtFAA=true")
+    raise ValueError(f"Unrecognised blockAtFAA value {raw!r}; message not ingested")
+
+
 def _parse_jms_message_file(path: Path) -> list[dict]:
     """
     Parse one file written by the FAA Jumpstart Kit's MessageFileOutput.
@@ -229,6 +266,10 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
             body_lines.append(line)
         else:
             body_lines.append(line)
+
+    # Before anything is read out of the message, including the headers-only
+    # fallback below.
+    _honor_block_at_faa(headers)
 
     body_text = "\n".join(body_lines).strip()
     if not body_text:
@@ -856,7 +897,17 @@ def _extract_tais(headers: dict[str, str], payload: dict) -> list[dict]:
         runway_raw = (fp.get("runway") or "").strip().upper()
         runway = None if runway_raw in ("", "NNNN") else runway_raw
 
-        beacon = fp.get("assignedBeaconCode") or track.get("reportedBeaconCode")
+        # FAA STDDS beacon code notice (2017-10-11): a TAIS flight plan's beacon
+        # code must not be propagated -- stored, printed, republished or shown
+        # in any interface -- until the plan is active; Pending and Passive
+        # plans belong to flights not yet cleared. Only an explicitly active
+        # plan releases its codes, so a missing or unknown status withholds
+        # them too. A track with no flight plan keeps the code its own
+        # transponder is broadcasting.
+        if fp and str(fp.get("status") or "").strip().lower() != "active":
+            beacon = None
+        else:
+            beacon = fp.get("assignedBeaconCode") or track.get("reportedBeaconCode")
 
         out.append({
             "airport_code": airport,
@@ -898,6 +949,8 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
             return _parse_jms_message_file(path), None
         else:
             return [], f"Unsupported extension: {path.suffix}"
+    except WithheldMessage:
+        raise
     except Exception as exc:
         return [], str(exc)
 
@@ -999,6 +1052,7 @@ class IngestStats:
         self.files_processed: int = 0
         self.files_failed: int = 0
         self.files_skipped: int = 0
+        self.files_withheld: int = 0
         self.events_parsed: int = 0
         self.latest_file_time: datetime | None = None
         self.latest_service: str | None = None
@@ -1011,6 +1065,7 @@ class IngestStats:
             "files_processed": self.files_processed,
             "files_failed": self.files_failed,
             "files_skipped": self.files_skipped,
+            "files_withheld": self.files_withheld,
             "events_parsed": self.events_parsed,
             "latest_file_time": self.latest_file_time.isoformat() if self.latest_file_time else None,
             "latest_service": self.latest_service,
@@ -1112,7 +1167,26 @@ def scan_swim_folder(
             continue
 
         _log.info("swim_ingest_processing_file", extra={"file_name": path.name})
-        raw_records, parse_error = _parse_file(work)
+        try:
+            raw_records, parse_error = _parse_file(work)
+        except WithheldMessage as withheld:
+            # Archived like any other file, so it is not rescanned; nothing
+            # from it reaches the pipeline.
+            _archive_to_processed(work, path, processed_dir)
+            _append_log_entry({
+                "file": path.name,
+                "status": "withheld",
+                "event_count": 0,
+                "error": str(withheld),
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            })
+            stats.files_withheld += 1
+            SWIM_MESSAGES_WITHHELD.inc()
+            _log.warning(
+                "swim_ingest_message_withheld",
+                extra={"file_name": path.name, "reason": str(withheld)},
+            )
+            continue
 
         if parse_error and not raw_records:
             _move_to_failed(work, parse_error, failed_dir)
@@ -1153,40 +1227,7 @@ def scan_swim_folder(
             stats.files_failed += 1
             continue
 
-        # Move to processed
-        dest = processed_dir / path.name
-        if dest.exists():
-            dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
-        try:
-            shutil.move(str(work), str(dest))
-        except OSError as exc:
-            # The file parsed fine; only the archival move failed. That is the
-            # normal case on a read-only ingest mount (a :ro volume, or a
-            # network share the container cannot write to), and it must not
-            # abort the scan or discard events we already extracted.
-            #
-            # _move_to_failed() has always caught this; the success path did
-            # not, so one unwritable mount raised OSError straight out of
-            # scan_swim_folder and killed the whole pass.
-            #
-            # The file stays where it is. The ingest_log entry written below
-            # is what stops it being reprocessed on the next scan, so
-            # leaving it in place is safe rather than a duplicate-ingest risk.
-            # Put a claimed file back where it was, so the next scan sees it
-            # and skips it by name instead of it sitting in .inflight/.
-            if work != path:
-                try:
-                    os.rename(work, path)
-                except OSError:
-                    pass
-            _log.warning(
-                "swim_ingest_archive_move_failed",
-                extra={
-                    "file_name": path.name,
-                    "destination": str(dest),
-                    "error": str(exc),
-                },
-            )
+        _archive_to_processed(work, path, processed_dir)
 
         services = list({e.service_name for e in events if e.service_name})
         _append_log_entry({
@@ -1397,6 +1438,43 @@ def _release_stale_claims(source_dir: Path) -> int:
     if released:
         _log.warning("swim_ingest_stale_claims_released", extra={"count": released, "source_dir": str(source_dir)})
     return released
+
+
+def _archive_to_processed(work: Path, path: Path, processed_dir: Path) -> None:
+    """Move a finished file (claimed as `work`, originally `path`) into processed_dir."""
+    dest = processed_dir / path.name
+    if dest.exists():
+        dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
+    try:
+        shutil.move(str(work), str(dest))
+    except OSError as exc:
+        # The file was handled (ingested, or withheld); only the archival move
+        # failed. That is the normal case on a read-only ingest mount (a :ro
+        # volume, or a network share the container cannot write to), and it
+        # must not abort the scan or discard events we already extracted.
+        #
+        # _move_to_failed() has always caught this; the success path did
+        # not, so one unwritable mount raised OSError straight out of
+        # scan_swim_folder and killed the whole pass.
+        #
+        # The file stays where it is. The ingest_log entry the caller writes
+        # is what stops it being reprocessed on the next scan, so
+        # leaving it in place is safe rather than a duplicate-ingest risk.
+        # Put a claimed file back where it was, so the next scan sees it
+        # and skips it by name instead of it sitting in .inflight/.
+        if work != path:
+            try:
+                os.rename(work, path)
+            except OSError:
+                pass
+        _log.warning(
+            "swim_ingest_archive_move_failed",
+            extra={
+                "file_name": path.name,
+                "destination": str(dest),
+                "error": str(exc),
+            },
+        )
 
 
 def _move_to_failed(path: Path, reason: str, failed_dir: Path | None = None) -> None:

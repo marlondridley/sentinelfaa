@@ -1,34 +1,222 @@
 # PCT TAIS FeedOps Sentinel
 
-**Agentic AI operational intelligence for live FAA SWIM / STDDS TAIS data across PCT TRACON.**
+[![Sentinel CI](https://github.com/marlondridley/sentinelfaa/actions/workflows/pyapp-ci.yml/badge.svg?branch=main)](https://github.com/marlondridley/sentinelfaa/actions/workflows/pyapp-ci.yml)
 
-This is not an aviation map. It is a **trust-and-escalation cockpit** for live aircraft movement data — built around the operational constraints a real federal program would impose, not around the LLM features that are easy to demo.
+**Feed-trust monitoring and human-in-the-loop escalation for live FAA SWIM data across Potomac TRACON (PCT): KDCA, KIAD, KBWI and KADW.**
+
+Sentinel subscribes to the FAA's terminal SWIM feeds, checks continuously whether that data is fresh, well-formed and complete, and turns anything critical into a staged action that a named, authorized person must decide. Language models explain and argue the other side; rules and people decide.
+
+> **Can we trust the aircraft-movement data SWIM is publishing for PCT right now — and if not, who needs to look at what?**
+
+That question sets every design choice below: what to ingest, when to call a model, when to escalate, and what gets written down.
+
+- [Boundaries](#boundaries) — the contract the rest of the repository serves
+- [How it works](#how-it-works) · [The stack](#the-stack) · [Run it](#run-it) · [Prove it](#prove-it)
+- [Five-minute walkthrough](nas-feedops-sentinel/docs/walkthrough.md) · [Operations guide](nas-feedops-sentinel/docs/operations.md) · [Operator playbook](nas-feedops-sentinel/docs/playbook.md) · [Runbooks](nas-feedops-sentinel/docs/runbooks.md)
+- [How AI is governed](nas-feedops-sentinel/docs/agent-governance.md): eight boundaries, the Sentinel ↔ AGT crosswalk, custom vs off the shelf · [Where every agent metric comes from](nas-feedops-sentinel/docs/agent-metrics.md)
 
 ---
 
-## One-Line Mission
+## Boundaries
 
-> **Can PCT TRACON trust the current aircraft movement picture across KDCA, KIAD, KBWI, and KADW?**
+**What it watches.** Sentinel is a *downstream consumer* of SWIM, the FAA's publication of National Airspace System data to outside users, received through the SCDS Jumpstart Kit. It can tell you whether that published picture is fresh, well-formed and complete, service by service and airport by airport. It cannot see a controller's STARS display and does not claim to: a gap in SWIM is evidence worth investigating, not proof of what is on a scope.
 
-That single question drives every design decision: what to ingest, when to validate, when to call an LLM, when to escalate, and when to hand control back to a human.
+**What a model may do.** Explain, summarize, and challenge. Every model call is budgeted per pass, time-limited, redacted first (callsigns, beacon codes, positions and raw payloads are stripped from prompts), and routed through one gateway. A model outage degrades to deterministic rules, and the record says so.
+
+**What a model may not do.** Stage, approve, reject or execute anything. Every CRITICAL alert is staged for human review by rules, whether the model answers, fails, returns garbage or is not configured, and no code path lets model output change an action's status.
+
+**How AI is governed.** The Microsoft Agent Governance Toolkit (AGT) decides every model call (`policies/model-use.yaml`) and every tool an agent uses (`policies/tool-use.yaml`) before it happens: deny by default, fail closed, every decision in AGT's audit log. No agent can decide, write or stage, whatever credentials it presents; the human gate stays at escalation. Execution is carried as OpenTelemetry (GenAI conventions, one definition for every model provider), and AGT computes the agent metrics wherever it computes them correctly. Agents never grade themselves: quality is judged from the grounding gate, the operator's recorded decision, the gateway's usage and cost, and the sealed record. [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md) walks through it boundary by boundary.
+
+**Who decides.** A signed-in operator with a Keycloak realm role: `watch_officer` (approve, reject, continue monitoring), `supervisor` (also override), `auditor` (read only). Buttons an operator may not use are disabled with the reason, and the execution gate re-checks the role before it writes anything.
+
+**What gets written down.** Every status change goes to `action_audit_log` with the operator's identity, roles and sign-in method. The database keeps that table append-only: a trigger refuses UPDATE and DELETE, and the application's own database role can only read and insert. Every staged action also gets an investigation record whose claims must cite collected evidence, sealed with SHA-256 and re-verified when displayed.
+
+**What it holds back.**
+- Messages the FAA flags `blockAtFAA=true` are withheld: nothing from them is stored, shown or sent to a model.
+- Beacon codes from TAIS flight plans that are not yet active are neither stored nor shown, per the FAA's STDDS beacon-code notice.
+- Replayed, synthetic and API data is tagged `data_origin` at ingest, and every page warns while non-live data is present, so a demo is never read as the live picture.
+
+**What it will never do.** Page anyone, contact an FAA system, or issue anything resembling an ATC instruction. "Approve escalation" records a human decision on an internal ticket; connecting that ticket to ServiceNow, Remedy or Jira is deliberately out of scope.
 
 ---
 
-## Executive Summary
+## How it works
 
-PCT TAIS FeedOps Sentinel ingests live FAA SWIM / STDDS messages through the **SCDS Jumpstart Kit**, normalizes TAIS flight-plan and track records, converts them into airport-level operational activity, checks feed freshness and data quality, and surfaces the result through a five-layer decision pipeline:
+```
+FAA SWIM (Solace) ─► SCDS Jumpstart Kit, on the host ─► data/raw/swim_live/log/
+                                                                 │
+sentinel (watcher) ◄─────────────────────────────────────────────┘
+  claim the file (atomic rename) ─► parse JMS headers + JSON ─► honor blockAtFAA
+  ─► extract TAIS · TDES/TDLS · APDS · SMES ─► stable ids, data_origin=live
+                                     │
+src/pipeline.py (one pipeline for every entry point)
+  validate ─► save events ─► alert rules ─► save alerts
+  ─► Critic on CRITICAL alerts (bounded, advisory)
+  ─► stage EVERY CRITICAL alert: PENDING action + DRAFT ticket + audit row
+  ─► investigate each staged action: collect evidence ─► Feed Diagnostician ‖
+     Correlation Analyst ─► Red-Team Critic ─► Watch Officer brief ─► seal
+                                     │
+dashboard review queue ─► role-checked decision ─► action_audit_log (append-only)
 
-> **The banner announces the condition. The Watch Officer explains it. The ticket preserves it. The human review queue decides it. The audit trail proves it.**
+reconciler, every 60 s: stage any CRITICAL alert that slipped through, or
+record it EXPIRED if it is older than the staging window
+```
 
-| Layer | Role |
+The live watcher, a Temporal workflow started through the API, the dashboard's sample and replay buttons, and the CLI all run the same `src/pipeline.py`. Events and alerts carry identities derived from the SWIM message itself, so a re-dropped file or a retried workflow updates rows instead of duplicating them.
+
+**What the live subscription carries:** TAIS (terminal automation flight plans and tracks from STARS), TDES (tower departure events, including TDLS departure clearances), APDS (runway visual range) and SMES (ASDE-X surface movement and safety-logic hold bars). All ten messages of a real 2026-08-27 capture, committed under `nas-feedops-sentinel/tests/fixtures/swim_kit/`, ingest with none quarantined.
+
+**Alert rules** (`src/alert_engine.py`; thresholds and where each comes from are documented in `src/config.py`):
+
+| Rule | Severity | Fires when |
+|---|---|---|
+| `ALERT_FEED_DISCONNECTED` | CRITICAL | a message reports its feed disconnected |
+| `ALERT_LOW_RVR` | CRITICAL | runway visual range below 1,200 ft |
+| `ALERT_ISMC_LINK_DEGRADED` | CRITICAL | ISMC reports a degraded or unavailable link |
+| `ALERT_FEED_STALE` | WARNING | a service has sent nothing for 300 s |
+| `ALERT_HIGH_LATENCY` | WARNING | delivery lag above 30 s |
+| `ALERT_SCHEMA_VALIDATION_FAILED` | WARNING | an event fails schema or business rules |
+| `ALERT_SURFACE_EVENT_SPIKE` | WARNING | 10 or more surface events at one airport within 60 s |
+
+**Where the data lives:** PostgreSQL, through PgBouncer: `nas_events`, `alert_events`, `critic_results`, `planner_results`, `staged_actions`, `operational_tickets`, `action_audit_log`, `investigations`, `watch_officer_briefs`, `ingest_log`.
+
+**The operator console** (Streamlit) opens on a GREEN/AMBER/RED verdict computed by fixed rules from schema conformance, ingest lag and open CRITICAL alerts; every number on it is a link to the page that explains it.
+
+| Question | Where it is answered |
 |---|---|
-| **PCT LIVE banner** | Fast signal — *what needs attention right now?* |
-| **Watch Officer Brief** | Structured explanation of posture, trust, and what changed |
-| **Operational Ticket** | Durable internal escalation package linked to a staged action |
-| **Human Review Queue** | Decision point — Approve Escalation / Continue Monitoring / Reject |
-| **Decision Audit Trail** | Immutable proof of every state transition |
+| Is the PCT feed alive right now? | Overview verdict; Feed Health: ingest volume and delivery lag |
+| Can we trust the current aircraft picture? | Overview verdict; Live Airspace: stale and no-data status |
+| Which airport is driving the traffic load? | Live Airspace: per-airport counts |
+| What phase of flight is most active? | Live Airspace: phase breakdown |
+| Are tracks stale, missing, or abnormal? | Feed Health: schema conformance; Live Airspace: movement profile |
+| Is this isolated or sector-wide? | Feed Health: service-by-facility matrix; Alert Log: spread across facilities |
+| What should the operator do next? | AI Critic & Review: the staged action, its investigation, and the decision |
 
-The LLM **explains and drafts**. Deterministic validators, alert rules, the human-in-the-loop gate, the ticket package, and the audit log **control what happens next**. The model is not the control plane.
+---
+
+## The stack
+
+| Stack | Service | Role |
+|---|---|---|
+| `instraclustr/` | `postgres`, `pgbouncer` | the database, pooled |
+| | `vault` (+ `vault-unseal` job) | secrets; one AppRole per service; unseal key split 2-of-3; no stored root token |
+| | `litellm` (+ `litellm-db-init`, `litellm-bootstrap` jobs) | the model gateway; the application holds a scoped, budgeted key |
+| `nas-feedops-sentinel/` | `migrate` | one-shot schema owner job; everything else runs as a restricted role |
+| | `sentinel` | the live SWIM folder watcher and the reconciler |
+| | `api` | FastAPI: `/health`, `/v1/ready`, `/v1/ingest` |
+| | `temporal`, `temporal-worker`, `temporal-ui` | ingest and pipeline workflows started through the API |
+| | `dashboard` | the Streamlit operator console |
+| | `keycloak` (+ its own Postgres) | operator identity and realm roles; serves HTTPS only |
+| | `prometheus`, `grafana` | metrics and alert rules, including the GenAI and AGT agent metrics (OTLP export optional) |
+| | `edge` | nginx: the only published entry point, HTTPS on 127.0.0.1 |
+
+Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit together is in [docs/operations.md](nas-feedops-sentinel/docs/operations.md).
+
+---
+
+## Run it
+
+Requires Windows with Docker Desktop and PowerShell. The live feed also needs Java 25 and a SWIFT-authorized SCDS subscription; everything else runs without one.
+
+1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys belong in `instraclustr/.env`; `APP_DB_PASSWORD` must match in both.
+2. From the repository root:
+   ```powershell
+   .\launch_nas_sentinel.ps1                # infrastructure, then the application
+   .\launch_nas_sentinel.ps1 -WithLiveFeed  # also start the Jumpstart Kit
+   ```
+3. Create an operator (granted `watch_officer` unless `APP_ROLES` says otherwise):
+   ```powershell
+   .\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1
+   ```
+4. Trust `nas-feedops-sentinel\tls\edge-ca.crt` once in the Windows certificate store, then sign in:
+
+| URL | What |
+|---|---|
+| https://localhost:8443 | Dashboard |
+| https://localhost:8444/health | API |
+| https://localhost:8445 | Grafana |
+| https://localhost:8446 | Temporal UI |
+| https://localhost:8447/alerts | Prometheus and its alert rules |
+| https://localhost:8081/admin | Keycloak admin (loopback only; Keycloak serves HTTPS only) |
+
+---
+
+## Prove it
+
+One command runs the whole path against a throwaway database:
+
+```bash
+cd nas-feedops-sentinel
+docker compose --profile proof run --rm proof
+```
+
+It ingests the ten real captured SWIM messages, injects a labelled synthetic cascade failure, checks that every CRITICAL alert is staged and investigated with a sealed, traceable record, has an `auditor` try to approve (refused, nothing written), has a `watch_officer` approve (recorded with their roles), and confirms the audit log refuses UPDATE and DELETE. It prints one line per check and exits non-zero if any fails; CI runs it on every push. Output from a run without a model:
+
+```
+== 1. Real FAA SWIM capture (2026-08-27, 10 messages)
+  [PASS] all ten captured files ingested, none quarantined -- processed=10 failed=0 events=14
+...
+== 2. Injected fault (SYNTHETIC cascade-failure scenario)
+  [PASS] every CRITICAL alert staged PENDING for human review -- 15 CRITICAL, 15 pending
+...
+  [PASS] every investigation is sealed and every claim traces to evidence
+...
+== 3. Authorization: an auditor may not decide
+  [PASS] auditor approval refused -- approve requires role supervisor or watch_officer; e2e-proof-auditor (synthetic) has auditor.
+  [PASS] nothing written by the refused attempt
+...
+== 5. The audit log is append-only
+  [PASS] refused: UPDATE -- action_audit_log is append-only; UPDATE is not permitted on this table
+  [PASS] refused: DELETE -- action_audit_log is append-only; DELETE is not permitted on this table
+
+PROOF PASSED
+```
+
+---
+
+## Tests and CI
+
+The suite (about 490 tests at this writing, 18 of them strict xfails that document bugs in the Agent Governance Toolkit) lives in `nas-feedops-sentinel/tests/` and runs against a real Postgres. It refuses to touch any database whose name is not marked disposable; see [nas-feedops-sentinel/README.md](nas-feedops-sentinel/README.md) for how to run it.
+
+[CI](.github/workflows/pyapp-ci.yml) runs on every push and pull request:
+
+- `ruff` lint, then the full suite and the end-to-end proof in the test image against Postgres 16
+- `pip-audit` over the hash-locked runtime dependencies; accepted exceptions must be listed in [cve-allowlist.md](nas-feedops-sentinel/cve-allowlist.md), and there are none
+- both compose files render with the example environment files
+- Trivy over the shipped runtime image; any HIGH or CRITICAL finding with a published fix fails the build
+
+---
+
+## Models
+
+Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`), and settings that name a provider route directly (`gemini/...`) are refused at startup, so changing providers is an edit to that file, not to the application. Today `primary-model` is DeepSeek with Gemini as fallback: a low-cost test configuration that can be pointed at Claude, OpenAI or Gemini the same way. Real FAA operational data needs an authorized endpoint, for example Claude on Bedrock GovCloud, Azure OpenAI Government, or an on-premises vLLM or NIM deployment.
+
+---
+
+## Latency, Cost, Failure, Evaluation
+
+Production agentic systems are judged less by model quality than by how they hold up against four operational constraints.
+
+| | How the design answers it |
+|---|---|
+| **Latency** | Ingest, validation and alerting are deterministic and come first; the watcher polls every 2 s; a model runs only for CRITICAL alerts or when an operator asks the planner, and every call has a 90 s timeout. |
+| **Cost** | No model call per message. The Critic sees at most `MAX_CRITIC_PER_PASS` (default 5) CRITICAL alerts per pass and investigations use the model for at most `MAX_LLM_INVESTIGATIONS_PER_PASS` (default 3); the rest run on rules. The gateway key has a budget and a rate limit, and every investigation is held to a cost, token and tool-call budget (AGT `BudgetTracker`). Spend is measured per call, investigation, alert and model. |
+| **Failure** | Every step degrades to rules and records that it did. Unreadable files go to `data/failed/` with a reason, one bad record fails its own file and never the scan, unstaged CRITICAL alerts are reconciled every minute, and nothing auto-executes. |
+| **Evaluation** | An evaluation layer measures every investigation from the record: decision quality, grounding, unsupported claims, accuracy against operator decisions, missed and false escalations, calibration, latency by stage, cost, reliability by agent and provider, and quality, safety, cost, latency and audit gates. A readiness verdict (`python -m src.readiness --gate`) turns it into a deployment gate. The dashboard shows it in three layers: five indicators on the Overview, one investigation's gates on the Review page, and everything on Agent Evaluation & Governance. Plus the test suite, a one-command end-to-end proof, and alert rules. |
+
+---
+
+## Known limits
+
+- **RVR encoding.** APDS reports runway visual range as a coded value. The ×100-to-feet scale is corroborated against KBWI weather observations but not confirmed against the non-public APDS interface document; implausible readings are refused rather than stored. `ALERT_LOW_RVR` depends on it.
+- **Transport.** The Jumpstart Kit writes one file per message. That is fine for PCT volumes on one host (a janitor keeps the folder scannable), but a production deployment would consume the Solace broker directly.
+- **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
+- **Decisions.** One approver per action; there is no four-eyes workflow.
+- **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
+- **Sign-in.** The dashboard signs operators in with Keycloak's direct access grant, over verified TLS. Keycloak stays the identity authority, but the dashboard process sees the password for one request, and a second factor would need the redirect flow. The certificates come from a local authority; a shared deployment needs an internal PKI.
+- **Evaluation.** Model behaviour is measured from real runs, but the readiness targets are starting points, not baselines, and a quiet feed produces too little evidence to judge ("insufficient data" is the honest answer). Alert precision and detection latency are not yet measured against labelled replays.
+- **AGT.** Thirteen bugs in agent-sre and agent-os-kernel 3.7.0 are worked around or replaced in-repo, each with a failing test ([docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md)); a draft upstream issue is in `docs/upstream/`. The error-budget verdict is in-repo until agent-sre's `ErrorBudget` is fixed.
+- **Telemetry.** OpenTelemetry export to a collector is configured, not bundled: no collector ships in the stack.
 
 ---
 
@@ -49,420 +237,26 @@ The goal was not to prove that an LLM can summarize aviation data. The goal was 
 
 ---
 
-## The Agentic Production Framework
-
-Production-grade agentic systems are not judged by model quality. They are judged by how they hold up against four operational constraints: **Latency, Cost, Failure, Evaluation**. The architecture is built around those constraints.
-
-### Can the system produce usable context fast enough?
-
-The end-to-end path:
-
-```
-FAA SWIM message arrives at the Solace broker
-        ↓  ~milliseconds (network)
-Jumpstart Kit writes one JSON-wrapped JMS message file
-        ↓  ~milliseconds (disk)
-swim-folder scan picks up new files (capped at 500 newest per pass)
-        ↓  ~30 s polling interval, sub-second work per file
-Parser normalizes JMS headers + JSON body into NASEvent rows
-        ↓
-Deterministic validation + alert engine + feed-health classification
-        ↓  sub-second
-LLM reasoning (Critic / Watch Officer) — only on CRITICAL or staged-action paths
-        ↓  ~1–3 s when invoked
-Banner + dashboard + ticker update on next refresh
-```
-
-Deterministic processing happens first. AI is invoked only where reasoning over structured evidence adds genuine operational value — never on every raw message. Per-pass file and Critic caps prevent backlog bursts from pinning the pipeline.
-
-### Can the system avoid wasteful AI calls?
-
-- Deterministic validators and alert rules execute before any LLM call
-- The AI Critic runs only on CRITICAL alerts, and only `MAX_CRITIC_PER_PASS` (default 5) per ingest cycle
-- The Watch Officer Brief is generated from already-summarized structured signals, not raw event streams
-- `sample` and `replay` modes exercise the full pipeline without consuming live broker capacity or LLM credits
-- Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`); which provider serves an alias is proxy configuration, not application code. Today that is DeepSeek with Gemini fallback, for low-cost testing; real FAA data needs an authorized endpoint (Claude on Bedrock GovCloud, Azure OpenAI Government, or on-prem vLLM/NIM)
-- No agent-loop recursion; the architecture is a directed pipeline, not a free-form ReAct loop
-
-### What happens when feeds, tools, models, or parsers fail?
-
-The system assumes failure and degrades cleanly:
-
-| Failure mode | Behavior |
-|---|---|
-| Feed goes stale | `feed_health` flags airports as STALE / DEGRADED / UNAVAILABLE; trust assessment becomes DEGRADED or INCOMPLETE |
-| Files fail parsing | Moved to `data/failed/`; ingest audit log records the error; the rest of the batch continues |
-| LLM key missing | Critic and Planner return structured "unavailable" responses; Watch Officer falls back to deterministic brief |
-| LLM call fails or returns malformed JSON | Watch Officer uses deterministic fallback; Critic returns a degraded result with reasoning explaining the failure |
-| Broker connectivity drops | Sentinel polling continues against any local files; banner surfaces "no recent messages" |
-| Airport data incomplete | Trust assessment becomes INCOMPLETE; dashboard reports affected airports explicitly rather than guessing |
-| CRITICAL alert fires | Staged as PENDING in `staged_actions`; **never auto-executes**; only a human in the dashboard can Approve / Reject / Continue Monitoring |
-| Internal ticket package | Kept in `operational_tickets` table; **not** auto-submitted to ServiceNow / Remedy / Jira — that integration is intentionally out of scope |
-
-The dashboard always renders. The Streamlit page works without an LLM key. The HITL gate works without an LLM key.
-
-### How do we prove it works before and after release?
-
-- **Unit tests** (147 passing as of latest commit) cover validators, alert engine, feed health, execution gate, staged-action workflow, operational tickets, Watch Officer agent (UNKNOWN / NORMAL / ATTENTION / ACTION postures), banner severity priority, and Critic / Planner degradation paths
-- **Replay mode** lets captured TAIS files act as a regression dataset against new code
-- **Sample mode** synthesizes deterministic operational scenarios including cascade failures and clean states
-- **Schema validation** on every LLM output — Watch Officer briefs and Critic verdicts that fail schema fall back to the deterministic path
-- **Audit trail** in `action_audit_log` provides full post-event review
-- **Future-room**: structured logging is JSON with correlation IDs; metrics module exports Prometheus gauges for HITL queue depth, LLM call latency, gate decisions, and per-airport feed health. Online monitoring for latency, failure rates, model failure rate, and data drift is the natural next step.
-
-Run the full evaluation suite with:
-
-```bash
-pytest
-```
-
----
-
-## What the System Does
-
-- Connects to the FAA Solace broker through the SWIFT-authorized **SCDS Jumpstart Kit**
-- Parses the Kit's hybrid output: **JMS metadata headers + JSON TAIS payload body**, written as epoch-named files with no extension
-- Normalizes TAIS flight-plan and track records into `NASEvent` rows: airport, runway, aircraft callsign, lat / lon, altitude, ground speed, vertical rate, flight phase
-- Validates every event against schema and business rules
-- Fires structured alerts for low RVR, ISMC degradation, feed staleness, latency spikes, validation failures, and surface-event surges
-- Runs an **AI Critic** on every CRITICAL alert: pattern classification, confidence score, escalation recommendation
-- Runs a **Watch Officer Agent** that produces a structured operational brief explaining posture, trust assessment, what changed, why it matters, and what a human should review
-- Drafts an **internal Operational Ticket** linked to every staged action, carrying the Watch Officer narrative as the ticket body
-- Holds CRITICAL actions in a **human-in-the-loop queue** — never auto-executes
-- Records every state transition in an **immutable audit trail**
-- Provides a natural-language **Operational Planner** for duty-manager-style questions
-- Exposes Prometheus metrics for the full pipeline
-
----
-
-## Mission Questions the Dashboard Answers
-
-|---|---|
-| 1. Is the PCT TAIS feed alive right now? | Latency + freshness panel |
-| 2. Can we trust the current aircraft picture? | Airspace Map + Watch Officer Brief |
-| 3. Which airport is driving the traffic load? | Per-Airport Activity |
-| 4. What phase of flight is most active? | Phase counts (departures / arrivals / enroute / ground) |
-| 5. Are tracks stale, missing, or abnormal? | Airport Feed Health + altitude / speed distributions |
-| 6. Is this isolated or sector-wide? | Per-airport comparison |
-| 7. What should the operator do next? | AI Critic + Watch Officer + Human Review Queue |
-
----
-
-## Core Workflow
-
-```
-Live FAA SWIM / STDDS TAIS data
-        ↓
-Deterministic validation + alerting + feed-health classification
-        ↓
-AI Critic and Watch Officer reasoning (only when useful)
-        ↓
-Internal Operational Ticket / Escalation Package drafted (DRAFT)
-        ↓
-Human Review Queue surfaces the staged action + ticket
-        ↓
-Operator: Approve Escalation  |  Continue Monitoring  |  Reject
-        ↓
-SQLite persists the decision
-        ↓
-Audit Trail records the human transition
-```
-
-The LLM contributes language. Humans contribute decisions. The HITL gate enforces that separation.
-
----
-
-## Dashboard Operating Model
-
-> **The banner announces the condition. The Watch Officer explains it. The ticket preserves it. The human review queue decides it. The audit trail proves it.**
-
-- **PCT LIVE banner** — color-coded fast signal (ACTION / ATTENTION / NORMAL / GOOD), click any headline to jump to the relevant section
-- **🧠 Watch Officer Brief** — posture, trust assessment, what changed, why it matters, recommended human review, evidence
-- **📦 Operational Ticket** — linked to a staged action; carries the Watch Officer narrative as the ticket body; status DRAFT → APPROVED_FOR_ESCALATION / REJECTED / MONITORING
-- **🧑‍✈️ Human Review Queue** — three buttons (Approve Escalation / Continue Monitoring / Reject), decision note text field
-- **🗂 Decision Audit Trail** — every transition with actor, note, timestamp
-
----
-
-## Human-in-the-Loop Execution Gate
-
-The system stages every CRITICAL alert as a PENDING `staged_action`. The action cannot execute until a human decides.
-
-- The AI Critic may flag a CRITICAL alert as `escalate=true` and write rationale.
-- The Watch Officer may draft the ticket narrative.
-- **Neither has an API path that sets `status=APPROVED_FOR_ESCALATION`.**
-- Only a human operator clicking in the dashboard (or in production, calling the approve API with attributed credentials) can move it.
-- Every state transition writes to `action_audit_log`: previous_status, new_status, actor, note, timestamp.
-
-**Important — this is a demo-safe gate, not a real FAA operational command channel.** No external system is contacted, no controller is paged, no ATC instruction is issued. The gate proves the architectural pattern. Production deployment would add the integration adapters; the data structures are designed to support them.
-
----
-
-## Watch Officer Agent and Escalation Packages
-
-The Watch Officer Agent is the **explanation layer** between the banner (signal) and the ticket (record). It runs deterministic signal detection first, then optionally enriches the language with an LLM.
-
-The brief answers four questions in structured form:
-
-- **What changed** — observable signals in the current window
-- **Why it matters** — operational consequence in plain English
-- **Recommended human review** — what the operator should look at next
-- **Evidence** — the underlying numbers and identifiers
-
-That brief becomes the body of the internal **Operational Ticket Package**, persisted in SQLite at `data/feedops.db`. The package carries:
-
-- The original alert and staged action
-- Watch Officer posture (GOOD / NORMAL / ATTENTION / ACTION / UNKNOWN)
-- Trust assessment (TRUSTWORTHY / DEGRADED / INCOMPLETE / UNKNOWN)
-- AI Critic rationale and confidence (when available)
-- A unique idempotency key so duplicate staging produces one ticket, not many
-
-When the ticket is approved, rejected, or marked MONITORING, the decision is appended to the same audit log that records staged-action transitions. The integration adapter to a real ticketing system (ServiceNow, Remedy, Jira) is deliberately out of scope. The internal package is the durable artifact a future adapter would read.
-
----
-
-## System Architecture
-
-The repository supports two co-existing deployment tiers:
-- **Standalone Prototype (`src/`)**: A single-process SQLite environment for fast local demonstration, unit testing, and simulation without external dependencies.
-- **Enterprise Distributed Stack (`nas-feedops-sentinel/`)**: An asynchronous microservices architecture utilizing PostgreSQL (`asyncpg`), Temporal workflows, FastAPI with CORS and auth gates, and OpenTelemetry.
-
-```
-FAA SWIM / STDDS TAIS subscription
-        │
-        ▼
-FAA Solace broker (ems1.swim.faa.gov:55443)
-        │
-        │ tcps / JMS authenticated session
-        ▼
-SCDS Jumpstart Kit (Java consumer provided through SWIFT)
-        │
-        │ MessageFileOutput, json:true → epoch-named files
-        ▼
-jumpstart-latest/log/    ──[NTFS junction]──>   nas-feedops-sentinel/data/raw/swim_live/
-        │
-        │ scanned by swim-folder mode (capped at 500 newest per pass)
-        ▼
-nas-feedops-sentinel/src/swim_file_ingest.py — parses JMS headers + JSON body
-        ▼
-TAIS normalization — airport, runway, callsign, lat/lon, altitude, GS, vVert, phase
-        ▼
-nas-feedops-sentinel/src/validators.py — schema and business-rule checks
-        ▼
-nas-feedops-sentinel/src/alert_engine.py — structured alert rules
-        ▼
-nas-feedops-sentinel/src/critic_agent.py — LLM-based pattern + escalation reasoning (CRITICAL only)
-        ▼
-nas-feedops-sentinel/src/execution_gate.py — stages action; calls Watch Officer; creates Operational Ticket
-        ▼
-PostgreSQL (via asyncpg) -- nas-feedops-sentinel/src/storage/ (repositories, schema, per-loop pool)
-   • nas_events
-   • alert_events
-   • critic_results
-   • planner_results
-   • staged_actions          ← HITL queue
-   • action_audit_log        ← immutable transitions
-   • watch_officer_briefs    ← brief narratives
-   • operational_tickets     ← internal escalation packages
-        ▼
-Streamlit dashboard + Prometheus /metrics
-http://localhost:8501       http://localhost:9108/metrics
-```
-
----
-
-## Live FAA SWIM / STDDS TAIS Integration
-
-The current live integration uses the **FAA SCDS Jumpstart Kit** to subscribe to the **FAA Solace broker** under a SWIFT-authorized account. The Kit writes each JMS message as a separate file into its `log/` folder. Sentinel scans that folder, parses the hybrid header+payload format, normalizes records, and pushes them through the pipeline.
-
-```
-data/raw/swim_live/         ← Jumpstart Kit drops files here
-data/processed/             ← successfully ingested files move here
-data/failed/                ← parse failures land here for inspection
-data/processed/ingest_log.jsonl   ← append-only ingest audit
-```
-
-Connection details (provider URL, queue name, connection factory, VPN, credentials) come from `.env`. They are obtained from the SWIFT portal's Subscription Details → Connection Details tab. `.env` is gitignored.
-
-The parser is permissive: it accepts files with no extension (Kit default), `.json`, `.xml`, and `.txt`. Schema-validated records reach the alert engine; schema failures are logged and moved to `data/failed/` for review.
-
----
-
-## Run Modes
-
-```bash
-# Synthetic operational scenarios — no broker, no LLM credits
-python -m src.main --mode sample --count 100
-
-# Replay captured live messages from data/raw/*.json
-python -m src.main --mode replay --source data/raw
-
-# Live ingest of the Jumpstart Kit log folder
-python -m src.main --mode swim-folder --source data/raw/swim_live
-```
-
-Add `--metrics` to start the Prometheus `/metrics` server on port 9108 alongside any mode.
-
----
-
-## Quick Start
-
-### 1. Create and activate a virtual environment
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
-```powershell
-.venv\Scripts\activate
-```
-
-macOS / Linux:
-```bash
-source .venv/bin/activate
-```
-
-### 2. Install dependencies
-
-```bash
-cd nas-feedops-sentinel
-pip install -r requirements.txt
-```
-
-### 3. Configure environment variables
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`. The minimum useful set for a local sample-mode demo:
-
-```ini
-# Models: LiteLLM proxy aliases only. Provider keys live in
-# ../instraclustr/.env, not here; see docs/operations.md.
-LLM_BASE_URL=http://nas-litellm:4000/v1
-LLM_MODEL=primary-model
-CRITIC_MODEL=primary-model
-CRITIC_ENABLED=1
-MAX_CRITIC_PER_PASS=2
-MAX_LLM_INVESTIGATIONS_PER_PASS=1
-```
-
-For live broker access add the SWIM section. **Never commit the real `.env`.**
-
-### 4. Seed the database
-
-```bash
-python -m src.main --mode sample --count 100
-```
-
-### 5. Start the dashboard
-
-```bash
-streamlit run dashboard/app.py
-```
-
-Open <http://localhost:8501>.
-
----
-
-## Start the Dashboard
-
-```bash
-streamlit run dashboard/app.py
-```
-
-The page renders even when no LLM key is configured. In that case the Critic, Planner, and Watch Officer all fall back to deterministic logic — the dashboard remains operational.
-
----
-
-## Testing and Evaluation
-
-```bash
-pytest -q
-```
-
-Coverage areas:
-
-- `tests/test_alert_engine.py` — deterministic alert rules
-- `tests/test_feed_health.py` — freshness, worst-wins per-airport rollup
-- `tests/test_validators.py` — schema and business-rule edges
-- `tests/test_replay.py` — replay loader and per-file fault tolerance
-- `tests/test_critic_agent.py` — degraded vs happy-path Critic behavior
-- `tests/test_planner_agent.py` — Planner output schema and degradation
-- `tests/test_execution_gate.py` — staging idempotency, terminal-state stickiness, audit-row creation, query semantics
-- `tests/test_operational_tickets.py` — DRAFT → APPROVED / REJECTED / MONITORING transitions, idempotency, audit integration
-- `tests/test_watch_officer_agent.py` — UNKNOWN / NORMAL / ATTENTION / ACTION postures, schema validation, SQLite round-trip, deterministic fallback
-- `tests/test_news_agent.py` — banner severity priority and item caps
-- `tests/test_guardrails_gate_eval.py` — input/output guardrails and end-to-end gate evaluation against golden scenarios
-
-Replay-based regression:
-
-```bash
-python -m src.main --mode replay --source data/raw
-```
-
-A golden eval suite runs deterministic-only by default and can include LLM checks with `--llm`:
-
-```bash
-python -m src.main --mode eval        # deterministic only
-python -m src.main --mode eval --llm  # also exercise Critic + Planner
-```
-
----
-
-## LLM Provider Configuration
-
-`src/llm_client.py` makes one kind of call: a structured (JSON-schema) completion against the LiteLLM proxy, with redaction applied first and errors classified as transient or permanent. There is one implementation and no provider SDK in the application.
-
-Providers are chosen in `instraclustr/litellm-config.yaml`, per alias, with fallbacks (for example `primary-model` -> DeepSeek, falling back to Gemini). The application authenticates with a scoped virtual key that can call only its aliases, within a budget and rate limit. Settings that name a provider route directly (`gemini/...`) are refused at startup. Swapping providers is a proxy-config change, not an application change.
-
----
-
-## Security and Data Handling
-
-- `.env` is gitignored. Never commit real credentials.
-- SQLite database lives at `data/feedops.db` and is local to the host running the dashboard.
-- The Jumpstart Kit log folder, `data/processed/`, and `data/failed/` are all gitignored.
-- The HITL gate has no auto-execute path: no controller is paged, no ATC system is contacted, no real FAA operational command is issued.
-- LLM calls go only to the configured provider endpoint. There is no telemetry, no third-party analytics, no background data exfiltration.
-- The system is designed to run inside a federal boundary by pointing `primary-model` at an internal vLLM / NIM deployment in the proxy config.
-
----
-
-## Current Demo Status
-
-**Implemented:**
-
-- Live FAA SWIM / STDDS TAIS ingest through the SCDS Jumpstart Kit
-- Solace broker connection (SWIFT-authorized account)
-- Hybrid JMS-header + JSON-payload parser
-- Pydantic-validated normalization with schema enforcement
-- Deterministic alert engine, feed health, validation summary
-- AI Critic with confidence + pattern classification + escalation flag
-- Operational Planner answering plain-English questions
-- PCT Watch Officer Agent with deterministic fallback
-- Internal Operational Ticket package (DRAFT / APPROVED_FOR_ESCALATION / REJECTED / MONITORING)
-- Human-in-the-loop staged action gate with audit trail
-- Streamlit dashboard with Mission Questions Answered, Watch Officer Brief, airspace map, flight phase matrix, altitude / speed distributions, RVR monitor, data quality posture, alert log, HITL queue, audit trail
-- Operational ticker (banner) 
-- LiteLLM gateway: provider routing, fallback, and a scoped application key, all outside the application
-- Prometheus `/metrics` endpoint with HITL queue depth, LLM latency, gate decisions, per-airport status
-- Sample mode, replay mode, swim-folder live mode, eval mode
-- 147+ pytest tests covering deterministic and degraded paths
-
-**Intentionally not implemented:**
-
-- External ticketing integration (ServiceNow / Remedy / Jira) — the internal package is the durable artifact a future adapter would read
-- Pager / SMS / phone escalation
-- Auto-expire transition for stale staged actions
-- Multi-operator (4-eyes) approval workflow
-- Cryptographic signing of audit entries
-- Any code path that issues a real FAA operational command
-
----
-
 ## Technical Outcomes
 
-> Built **PCT TAIS FeedOps Sentinel**, a Python agentic-AI operational intelligence system for FAA SWIM / STDDS TAIS data covering PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit, hybrid JMS+JSON parsing, Pydantic-validated TAIS normalization, deterministic alert and feed-health rules, AI Critic and Watch Officer agents with deterministic fallback, an internal escalation-package workflow, a human-in-the-loop execution gate with immutable audit trail, and a Streamlit operational dashboard with airspace map, flight phase matrix, and live-data banner. Designed end-to-end around the LCFE production framework (Latency, Cost, Failure, Evaluation) with every model call routed through a LiteLLM gateway under a scoped key. 330+ pytest tests, including an end-to-end proof run in CI, replay and sample regression modes, Prometheus metrics, Docker Compose with Grafana auto-provisioning.
+> Built **PCT TAIS FeedOps Sentinel**, a Python system that monitors the trustworthiness of live FAA SWIM / STDDS data (TAIS, TDES, APDS, SMES) for PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit with single-consumer file claims and idempotent event identities; Pydantic-validated normalization; deterministic alert and feed-health rules; FAA data-handling rules (blockAtFAA withholding, beacon codes released only for active flight plans); a four-specialist investigation workflow whose claims must cite evidence and whose records are sealed; a human-in-the-loop gate with Keycloak role-based authorization (HTTPS only) and a database-enforced append-only audit log; Microsoft Agent Governance Toolkit policies over every model call and every agent tool call, with agents barred from deciding; OpenTelemetry GenAI telemetry; an evaluation layer and readiness gate that measure the AI from the record rather than from its own account; and a Streamlit operator console. Designed around Latency, Cost, Failure and Evaluation constraints, with every model call budgeted, redacted and routed through a LiteLLM gateway under a scoped key, and secrets held in Vault behind per-service AppRoles. Backed by a test suite of about 490 tests and a one-command end-to-end proof, run in CI alongside a dependency CVE audit and a blocking container image scan.
+
+---
+
+## Repository layout
+
+```
+launch_nas_sentinel.ps1   one-command local launcher (Windows / PowerShell)
+instraclustr/             infrastructure: Postgres, PgBouncer, Vault, LiteLLM
+nas-feedops-sentinel/     the application
+  src/                    ingest, pipeline, alert rules, gate, investigation, storage, API, Temporal
+  dashboard/              the Streamlit console: Overview and six pages, including Agent Evaluation
+  policies/               AGT model-use and tool-use policies; readiness objectives and gate limits
+  tests/                  the pytest suite, with real SWIM captures in fixtures/swim_kit/
+  scripts/                end-to-end proof, Keycloak setup, diagnostics
+  docs/                   operations, playbook, runbooks, walkthrough, agent governance and metrics
+  jumpstart/              the FAA SCDS Jumpstart Kit (L3Harris/swim-jumpstart), a live-run
+                          script and one custom output class
+  keycloak/  monitoring/  prompts/  docker/
+reference/                Temporal's docker-compose quickstart, kept for reference
+```

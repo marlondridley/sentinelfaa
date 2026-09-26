@@ -103,6 +103,21 @@ STATUS_TONE: dict[str, str] = {
     "INFO": "info",
     "NO DATA": "neutral",
     "UNKNOWN": "neutral",
+    # Evaluation and governance (dashboard/lib/agent_eval.py): gate results,
+    # objective status and the readiness verdict.
+    "PASS": "ok",
+    "WARN": "warn",
+    "FAIL": "bad",
+    "PENDING": "info",
+    "N/A": "neutral",
+    "MET": "ok",
+    "AT_RISK": "warn",
+    "AT RISK": "warn",
+    "MISSED": "bad",
+    "NO_DATA": "neutral",
+    "READY": "ok",
+    "NOT READY": "bad",
+    "INSUFFICIENT DATA": "neutral",
 }
 
 # Page URL slugs. Streamlit derives these from the filenames under
@@ -115,6 +130,7 @@ PAGES = {
     "critic": "AI_Critic_and_Review",
     "alerts": "Alert_Log",
     "ingest": "Ingest_and_Replay",
+    "evaluation": "Agent_Evaluation",
 }
 
 

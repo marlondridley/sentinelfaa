@@ -23,10 +23,12 @@ Section 'git branch / last commit' { git -C $appDir rev-parse --abbrev-ref HEAD;
 Section 'compose: temporal env var check' { Select-String -Path (Join-Path $appDir 'docker-compose.yml') -Pattern 'DYNAMIC_CONFIG' }
 
 $kcProbe = @'
-import json, urllib.request, urllib.error
-url = 'http://keycloak:8080/realms/nas-sentinel/.well-known/openid-configuration'
+import json, os, ssl, urllib.request, urllib.error
+# Keycloak serves HTTPS only; verify it the way the dashboard does.
+tls = ssl.create_default_context(cafile=os.environ.get('KEYCLOAK_CA_FILE') or None)
+url = 'https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration'
 try:
-    with urllib.request.urlopen(url, timeout=10) as r:
+    with urllib.request.urlopen(url, timeout=10, context=tls) as r:
         d = json.load(r)
         print('HTTP', r.status, url)
         for k in ('issuer', 'authorization_endpoint', 'token_endpoint'):
@@ -36,7 +38,7 @@ except urllib.error.HTTPError as e:
 except Exception as e:
     print('FAILED', url, '--', type(e).__name__, e)
 try:
-    urllib.request.urlopen('http://keycloak:8080/realms/master', timeout=10)
+    urllib.request.urlopen('https://keycloak:8443/realms/master', timeout=10, context=tls)
     print('keycloak itself reachable (the master realm answers)')
 except Exception as e:
     print('keycloak itself NOT reachable --', type(e).__name__, e)

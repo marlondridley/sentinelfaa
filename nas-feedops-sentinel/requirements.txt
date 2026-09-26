@@ -28,3 +28,22 @@ fastapi>=0.110.0
 uvicorn>=0.28.0
 litellm>=1.30.0
 temporalio>=1.5.0
+# Microsoft Agent Governance Toolkit (AGT). Both packages are pure Python;
+# the toolkit's native runtime (agent-control-specification) has no arm64
+# wheel and is not used. Where AGT computes a metric wrongly, the in-repo
+# replacement and the failing test are listed in docs/agent-metrics.md.
+# Policy engine, credential scanner and audit logger for every model call and tool call (src/governance.py):
+agent-os-kernel>=3.7,<4.0
+# SLIs, cost guard, fleet and evaluation engine behind the agent metrics (src/agt_metrics.py):
+agent-sre>=3.7,<3.8
+# OpenTelemetry: the transport for traces, metrics and AGT's audit logs (src/telemetry.py).
+# API used by every instrumented module:
+opentelemetry-api==1.45.0
+# SDK providers for traces, metrics and logs:
+opentelemetry-sdk==1.45.0
+# GenAI attribute and metric names (gen_ai.*), one definition for every model provider:
+opentelemetry-semantic-conventions==0.66b0
+# OTLP export to any collector, enabled by the standard OTEL_EXPORTER_OTLP_* variables:
+opentelemetry-exporter-otlp-proto-http==1.45.0
+# The same metrics on the existing /metrics endpoint for Prometheus:
+opentelemetry-exporter-prometheus==0.66b0

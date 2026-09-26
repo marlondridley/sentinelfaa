@@ -304,7 +304,7 @@ class _FakeCompletion:
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
-_TOOL = {"name": "t", "input_schema": {"type": "object", "required": ["pattern", "escalate", "confidence"]}}
+_TOOL = {"name": "submit_critique", "input_schema": {"type": "object", "required": ["pattern", "escalate", "confidence"]}}
 
 
 async def test_missing_required_keys_get_exactly_one_repair_request(monkeypatch):
@@ -312,7 +312,7 @@ async def test_missing_required_keys_get_exactly_one_repair_request(monkeypatch)
 
     fake = _FakeCompletion({"confidence": 0.8}, {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
     monkeypatch.setattr(llm.litellm, "acompletion", fake)
-    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert out == {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False}
     assert len(fake.calls) == 2
     assert "missing required keys: pattern, escalate" in fake.calls[1][-1]["content"]
@@ -324,11 +324,11 @@ async def test_complete_reply_needs_no_repair_and_bad_repair_is_not_retried(monk
 
     complete = _FakeCompletion({"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
     monkeypatch.setattr(llm.litellm, "acompletion", complete)
-    await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert len(complete.calls) == 1
 
     stubborn = _FakeCompletion({"confidence": 0.8})
     monkeypatch.setattr(llm.litellm, "acompletion", stubborn)
-    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user")
+    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert out == {"confidence": 0.8}, "returned as-is for the caller's guardrail to reject"
     assert len(stubborn.calls) == 2

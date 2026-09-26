@@ -13,15 +13,22 @@ The order never depends on model output. Specialists get deep copies of the
 record ("views"), so nothing a specialist does can change what another one
 sees; they return typed results and this module appends them. A specialist
 whose model call fails falls back to its rules, and the step log says so.
+
+Each run is one OpenTelemetry trace (src/telemetry.py): an invoke_workflow
+span for the investigation, an invoke_agent span per specialist, and the
+chat spans of their model calls beneath. The investigation_id travels as
+the trace's subject, so every model call it makes is attributed to it.
 """
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+from src import agent_tools, telemetry
 from src.config import settings
 from src.investigation.evidence import CORRELATION_KINDS, FEED_KINDS, Snapshot, collect, gather_snapshot
 from src.investigation.record import Investigation, StepRecord
@@ -58,8 +65,17 @@ def view_for(inv: Investigation, *, kinds: frozenset[str] | None, findings: bool
 
 async def _run(spec, view: Investigation, use_llm: bool) -> tuple[Any, StepRecord]:
     started = _now()
-    result = await spec.run(view, use_llm)
-    fallback = result.provenance.fallback_reason
+    clock = time.perf_counter()
+    with telemetry.tracer().start_as_current_span(
+        f"{telemetry.INVOKE_AGENT} {spec.name}",
+        attributes={telemetry.OPERATION: telemetry.INVOKE_AGENT, telemetry.AGENT_NAME: spec.name},
+    ) as span, agent_tools.acting_as(spec.name):
+        result = await spec.run(view, use_llm)
+        fallback = result.provenance.fallback_reason
+        span.set_attributes(telemetry.span_attributes(
+            {telemetry.AGENT_METHOD: result.provenance.method, telemetry.AGENT_FALLBACK: fallback}))
+    telemetry.record_agent_task(spec.name, time.perf_counter() - clock,
+                                "fallback" if fallback else result.provenance.method)
     return result, StepRecord(
         step=spec.name, agent=spec.name, started_at=started, finished_at=_now(),
         outcome="fallback" if fallback else "ok",
@@ -67,11 +83,18 @@ async def _run(spec, view: Investigation, use_llm: bool) -> tuple[Any, StepRecor
     )
 
 
+async def _collect(alert: AlertEvent, action_id: str) -> Snapshot:
+    """Evidence collection: a governed read by the investigation orchestrator (src/agent_tools.py)."""
+    with agent_tools.acting_as("investigation"):
+        return await agent_tools.invoke("collect_evidence", gather_snapshot, alert, action_id)
+
+
 @asynccontextmanager
 async def _step(inv: Investigation, name: str):
     started = _now()
     try:
-        yield
+        with telemetry.tracer().start_as_current_span(name):
+            yield
     except Exception as exc:
         inv.steps.append(StepRecord(step=name, started_at=started, finished_at=_now(),
                                     outcome="error", detail=f"{type(exc).__name__}: {exc}"))
@@ -89,9 +112,27 @@ async def run_investigation(
     """Run the fixed sequence and return a sealed record (COMPLETE or FAILED)."""
     inv = Investigation(action_id=action.action_id, alert_id=alert.alert_id,
                         trigger=alert.model_dump(mode="json"))
+    with telemetry.tracer().start_as_current_span(
+        f"{telemetry.INVOKE_WORKFLOW} investigation",
+        attributes=telemetry.span_attributes({
+            telemetry.OPERATION: telemetry.INVOKE_WORKFLOW, telemetry.WORKFLOW_NAME: "investigation",
+            telemetry.INVESTIGATION_ID: inv.investigation_id, telemetry.ACTION_ID: action.action_id,
+            telemetry.ALERT_ID: alert.alert_id,
+        }),
+    ) as span, telemetry.subject(inv.investigation_id):
+        await _investigate(inv, action, alert, use_llm=use_llm, snapshot=snapshot)
+        span.set_attribute("sentinel.investigation.status", inv.status)
+    inv.completed_at = _now()
+    inv.record_sha256 = inv.compute_sha256()
+    return inv
+
+
+async def _investigate(
+    inv: Investigation, action: StagedAction, alert: AlertEvent, *, use_llm: bool, snapshot: Snapshot | None,
+) -> None:
     try:
         async with _step(inv, "collect_evidence"):
-            snap = snapshot or await gather_snapshot(alert, action.action_id)
+            snap = snapshot or await _collect(alert, action.action_id)
             inv.evidence = collect(snap)
 
         # Parallel, isolated: each sees only its own evidence scope and no findings.
@@ -116,10 +157,6 @@ async def run_investigation(
     except Exception as exc:  # noqa: BLE001 -- recorded, never raised into the pipeline
         _log.error("investigation_failed", extra={"action_id": action.action_id, "error": str(exc)})
         inv.status = "FAILED"
-
-    inv.completed_at = _now()
-    inv.record_sha256 = inv.compute_sha256()
-    return inv
 
 
 async def investigate_staged(
@@ -149,7 +186,7 @@ async def investigate_staged(
         if await repo.get_by_action_id(action.action_id):
             continue
         if base is None:
-            base = await gather_snapshot(alert, action.action_id)
+            base = await _collect(alert, action.action_id)
         use_llm = settings.CRITIC_ENABLED and llm_runs < budget
         inv = await run_investigation(
             action, alert, use_llm=use_llm,

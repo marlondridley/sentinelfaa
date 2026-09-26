@@ -37,6 +37,9 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.l
 COPY src/ ./src/
 COPY prompts/ ./prompts/
 COPY dashboard/ ./dashboard/
+# Governance policies and model objectives (src/governance.py refuses every
+# model call and tool call when its policy file is missing).
+COPY policies/ ./policies/
 
 # Writable volume for ingest folders
 RUN mkdir -p /app/data/raw/swim_live /app/data/processed /app/data/failed \
@@ -74,6 +77,10 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements-d
 COPY tests/ ./tests/
 COPY pytest.ini ./
 COPY scripts/ ./scripts/
+# Deployment files the tests pin (Keycloak serves HTTPS only; the realm fits
+# Keycloak's columns). Test stage only; not in the shipped image.
+COPY docker-compose.yml ./
+COPY keycloak/realm-nas-sentinel.json ./keycloak/
 RUN chown -R sentinel:sentinel /app/tests /app/scripts
 USER sentinel
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-q"]

@@ -66,6 +66,67 @@
       "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
       "targets": [{"expr": "histogram_quantile(0.95, sum by (agent, le) (rate(nas_llm_call_duration_seconds_bucket[5m])))", "legendFormat": "{{agent}} p95", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 109,
+      "type": "row",
+      "title": "Agents: GenAI conventions and AGT metrics (src/telemetry.py)",
+      "gridPos": {"x": 0, "y": 20, "w": 24, "h": 1},
+      "collapsed": false, "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Model calls by provider and error class (gen_ai.client.operation.duration)",
+      "gridPos": {"x": 0, "y": 21, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (gen_ai_provider_name, error_type) (rate(gen_ai_client_operation_duration_seconds_count[5m]))", "legendFormat": "{{gen_ai_provider_name}} {{error_type}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Model call p95 by provider",
+      "gridPos": {"x": 12, "y": 21, "w": 12, "h": 8},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (gen_ai_provider_name, le) (rate(gen_ai_client_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{gen_ai_provider_name}} p95", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Tokens per minute (gen_ai.client.token.usage)",
+      "gridPos": {"x": 0, "y": 29, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (gen_ai_token_type) (rate(gen_ai_client_token_usage_sum[5m])) * 60", "legendFormat": "{{gen_ai_token_type}}", "refId": "A"}]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Model spend per hour by agent (AGT agent.sre.cost.total_usd)",
+      "gridPos": {"x": 12, "y": 29, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (agent_sre_cost_agent_id) (rate(agent_sre_cost_total_usd_total[1h])) * 3600", "legendFormat": "{{agent_sre_cost_agent_id}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Agent invocations by outcome (AGT agent.tasks.total)",
+      "gridPos": {"x": 0, "y": 37, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (agent_task_name, sentinel_outcome) (rate(agent_tasks_total[5m]))", "legendFormat": "{{agent_task_name}} {{sentinel_outcome}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Policy refusals (AGT agent.policy.violations)",
+      "gridPos": {"x": 12, "y": 37, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (agt_audit_action, agent_policy_name) (increase(agent_policy_violations_total[15m]))", "legendFormat": "{{agt_audit_action}} {{agent_policy_name}}", "refId": "A"}]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Governed tool calls by tool and decision (AGT agent.tool_calls.total)",
+      "gridPos": {"x": 0, "y": 45, "w": 24, "h": 8},
+      "targets": [{"expr": "sum by (agent_tool_name, agent_policy_decision) (rate(agent_tool_calls_total[5m]))", "legendFormat": "{{agent_tool_name}} {{agent_policy_decision}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
     }
   ]
 }

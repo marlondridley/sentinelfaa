@@ -20,7 +20,7 @@
     {
       "clientId": "nas-feedops-sentinel",
       "name": "NAS FeedOps Sentinel dashboard",
-      "description": "Streamlit operations dashboard. Confidential client. Direct access grants are enabled because the dashboard renders its own sign-in form and exchanges the credential at this realm's token endpoint (see src/keycloak_auth.py for the full rationale and the security trade-off it documents). The standard authorization-code flow is left enabled so the redirect flow remains available without a realm change.",
+      "description": "Operations dashboard. Confidential client. Direct access grants: the dashboard has its own sign-in form (see src/keycloak_auth.py). Authorization-code flow left enabled.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
