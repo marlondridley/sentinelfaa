@@ -32,7 +32,7 @@ from src.async_bridge import run_async as run
 from src.maintenance import purge_old_kit_files
 from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
-from src.swim_file_ingest import read_ingest_log, scan_swim_folder
+from src.swim_file_ingest import message_files, read_failure_reasons, read_ingest_log, scan_swim_folder
 
 bootstrap_page(page_title="Ingest & Replay — PCT FeedOps Sentinel", page_icon="📥")
 
@@ -118,14 +118,14 @@ processed_dir = config.PROCESSED_DIR
 
 sf1, sf2, sf3, sf4 = st.columns(4)
 
-pending_files = list([p for p in swim_live_dir.iterdir() if p.is_file()]) if swim_live_dir.exists() else []
+pending_files = message_files(swim_live_dir) if swim_live_dir.exists() else []
 processed_files = list([p for p in processed_dir.iterdir() if p.is_file()]) if processed_dir.exists() else []
 processed_files = [f for f in processed_files if f.name != "ingest_log.jsonl"]
 failed_files = list([p for p in failed_dir.iterdir() if p.is_file()]) if failed_dir.exists() else []
 
-sf1.metric("Pending Files", len(pending_files), help="Files waiting in swim_live/")
+sf1.metric("Pending Files", len(pending_files), help="Kit messages waiting; the live watcher takes them within seconds")
 sf2.metric("Processed Files", len(processed_files), help="Successfully ingested")
-sf3.metric("Failed Files", len(failed_files), help="Parse or normalisation errors")
+sf3.metric("Failed Files", len(failed_files), help="Kept in data/failed; the reasons are below")
 
 ingest_log_entries = read_ingest_log(limit=50)
 processed_entries = [e for e in ingest_log_entries if e.get("status") == "processed"]
@@ -144,7 +144,7 @@ with col_ingest:
         with st.spinner("Scanning swim_live/ ..."):
             sw_events, sw_stats = scan_swim_folder(swim_live_dir)
             summary = run(run_pipeline(sw_events, label="SWIM_SCAN")) if sw_events else None
-        st.success(
+        st.session_state["swim_scan_result"] = (
             f"Ingested {sw_stats.events_parsed} events from "
             f"{sw_stats.files_processed} file(s). "
             f"{sw_stats.files_failed} failed, "
@@ -153,14 +153,25 @@ with col_ingest:
             f"{summary['staged_count'] if summary else 0} staged for review."
         )
         st.rerun()
+    # Shown after the rerun that refreshes the counts above, which used to erase it.
+    if scan_result := st.session_state.pop("swim_scan_result", None):
+        st.success(scan_result)
 
 with col_hint:
     if len(pending_files) == 0:
         st.info(
-            "No files in `data/raw/swim_live/`. "
-            "Drop .json / .xml / .txt STDDS messages here, or "
-            "configure the FAA SCDS Jumpstart Kit to write to this folder."
+            f"No Kit messages waiting in `{swim_live_dir}`: the live watcher ingests "
+            "each one within seconds. If this stays empty, the feed is not running; "
+            "start it with `jumpstart\run-live.ps1` (or the launcher's `-WithLiveFeed`)."
         )
+
+failure_reasons = read_failure_reasons(limit=10)
+if failure_reasons:
+    with st.expander("Why files failed, by recorded reason", expanded=True):
+        st.dataframe(pd.DataFrame([
+            {"Reason": r["reason"], "Attempts": r["files"], "Last seen (UTC)": f"{r['last_seen']:%Y-%m-%d %H:%M}"}
+            for r in failure_reasons
+        ]), hide_index=True, use_container_width=True)
 
 if ingest_log_entries:
     with st.expander("Ingest audit log (latest 50 entries)"):
@@ -169,7 +180,7 @@ if ingest_log_entries:
 
 st.divider()
 st.caption(
-    "NAS FeedOps Sentinel · FAA SWIM/STDDS PCT Automation Demonstration · "
-    "All data is simulated unless the FAA SCDS Jumpstart Kit is connected."
+    "NAS FeedOps Sentinel · FAA SWIM/STDDS PCT · "
+    "Real FAA data: live from the SCDS Jumpstart Kit, or replayed captures."
 )
 theme.back_link()
