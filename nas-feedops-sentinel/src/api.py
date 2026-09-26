@@ -120,8 +120,8 @@ class IngestRequest(BaseModel):
         max_length=10000,
         description=(
             "Inline event payloads to ingest directly. If this list is non-empty, "
-            "it takes priority: a pipeline workflow is started from these events and "
-            "`source_dir` is ignored. Each entry is validated against the NASEvent "
+            "a pipeline workflow is started from these events; if it is empty, the "
+            "server scans its own SWIM folder instead. Each entry is validated against the NASEvent "
             "schema synchronously; malformed entries return 422 before any workflow starts. "
             "Capped at 10,000 entries per request so a single call can't block the "
             "request-handling event loop or exhaust memory."
@@ -167,7 +167,7 @@ def _idempotency_key(supplied: str | None, events: list[dict[str, Any]]) -> str 
     An explicit Idempotency-Key header always wins. Absent one, an inline-events batch
     falls back to a hash of the canonical payload, so a client retry after a timeout
     attaches to the existing workflow instead of starting a second run over the same
-    batch. Returns None for the source_dir path with no explicit key, where repeated
+    batch. Returns None for a folder scan with no explicit key, where repeated
     scans of the same directory are legitimately distinct runs.
     """
     if supplied:
@@ -253,8 +253,8 @@ async def ready() -> JSONResponse:
     summary="Start an ingestion workflow",
     description=(
         "Starts a Temporal workflow to process NAS events. If `events` is provided, a "
-        "pipeline workflow runs directly on those events; otherwise an ingest workflow runs "
-        "against `source_dir`. Inline events are validated against the NASEvent schema before "
+        "pipeline workflow runs directly on those events; otherwise an ingest workflow scans "
+        "the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before "
         "the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header "
         "to make retries attach to the existing workflow. Requires authentication via "
         "`X-API-Key` or a Bearer token; the resolved caller identity is recorded against "
@@ -269,9 +269,9 @@ async def ingest(
     """
     Start a Temporal workflow to ingest and process NAS events.
 
-    Branching behavior: `body.events` takes priority over `body.source_dir` — if
-    `events` is non-empty, a pipeline workflow is started from those events and
-    `source_dir` is ignored; otherwise an ingest workflow is started against `source_dir`.
+    Branching behavior: if `events` is non-empty, a pipeline workflow is started from
+    those events; otherwise an ingest workflow scans the server's configured SWIM
+    folder. The folder is server-side configuration, never a request field.
 
     Inline events are validated against NASEvent synchronously, so a malformed batch is
     rejected with 422 here rather than failing later inside process_events_activity where
