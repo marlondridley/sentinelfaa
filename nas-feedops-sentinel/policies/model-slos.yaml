@@ -1,0 +1,59 @@
+# Model-behavior objectives: what "ready to deploy" means for the parts of
+# Sentinel that call a model.
+#
+# `python -m src.readiness` measures the last `window_hours` of real calls
+# (model_calls), sealed investigations and operator decisions against these,
+# and prints one verdict: READY, AT RISK, NOT READY or INSUFFICIENT DATA.
+# `--gate` turns the verdict into an exit code for a deployment pipeline.
+#
+# Ratio objectives (`target`) use the standard error budget: a target T
+# allows an error rate of 1 - T; using more than all of that allowance misses
+# the objective, more than `at_risk_budget` of it puts it at risk. Limit
+# objectives (`max`) miss above the limit and are at risk above
+# `at_risk_budget` of it.
+#
+# `required: false` objectives never block a verdict for lack of evidence
+# (operators decide rarely; not every gateway reports cost), but a miss on
+# one still means NOT READY.
+
+window_hours: 24
+min_calls: 20            # fewer answered-or-failed calls than this: INSUFFICIENT DATA
+at_risk_budget: 0.75
+
+objectives:
+  - name: availability
+    description: Calls that came back with a usable answer, out of calls sent.
+    target: 0.95
+
+  - name: output_validity
+    description: Answers that met the output schema without the repair request.
+    target: 0.90
+
+  - name: grounding
+    description: >
+      Claims a model made in an investigation that cite only evidence that was
+      collected. The rest were rejected by the grounding gate -- the measured
+      hallucination rate.
+    target: 0.95
+    min_samples: 10
+
+  - name: latency_p95_seconds
+    description: 95th percentile wall time of a call, retries and repair included.
+    max: 30
+
+  - name: cost_per_call_usd
+    description: Mean gateway-reported cost of a call that came back.
+    max: 0.05
+    required: false
+
+  - name: policy_compliance
+    description: Calls the model-use policy allowed, out of all attempted.
+    target: 0.99
+
+  - name: operator_agreement
+    description: >
+      Decided actions where the operator's decision matched the Critic's
+      escalation recommendation (escalate and approved, or not and rejected).
+    target: 0.70
+    min_samples: 10
+    required: false

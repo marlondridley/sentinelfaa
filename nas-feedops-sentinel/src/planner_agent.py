@@ -7,12 +7,20 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src import storage
+from src import agent_tools, storage
 from src.config import settings
 from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
 from src.models import PlannerResult
 from src.prompts_loader import system_prompt, tool_schema
+
+
+async def _read_recent_activity() -> tuple[list[dict], list[dict], list[dict]]:
+    return (
+        await storage.get_recent_events(limit=20),
+        await storage.get_recent_alerts(limit=10),
+        await storage.get_recent_critic_results(limit=5),
+    )
 
 
 class PlannerAgent:
@@ -26,9 +34,20 @@ class PlannerAgent:
 
     async def query(self, question: str) -> PlannerResult:
         """Processes an operator question against current persisted NAS state asynchronously."""
-        recent_events = await storage.get_recent_events(limit=20)
-        recent_alerts = await storage.get_recent_alerts(limit=10)
-        critic_reviews = await storage.get_recent_critic_results(limit=5)
+        with agent_tools.acting_as("planner"):
+            return await self._query(question)
+
+    async def _query(self, question: str) -> PlannerResult:
+        try:
+            recent_events, recent_alerts, critic_reviews = await agent_tools.invoke(
+                "read_recent_activity", _read_recent_activity)
+        except agent_tools.ToolCallDenied as denied:
+            return PlannerResult(
+                question=question,
+                answer=f"The planner could not read the current picture: {denied}",
+                confidence=None,
+                recommended_actions=["Review alerts and feed health on the dashboard directly."],
+            )
 
         context_summary = {
             "question": question,
@@ -104,6 +123,7 @@ class PlannerAgent:
             user_message=user_content,
             max_tokens=1000,
             temperature=0.1,
+            role="planner",
         )
 
     def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:

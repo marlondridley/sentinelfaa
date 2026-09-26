@@ -56,6 +56,13 @@ x-app-env: &app-env
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
   TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+  # OpenTelemetry (src/telemetry.py): traces, metrics and AGT's audit log
+  # records. The metrics are always on each service's /metrics; set
+  # OTEL_EXPORTER_OTLP_ENDPOINT in .env to also send everything to an OTLP
+  # collector (http/protobuf, e.g. http://otel-collector:4318). Empty: nothing
+  # leaves the host.
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-nas-feedops-sentinel}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 x-after-migrate: &after-migrate
   migrate:

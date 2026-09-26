@@ -152,6 +152,51 @@ _MIGRATIONS: list[tuple[str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_nas_events_origin_time
             ON nas_events (data_origin, received_time_utc DESC);
     """),
+    # One row per model call: the durable projection of the call's
+    # OpenTelemetry chat span (src/telemetry.py, src/model_telemetry.py) --
+    # the policy decision, outcome class, wall time, tokens and cost that
+    # `python -m src.readiness` measures. trace_id links the row to the span;
+    # `subject` is what the call was about (an investigation_id, or the
+    # alert_id for the Critic). No prompt or response text is kept.
+    # Append-only like the other evidence tables: a readiness verdict is only
+    # worth something if the record behind it cannot be edited to look better.
+    ("2026_09_model_calls", """
+        CREATE TABLE IF NOT EXISTS model_calls (
+            call_id            TEXT PRIMARY KEY,
+            created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+            correlation_id     TEXT,
+            trace_id           TEXT,
+            subject            TEXT,
+            role               TEXT NOT NULL,
+            model_alias        TEXT NOT NULL,
+            served_model       TEXT,
+            provider           TEXT NOT NULL,
+            outcome            TEXT NOT NULL,
+            attempts           INTEGER NOT NULL,
+            repaired           BOOLEAN NOT NULL DEFAULT FALSE,
+            latency_ms         DOUBLE PRECISION NOT NULL,
+            prompt_tokens      INTEGER,
+            completion_tokens  INTEGER,
+            cost_usd           DOUBLE PRECISION,
+            policy_action      TEXT NOT NULL,
+            policy_rule        TEXT,
+            error_type         TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_calls_created_at ON model_calls (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_model_calls_subject ON model_calls (subject);
+
+        CREATE OR REPLACE FUNCTION model_calls_append_only()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            RAISE EXCEPTION 'model_calls is append-only; % is not permitted on this table', TG_OP;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_model_calls_append_only ON model_calls;
+        CREATE TRIGGER trg_model_calls_append_only
+            BEFORE UPDATE OR DELETE ON model_calls
+            FOR EACH ROW EXECUTE FUNCTION model_calls_append_only();
+    """),
 ]
 
 
