@@ -117,6 +117,7 @@ class CriticAgent:
                 reasoning=raw["reasoning"],
                 citations=raw.get("citations") or [],
                 pattern=raw["pattern"],
+                bluf=" ".join(str(raw.get("bluf") or "").split()) or None,
                 # _strict_bool, not bool(): bool("false") is True, which recorded
                 # a model's "do not escalate" as escalate=True. execution_gate
                 # also applies _strict_bool, but only to the already-converted

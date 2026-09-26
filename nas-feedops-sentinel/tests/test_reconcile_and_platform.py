@@ -40,7 +40,7 @@ async def test_reconciler_stages_recent_and_records_old_unstaged_alerts(db, monk
     await db.save_alerts([recent, old])          # saved like the old dashboard path did: no staging
 
     summary = await reconcile_unstaged()
-    assert summary == {"staged_pending": 1, "recorded_expired": 1, "still_unstaged": 0}
+    assert summary == {"staged_pending": 1, "recorded_expired": 1, "still_unstaged": 0, "merged": 0}
     assert CRITICAL_ALERTS_UNSTAGED._value.get() == 0
 
     pending = await db.get_pending_staged_actions()
@@ -59,7 +59,7 @@ async def test_reconciler_is_idempotent(db):
 
     await db.save_alerts([_critical(5), _critical(60 * 48)])
     await reconcile_unstaged()
-    assert await reconcile_unstaged() == {"staged_pending": 0, "recorded_expired": 0, "still_unstaged": 0}
+    assert await reconcile_unstaged() == {"staged_pending": 0, "recorded_expired": 0, "still_unstaged": 0, "merged": 0}
 
 
 async def test_reconciler_leaves_already_staged_alerts_alone(db):

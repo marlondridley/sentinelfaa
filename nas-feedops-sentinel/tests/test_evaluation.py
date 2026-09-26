@@ -60,12 +60,12 @@ def isolated(monkeypatch):
     yield
 
 
-def _alert() -> AlertEvent:
-    return AlertEvent(alert_type="ALERT_FEED_DISCONNECTED", severity="CRITICAL", airport_code="KDCA",
-                      service_name="ISMC", description="ISMC feed disconnected at KDCA.")
+def _alert(airport: str = "KDCA") -> AlertEvent:
+    return AlertEvent(alert_type="ALERT_FEED_DISCONNECTED", severity="CRITICAL", airport_code=airport,
+                      service_name="ISMC", description=f"ISMC feed disconnected at {airport}.")
 
 
-async def _investigate(monkeypatch, *, use_llm: bool):
+async def _investigate(monkeypatch, *, use_llm: bool, airport: str = "KDCA"):
     from src.execution_gate import stage_critical_alert
     from src.investigation import specialists
     from src.investigation.workflow import run_investigation
@@ -75,7 +75,7 @@ async def _investigate(monkeypatch, *, use_llm: bool):
     monkeypatch.setattr(llm.litellm, "acompletion", _scripted_model)
     monkeypatch.setattr(specialists, "build_llm_client",
                         lambda model=None: llm.LiteLLMClient(model="openai/primary-model"))
-    alert = _alert()
+    alert = _alert(airport)
     await storage.save_alerts([alert])
     action = await stage_critical_alert(alert)
     inv = await run_investigation(action, alert, use_llm=use_llm)
@@ -150,8 +150,8 @@ async def test_a_budget_the_investigation_exceeds_fails_its_cost_gate(monkeypatc
 async def test_the_window_is_aggregated_by_agt_components(monkeypatch):
     from src.execution_gate import decide_staged_action
 
-    for _ in range(2):
-        alert, action, _ = await _investigate(monkeypatch, use_llm=True)
+    for airport in ("KDCA", "KIAD"):               # two conditions, so two reviews
+        alert, action, _ = await _investigate(monkeypatch, use_llm=True, airport=airport)
         await storage.save_critic_result(CriticResult(alert_id=alert.alert_id, confidence=0.9, escalate=False,
                                                       pattern="TRANSIENT", reasoning="r"))
         await decide_staged_action(action.action_id, Decision.APPROVE, _officer(), "escalating anyway")

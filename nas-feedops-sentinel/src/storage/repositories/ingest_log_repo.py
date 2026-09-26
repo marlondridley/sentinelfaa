@@ -112,6 +112,21 @@ class IngestLogRepository:
             MAX_ROWS,
         )
 
+    async def failure_reasons(self, limit: int = 10) -> list[dict]:
+        """
+        Failed attempts grouped by their recorded reason, most frequent first:
+        {"reason", "files", "last_seen"}. Runs of six or more digits (file
+        names, ids) are folded, so one kind of failure is one row.
+        """
+        rows = await self._pool.fetch(
+            """SELECT regexp_replace(coalesce(error, ''), '[0-9]{6,}', 'N', 'g') AS reason,
+                      count(*) AS files, max(created_at) AS last_seen
+               FROM ingest_log WHERE status = 'failed'
+               GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT $1""",
+            limit,
+        )
+        return [dict(r) for r in rows]
+
     async def get_recent(self, limit: int = 100) -> list[dict]:
         rows = await self._pool.fetch(
             """SELECT file_name, status, event_count, services, parse_errors, error, created_at

@@ -13,8 +13,9 @@ it is created if missing and wiped first):
   2. Injected fault: the real capture contains no CRITICAL condition, so a
      SYNTHETIC cascade-failure scenario (src/demo_scenario.py, labelled as
      such throughout) is run through the same pipeline. Every CRITICAL alert
-     must be staged PENDING, evaluated by the Critic (model or recorded
-     degradation), and investigated with a sealed, traceable record.
+     must be covered by a PENDING review -- one per condition -- evaluated by
+     the Critic (model or recorded degradation), and investigated with a
+     sealed, traceable record.
   3. Authorization: an operator holding only `auditor` tries to approve and
      must be refused with nothing written.
   4. Decision: a `watch_officer` approves one staged action. The action must
@@ -126,9 +127,10 @@ async def run(require_llm: bool) -> int:
     proof.check(bool(critical) and all(a["data_origin"] == "synthetic" for a in critical),
                 "alerts from the synthetic scenario are tagged data_origin=synthetic")
     pending = await storage.get_pending_staged_actions()
-    proof.check(bool(critical) and {p.alert_id for p in pending} >= {a["alert_id"] for a in critical},
-                "every CRITICAL alert staged PENDING for human review",
-                f"{len(critical)} CRITICAL, {len(pending)} pending")
+    covered = {alert_id for p in pending for alert_id in await storage.get_covered_alert_ids(p.action_id)}
+    proof.check(bool(critical) and covered >= {a["alert_id"] for a in critical},
+                "every CRITICAL alert covered by a PENDING review, one per condition",
+                f"{len(critical)} CRITICAL alert(s), {len(pending)} review(s)")
 
     critic_rows = await storage.get_recent_critic_results(limit=100)
     by_model = [r for r in critic_rows if r.get("confidence") is not None]

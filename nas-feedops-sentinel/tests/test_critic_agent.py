@@ -153,6 +153,34 @@ async def _critique_with_model_output(monkeypatch, **overrides) -> CriticResult:
         return await CriticAgent().critique(_sample_alert())
 
 
+# ── The one-line summary (BLUF) for the review queue ──────────────────────────
+
+def test_the_critic_is_asked_for_a_one_line_summary():
+    import yaml
+    tool = yaml.safe_load(open("prompts/critic.yaml", encoding="utf-8"))["tool"]["input_schema"]
+    assert "bluf" in tool["required"] and tool["properties"]["bluf"]["type"] == "string"
+
+
+async def test_the_summary_is_recorded_on_one_line_and_read_back_with_the_verdict(monkeypatch):
+    result = await _critique_with_model_output(
+        monkeypatch, bluf="  Sustained low RVR on KDCA 01;\n feeds healthy, genuine weather likely. ")
+    assert result.bluf == "Sustained low RVR on KDCA 01; feeds healthy, genuine weather likely."
+    await storage.save_alerts([_sample_alert(alert_id=result.alert_id)])
+    await storage.save_critic_result(result)
+    [verdict] = await storage.get_critic_verdicts_for_alerts([result.alert_id])
+    assert verdict["bluf"] == result.bluf
+
+
+async def test_a_critique_without_a_summary_keeps_its_assessment(monkeypatch):
+    result = await _critique_with_model_output(monkeypatch)          # no bluf in the answer
+    assert result.bluf is None and result.confidence is not None, "the queue says there is no AI summary"
+
+
+async def test_a_summary_that_is_not_text_is_refused(monkeypatch):
+    result = await _critique_with_model_output(monkeypatch, bluf={"text": "nested"})
+    assert result.confidence is None and "bluf" in result.reasoning
+
+
 @pytest.mark.parametrize("model_value", ["false", "False", "0", "no"])
 async def test_string_false_escalate_is_recorded_as_false(monkeypatch, model_value):
     """bool("false") is True: the model's "do not escalate" must not be inverted."""

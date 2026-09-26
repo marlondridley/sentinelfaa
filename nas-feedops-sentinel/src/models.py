@@ -121,7 +121,7 @@ class StagedAction(BaseModel):
     rationale: str = ""
     critic_confidence: float | None = None
     critic_pattern: str | None = None
-    status: str = "PENDING"                # PENDING | APPROVED | REJECTED | OVERRIDDEN | EXPIRED
+    status: str = "PENDING"                # PENDING | APPROVED | REJECTED | OVERRIDDEN | EXPIRED | MERGED
     idempotency_key: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     decided_at: datetime | None = None
@@ -133,6 +133,12 @@ class StagedAction(BaseModel):
     # and what a human actually approved in its place -- see execution_gate.override_staged_action().
     overridden_recommendation: str | None = None
     overridden_severity: str | None = None
+    # The condition this action is the review for (alert type|airport|service),
+    # and how many CRITICAL alerts it covers, first and last (staged_action_alerts).
+    condition_key: str | None = None
+    occurrences: int = 1
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
 
 
 class ActionAuditEntry(BaseModel):
@@ -330,4 +336,6 @@ class CriticResult(BaseModel):
     citations: list[str] = Field(default_factory=list)
     pattern: str = "UNKNOWN"  # CASCADE_FAILURE | ISOLATED_FAULT | WEATHER_CORRELATED | DATA_ANOMALY | TRANSIENT | UNKNOWN
     escalate: bool = False
+    # One sentence, bottom line up front, for the review queue (prompts/critic.yaml).
+    bluf: str | None = None
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
