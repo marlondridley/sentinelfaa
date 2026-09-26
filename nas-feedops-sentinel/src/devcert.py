@@ -25,8 +25,9 @@ directory mount is created as a directory, which is what it should be. Each
 container also sees only what it needs: no container but edge-certs mounts
 the authority's key.
 
-The dashboard and API verify Keycloak against edge-ca.crt (KEYCLOAK_CA_FILE),
-so identity traffic is TLS end to end, including server to server.
+The dashboard verifies Keycloak against edge-ca.crt (secrets.toml
+[auth.keycloak.client_kwargs] verify), so identity traffic is TLS end to end,
+including server to server.
 
 Why an authority rather than a bare self-signed certificate: browsers reject a
 self-signed server certificate (NET::ERR_CERT_AUTHORITY_INVALID) unless that

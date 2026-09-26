@@ -8,7 +8,7 @@ None of this counts against the five minutes.
 
 1. **Bring the stack up** from the repository root: `.\launch_nas_sentinel.ps1`. Add `-WithLiveFeed` if you have a SWIM subscription and want live FAA data on screen.
 2. **Trust the local CA** once: import `nas-feedops-sentinel\tls\edge-ca.crt` into the Windows certificate store. The dashboard, the API and Keycloak (which serves HTTPS only) all present certificates it signed.
-3. **Have an operator** with the `watch_officer` role: `.\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1`, then sign in at https://localhost:8443. For the auditor contrast in step 5, create a second login with `$env:APP_ROLES = 'auditor'` before running the script again.
+3. **Have an operator** with the `watch_officer` role: `.\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1`, then open https://localhost:8443 and choose **Sign in with Keycloak**: you sign in on the realm's own page and come back signed in. For the auditor contrast in step 5, create a second login with `$env:APP_ROLES = 'auditor'` before running the script again.
 4. **Put something in the review queue.** Only real FAA data goes in; there is no synthetic mode. Live PCT data is usually quiet: the ten-message capture in the test fixtures raises 14 alerts, none of them CRITICAL. Run the live feed (`-WithLiveFeed`), or replay captured SWIM files:
    ```powershell
    cd nas-feedops-sentinel
@@ -69,7 +69,7 @@ Scroll to the **Decision audit trail**.
 
 **Show:**
 - Two rows: `(new) → PENDING` by the system, then `PENDING → APPROVED` by you.
-- Your row carries your name, your realm roles and how you signed in (`[keycloak-password]`).
+- Your row carries your name, your realm roles and how you signed in (`[oidc]`).
 
 **Say:** "The database refuses UPDATE and DELETE on this table, and the application's own database role can only read and insert. And the model had no path to that button: it explains, it doesn't decide."
 

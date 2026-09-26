@@ -28,7 +28,7 @@ from src.config import settings
 from src.keycloak_auth import roles_from_claims
 
 
-def _kc(*roles: str, source=PrincipalSource.PASSWORD_GRANT) -> Principal:
+def _kc(*roles: str, source=PrincipalSource.OIDC) -> Principal:
     return Principal(principal_id="jsmith", role="Watch Officer", source=source, roles=frozenset(roles))
 
 

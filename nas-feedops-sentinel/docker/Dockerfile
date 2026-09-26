@@ -81,6 +81,7 @@ COPY scripts/ ./scripts/
 # Keycloak's columns). Test stage only; not in the shipped image.
 COPY docker-compose.yml ./
 COPY keycloak/realm-nas-sentinel.json ./keycloak/
+COPY .streamlit/secrets.toml.example ./.streamlit/
 RUN chown -R sentinel:sentinel /app/tests /app/scripts
 USER sentinel
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-q"]

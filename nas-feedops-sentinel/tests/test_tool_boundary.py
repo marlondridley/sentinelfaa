@@ -140,7 +140,7 @@ async def test_a_refused_read_never_runs():
 
 
 def _supervisor() -> Principal:
-    return Principal(principal_id="jsmith", role="Watch Officer", source=PrincipalSource.PASSWORD_GRANT,
+    return Principal(principal_id="jsmith", role="Watch Officer", source=PrincipalSource.OIDC,
                      roles=frozenset({"watch_officer", "supervisor"}))
 
 
