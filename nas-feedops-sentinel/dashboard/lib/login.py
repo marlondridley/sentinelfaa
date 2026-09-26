@@ -30,6 +30,7 @@ day-old token.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -78,10 +79,14 @@ def keycloak_settings() -> KeycloakSettings | None:
         metadata_url = str(section.get("server_metadata_url", "")).strip()
         if not (client_id and client_secret and metadata_url):
             return None
+        # The authority that signed Keycloak's certificate: ca_file in the
+        # section, else KEYCLOAK_CA_FILE (set in docker-compose.yml).
+        ca_file = str(section.get("ca_file", "") or os.environ.get("KEYCLOAK_CA_FILE", "")).strip() or None
         return KeycloakSettings(
             client_id=client_id,
             client_secret=client_secret,
             metadata_url=metadata_url,
+            ca_file=ca_file,
         )
     except Exception as exc:  # noqa: BLE001 -- a malformed secrets file must not crash every page
         _log.warning("keycloak_settings_unreadable", extra={"error": str(exc)})

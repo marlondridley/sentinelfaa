@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
-from src import config, storage
+from src import agent_tools, config, storage
 from src.async_bridge import run_async
 from src.config import settings
 from src.feed_health import compute_feed_health
@@ -98,19 +98,28 @@ def rebuild_events(rows: list[dict]) -> tuple[list[NASEvent], int]:
     return events, failed_count
 
 
+async def _read_operating_picture(event_limit: int) -> tuple:
+    return (
+        await storage.get_recent_events(limit=event_limit),
+        await storage.get_recent_alerts(limit=200),
+        await storage.get_flight_phase_counts(window_minutes=15),
+        await storage.get_active_aircraft(window_minutes=5, limit=300),
+        await storage.get_latency_stats(),
+        await storage.get_pending_staged_actions(),
+        await storage.get_draft_operational_tickets(),
+        await storage.get_recent_critic_results(limit=20),
+    )
+
+
 async def build_watch_officer_context(
     *,
     alert: Any | None = None,
     event_limit: int = EVENT_LIMIT,
 ) -> dict[str, Any]:
-    events_raw = await storage.get_recent_events(limit=event_limit)
-    alerts_raw = await storage.get_recent_alerts(limit=200)
-    phase_counts = await storage.get_flight_phase_counts(window_minutes=15)
-    active = await storage.get_active_aircraft(window_minutes=5, limit=300)
-    latency_stats = await storage.get_latency_stats()
-    pending = await storage.get_pending_staged_actions()
-    draft_tickets = await storage.get_draft_operational_tickets()
-    critic_rows = await storage.get_recent_critic_results(limit=20)
+    # A governed read on the Watch Officer's behalf (src/agent_tools.py).
+    with agent_tools.acting_as("watch_officer"):
+        (events_raw, alerts_raw, phase_counts, active, latency_stats, pending, draft_tickets,
+         critic_rows) = await agent_tools.invoke("read_operating_picture", _read_operating_picture, event_limit)
 
     live_events, failed_reconstructions = rebuild_events(events_raw)
 
@@ -441,6 +450,7 @@ async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> Ra
             + json.dumps(payload, default=str)
         ),
         max_tokens=900,
+        role="watch_officer",
     )
     return RawLLMNarrative.model_validate(raw)
 

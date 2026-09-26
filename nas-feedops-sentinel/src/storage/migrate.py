@@ -9,9 +9,9 @@ Runs as the schema owner, before any application service starts:
   3. grant that role exactly what the application needs, re-applied on
      every run so tables added by new migrations are covered
 
-The application role can read and write operational tables, but on the two
-evidence tables -- action_audit_log and investigations -- it can only SELECT
-and INSERT. It owns nothing, so it cannot drop the append-only triggers,
+The application role can read and write operational tables, but on the
+evidence tables -- action_audit_log, investigations and model_calls -- it can
+only SELECT and INSERT. It owns nothing, so it cannot drop the append-only triggers,
 TRUNCATE, or change the schema. Before this, the application connected as
 the Postgres superuser that owned every table, which made the append-only
 triggers a convention rather than a control.
@@ -31,7 +31,7 @@ from src.storage.schema import init_schema, run_migrations
 _log = get_logger(__name__)
 
 # Evidence tables: rows may be added and read, never changed or removed.
-APPEND_ONLY_TABLES = ("action_audit_log", "investigations")
+APPEND_ONLY_TABLES = ("action_audit_log", "investigations", "model_calls")
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 

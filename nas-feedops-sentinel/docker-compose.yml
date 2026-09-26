@@ -2,9 +2,12 @@
 #
 # Runs on the external nas-network created by launch_nas_sentinel.ps1,
 # alongside the infrastructure stack in ../instraclustr (Postgres, PgBouncer,
-# Vault, LiteLLM). The `edge` nginx proxy is the only way in: HTTPS on
+# Vault, LiteLLM). The `edge` nginx proxy is the way in: HTTPS on
 # 127.0.0.1:8443-8447 (docker/edge/nginx.conf). Service ports are not
-# published; Keycloak's admin console alone stays on http://localhost:8081.
+# published, except Keycloak, which serves HTTPS itself on
+# https://localhost:8081 (admin console) and https://keycloak:8443 (the
+# dashboard's sign-in, server to server). Nothing in the stack speaks plain
+# HTTP to the identity service.
 #
 # Vault: services authenticate with their own AppRole (credentials written by
 # ../instraclustr/vault-unseal-and-seed.bash, one directory per role, mounted
@@ -56,6 +59,13 @@ x-app-env: &app-env
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
   TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+  # OpenTelemetry (src/telemetry.py): traces, metrics and AGT's audit log
+  # records. The metrics are always on each service's /metrics; set
+  # OTEL_EXPORTER_OTLP_ENDPOINT in .env to also send everything to an OTLP
+  # collector (http/protobuf, e.g. http://otel-collector:4318). Empty: nothing
+  # leaves the host.
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-nas-feedops-sentinel}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 x-after-migrate: &after-migrate
   migrate:
@@ -175,15 +185,20 @@ services:
       HOME: /tmp/streamlit-home
       GRAFANA_PUBLIC_URL: https://localhost:8445
       PROMETHEUS_PUBLIC_URL: https://localhost:8447
+      # The authority that signed Keycloak's certificate (src/devcert.py).
+      KEYCLOAK_CA_FILE: /run/tls/edge-ca.crt
     volumes:
       - ./data:/app/data
       - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
       # Keycloak client settings (secrets.toml) and theme; read-only, never baked in.
       - ./.streamlit:/app/.streamlit:ro
+      - ./tls/edge-ca.crt:/run/tls/edge-ca.crt:ro
     depends_on:
       <<: *after-migrate
       api:
         condition: service_started
+      edge-certs:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8501/_stcore/health\")' || exit 1"]
       interval: 10s
@@ -253,8 +268,10 @@ services:
     depends_on:
       keycloak-postgres:
         condition: service_healthy
+      edge-certs:
+        condition: service_completed_successfully
     ports:
-      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:8081:8443"   # admin console, HTTPS
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
@@ -265,18 +282,31 @@ services:
       # Substituted into the realm file; must equal client_secret in .streamlit/secrets.toml.
       KC_DASHBOARD_CLIENT_SECRET: ${KEYCLOAK_DASHBOARD_CLIENT_SECRET:?KEYCLOAK_DASHBOARD_CLIENT_SECRET is required -- run scripts/Setup-Keycloak.ps1}
       # Browser-facing URLs on the host port; server-to-server calls keep the
-      # host they used (keycloak:8080 from the dashboard container).
-      KC_HOSTNAME: http://localhost:8081
+      # host they used (https://keycloak:8443 from the dashboard container).
+      KC_HOSTNAME: https://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
-      # Plain HTTP only because every listener is loopback or internal.
-      KC_HTTP_ENABLED: "true"
+      # HTTPS only, with a certificate for keycloak / localhost / 127.0.0.1
+      # signed by the local authority (src/devcert.py). The management
+      # interface (health, port 9000) inherits it.
+      KC_HTTP_ENABLED: "false"
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/tls/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/tls/keycloak.key
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./keycloak/realm-nas-sentinel.json:/opt/keycloak/data/import/realm-nas-sentinel.json:ro
+      # Its own certificate and key, and the authority's public certificate
+      # (for the health check and the admin scripts) -- never the authority's key.
+      - ./tls/keycloak.crt:/opt/keycloak/conf/tls/keycloak.crt:ro
+      - ./tls/keycloak.key:/opt/keycloak/conf/tls/keycloak.key:ro
+      - ./tls/edge-ca.crt:/opt/keycloak/conf/tls/edge-ca.crt:ro
+      - ./keycloak/TlsHealth.java:/opt/keycloak/healthcheck/TlsHealth.java:ro
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      # The image has no curl or openssl; the JDK checks /health/ready over
+      # TLS against the local authority (keycloak/TlsHealth.java).
+      test: ["CMD", "java", "/opt/keycloak/healthcheck/TlsHealth.java",
+             "https://127.0.0.1:9000/health/ready", "/opt/keycloak/conf/tls/edge-ca.crt"]
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       start_period: 60s
       retries: 10
 
@@ -326,7 +356,7 @@ services:
     # Reached only through the edge proxy (https://localhost:8446). It is
     # unauthenticated and can terminate workflows.
 
-  # 8. Edge TLS termination: the only published entry point.
+  # 8. Edge TLS termination, and the certificates for it and for Keycloak.
   edge-certs:
     <<: *app-image
     container_name: nas-edge-certs

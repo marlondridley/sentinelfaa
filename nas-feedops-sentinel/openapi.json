@@ -2,14 +2,13 @@
   "openapi": "3.1.0",
   "info": {
     "title": "nas-feedops-sentinel",
-    "description": "FastAPI HTTP service for NAS FeedOps Sentinel ingest workflows and health probing with authentication and correlation tracking.",
     "version": "1.0.0"
   },
   "paths": {
     "/health": {
       "get": {
-        "summary": "Health Check",
-        "description": "Probe service readiness, active Temporal task queue, and correlation ID.",
+        "summary": "Health check",
+        "description": "Liveness check for the API process.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -17,10 +16,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
                   "additionalProperties": {
                     "type": "string"
                   },
+                  "type": "object",
                   "title": "Response Health Health Get"
                 }
               }
@@ -29,17 +28,75 @@
         }
       }
     },
-    "/ingest": {
+    "/v1/health": {
+      "get": {
+        "summary": "Health check",
+        "description": "Liveness check for the API process.",
+        "operationId": "health_v1_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health V1 V1 Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ready": {
+      "get": {
+        "summary": "Readiness check",
+        "description": "Readiness probe: confirms the API can actually serve traffic by reading from storage. Returns 503 with the failing dependency when a check fails.",
+        "operationId": "ready_v1_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ingest": {
       "post": {
-        "summary": "Ingest Events",
-        "description": "Trigger ingestion workflow via Temporal orchestrator. Supports direct event payload or directory scan.",
-        "operationId": "ingest_ingest_post",
+        "summary": "Start an ingestion workflow",
+        "description": "Starts a Temporal workflow to process NAS events. If `events` is provided, a pipeline workflow runs directly on those events; otherwise an ingest workflow scans the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header to make retries attach to the existing workflow. Requires authentication via `X-API-Key` or a Bearer token; the resolved caller identity is recorded against this call in the application logs.",
+        "operationId": "ingest_v1_ingest_post",
         "security": [
           {
             "APIKeyHeader": []
           },
           {
             "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -54,33 +111,12 @@
         },
         "responses": {
           "200": {
-            "description": "Workflow Triggered Successfully",
+            "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "workflow_id": {
-                      "type": "string"
-                    },
-                    "correlation_id": {
-                      "type": "string"
-                    },
-                    "task_queue": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "workflow_id",
-                    "correlation_id",
-                    "task_queue"
-                  ]
-                }
+                "schema": {}
               }
             }
-          },
-          "401": {
-            "description": "Invalid or missing authentication credentials"
           },
           "422": {
             "description": "Validation Error",
@@ -91,9 +127,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Temporal Engine Unavailable"
           }
         }
       }
@@ -101,38 +134,6 @@
   },
   "components": {
     "schemas": {
-      "IngestRequest": {
-        "properties": {
-          "events": {
-            "items": {
-              "type": "object",
-              "additionalProperties": true
-            },
-            "type": "array",
-            "title": "Events",
-            "default": []
-          },
-          "label": {
-            "type": "string",
-            "title": "Label",
-            "default": "API"
-          },
-          "source_dir": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Dir",
-            "default": null
-          }
-        },
-        "type": "object",
-        "title": "IngestRequest"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -145,6 +146,30 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "IngestRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 10000,
+            "title": "Events",
+            "description": "Inline event payloads to ingest directly. If this list is non-empty, a pipeline workflow is started from these events; if it is empty, the server scans its own SWIM folder instead. Each entry is validated against the NASEvent schema synchronously; malformed entries return 422 before any workflow starts. Capped at 10,000 entries per request so a single call can't block the request-handling event loop or exhaust memory.",
+            "default": []
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Label attached to the pipeline workflow run, used for tracing/identification in Temporal.",
+            "default": "API"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "IngestRequest"
       },
       "ValidationError": {
         "properties": {
@@ -169,14 +194,21 @@
           "type": {
             "type": "string",
             "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
+        "type": "object",
         "required": [
           "loc",
           "msg",
           "type"
         ],
-        "type": "object",
         "title": "ValidationError"
       }
     },
@@ -184,13 +216,11 @@
       "APIKeyHeader": {
         "type": "apiKey",
         "in": "header",
-        "name": "X-API-Key",
-        "description": "Custom API Key authentication header"
+        "name": "X-API-Key"
       },
       "HTTPBearer": {
         "type": "http",
-        "scheme": "bearer",
-        "description": "Bearer token authentication"
+        "scheme": "bearer"
       }
     }
   }

@@ -28,8 +28,16 @@ from tenacity import (
     wait_exponential,
 )
 
+from opentelemetry.trace import SpanKind
+
+from src import telemetry
+from src.agent_tools import ToolCallDenied
+from src.agent_tools import authorize as authorize_tool
 from src.config import settings
+from src.governance import UNREGISTERED_ROLE, evaluate_model_call
 from src.logging_config import get_correlation_id, get_logger
+from src.model_telemetry import ModelCall, classify_outcome
+from src.model_telemetry import record as record_model_call
 from src.redaction import redact_text
 
 _log = get_logger(__name__)
@@ -54,6 +62,10 @@ class LLMPermanentError(LLMError):
     """A failure that will never succeed on retry. Fail fast."""
 
     retriable = False
+
+
+class LLMPolicyDenied(LLMPermanentError):
+    """The model-use policy (src/governance.py) refused the call; nothing was sent."""
 
 
 def _exc_names(*names: str) -> tuple[type[BaseException], ...]:
@@ -152,6 +164,7 @@ class LLMClient(Protocol):
         user_message: str,
         max_tokens: int = 768,
         model: str | None = None,
+        role: str | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -163,6 +176,7 @@ class LLMClient(Protocol):
         max_tokens: int = 768,
         model: str | None = None,
         temperature: float = 0.0,
+        role: str | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -188,13 +202,14 @@ class LiteLLMClient:
         max_tokens: int = 768,
         model: str | None = None,
         temperature: float = 0.0,
+        role: str | None = None,
     ) -> dict[str, Any]:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(
                 self.acall_with_tool(
-                    system_prompt, tool, user_message, max_tokens, model, temperature
+                    system_prompt, tool, user_message, max_tokens, model, temperature, role
                 )
             )
         raise LLMPermanentError(
@@ -202,12 +217,6 @@ class LiteLLMClient:
             "use acall_with_tool() instead."
         )
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(LLMTransientError),
-        reraise=True,
-    )
     async def acall_with_tool(
         self,
         system_prompt: str,
@@ -216,6 +225,86 @@ class LiteLLMClient:
         max_tokens: int = 768,
         model: str | None = None,
         temperature: float = 0.0,
+        role: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        One governed, measured call.
+
+        The model-use policy is asked first (src/governance.py); a refusal
+        raises LLMPolicyDenied and nothing is sent. Every call -- refused,
+        failed or answered -- is one OpenTelemetry chat span and one
+        model_calls record (src/model_telemetry.py), with its retries and
+        the schema repair counted as part of it. `role` names the advisory role calling; a call
+        without one is evaluated as unregistered, which the policy refuses.
+        """
+        target_model = model or self._model
+
+        # Mandatory redaction: every caller of acall_with_tool() goes through
+        # this one chokepoint before anything reaches the model host, so a
+        # caller can't forget to scrub identifying NAS telemetry (aircraft
+        # tail numbers, squawk codes, raw lat/lon, callsigns, ...) out of its
+        # prompt. See src/redaction.py for what's covered and why.
+        redacted_user_message = redact_text(user_message)
+
+        # The call's OpenTelemetry span (src/telemetry.py): record() sets its
+        # attributes, so exceptions are neither recorded nor turned into a
+        # status here -- their messages can quote the model's reply.
+        with telemetry.tracer().start_as_current_span(
+            f"{telemetry.CHAT} {target_model}", kind=SpanKind.CLIENT,
+            record_exception=False, set_status_on_exception=False,
+        ) as span:
+            call = ModelCall(
+                role=role or UNREGISTERED_ROLE, model_alias=target_model,
+                correlation_id=get_correlation_id(), subject=telemetry.current_subject(),
+                max_tokens=max_tokens, temperature=temperature, span=span,
+            )
+            decision = evaluate_model_call(
+                role=role, model=target_model, prompt=f"{system_prompt}\n{redacted_user_message}",
+                max_tokens=max_tokens, redacted=True,
+            )
+            which = "model-use"
+            if decision.allowed:
+                # The tool boundary: a role may hand a model only its own
+                # output tool (policies/tool-use.yaml).
+                try:
+                    authorize_tool(str(tool.get("name") or ""), role=role)
+                except ToolCallDenied as exc:
+                    decision, which = exc.decision, "tool-use"
+            call.policy_action, call.policy_rule, call.policy_name = decision.action, decision.rule, decision.policy
+            if not decision.allowed:
+                refusal = LLMPolicyDenied(
+                    f"Refused by the {which} policy (rule: {decision.rule or 'default'}): {decision.reason}"
+                )
+                await record_model_call(call, "policy_denied", refusal)
+                raise refusal
+
+            try:
+                result = await self._acall_with_retries(
+                    system_prompt, tool, redacted_user_message, max_tokens, target_model, temperature, call,
+                )
+            except Exception as exc:
+                await record_model_call(call, classify_outcome(exc), exc)
+                raise
+            await record_model_call(
+                call, "incomplete" if call.incomplete else "repaired" if call.repaired else "ok",
+            )
+            return result
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(LLMTransientError),
+        reraise=True,
+    )
+    async def _acall_with_retries(
+        self,
+        system_prompt: str,
+        tool: dict[str, Any],
+        redacted_user_message: str,
+        max_tokens: int,
+        target_model: str,
+        temperature: float,
+        call: ModelCall,
     ) -> dict[str, Any]:
         schema = tool.get("input_schema", {})
         required = list(schema.get("required") or [])
@@ -232,25 +321,18 @@ class LiteLLMClient:
             + "Do not include any text outside the JSON object."
         )
         cid = get_correlation_id()
-        target_model = model or self._model
-
-        # Mandatory redaction: every caller of acall_with_tool() goes through
-        # this one chokepoint before anything reaches the model host, so a
-        # caller can't forget to scrub identifying NAS telemetry (aircraft
-        # tail numbers, squawk codes, raw lat/lon, callsigns, ...) out of its
-        # prompt. See src/redaction.py for what's covered and why.
-        redacted_user_message = redact_text(user_message)
 
         _log.info(
             "litellm_completion_start",
-            extra={"model": target_model, "tool": tool.get("name")},
+            extra={"model": target_model, "tool": tool.get("name"), "role": call.role},
         )
 
         messages = [
             {"role": "system", "content": augmented_system},
             {"role": "user", "content": redacted_user_message},
         ]
-        result, content = await self._complete(messages, target_model, max_tokens, temperature, cid)
+        call.repaired = call.incomplete = False
+        result, content = await self._complete(messages, target_model, max_tokens, temperature, cid, call)
 
         # One repair request, never more: if the object parsed but lacks
         # required keys, show the model its answer and name what is missing.
@@ -258,6 +340,7 @@ class LiteLLMClient:
         missing = [k for k in required if k not in result]
         if missing:
             _log.warning("litellm_schema_repair", extra={"model": target_model, "missing": missing})
+            call.repaired = True
             messages += [
                 {"role": "assistant", "content": content},
                 {"role": "user", "content": (
@@ -265,7 +348,8 @@ class LiteLLMClient:
                     "Return the complete object with every required key, and nothing else."
                 )},
             ]
-            result, _ = await self._complete(messages, target_model, max_tokens, temperature, cid)
+            result, _ = await self._complete(messages, target_model, max_tokens, temperature, cid, call)
+            call.incomplete = any(k not in result for k in required)
         return result
 
     async def _complete(
@@ -275,8 +359,11 @@ class LiteLLMClient:
         max_tokens: int,
         temperature: float,
         cid: str | None,
+        call: ModelCall | None = None,
     ) -> tuple[dict[str, Any], str]:
         """One completion: returns (parsed JSON object, raw content). Raises LLMError."""
+        if call is not None:
+            call.attempts += 1
         try:
             response = await litellm.acompletion(
                 model=target_model,
@@ -299,6 +386,11 @@ class LiteLLMClient:
                 extra={"model": target_model, "retriable": err.retriable, "error": str(err)},
             )
             raise err from exc
+
+        if call is not None:
+            # Tokens and cost are spent once a completion comes back, whether
+            # or not its content turns out to be usable.
+            call.add_response(response)
 
         try:
             content = response.choices[0].message.content

@@ -72,6 +72,7 @@ import hashlib
 from typing import Any
 
 from src import storage
+from src.agent_tools import guard_human_gate
 from src.auth import Decision, Principal, authorize, format_actor
 from src.config import settings
 from src.logging_config import get_logger
@@ -246,6 +247,9 @@ async def stage_critical_alert(
 
     No execution occurs here.
     """
+    # Agents recommend; the rules stage. Code running as an agent is refused
+    # by the tool-use policy here (src/agent_tools.py).
+    guard_human_gate("stage_for_human_review")
 
     # This is the primary execution-control boundary.
     if alert.severity != "CRITICAL":
@@ -450,7 +454,12 @@ async def decide_staged_action(
     linked ticket. Raises AuthorizationError without writing anything if the
     principal may not decide. MONITOR leaves the action PENDING and only
     marks the ticket.
+
+    Before any of that, code running as an agent is refused by the tool-use
+    policy (src/agent_tools.py): whatever principal it presents, an agent
+    never decides.
     """
+    guard_human_gate("decide_staged_action")
     try:
         authorize(principal, decision, allow_unverified=settings.ALLOW_UNVERIFIED_DECISIONS)
     except Exception:

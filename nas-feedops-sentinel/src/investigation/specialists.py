@@ -129,7 +129,9 @@ async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tu
     )
     start = time.perf_counter()
     try:
-        raw = await client.acall_with_tool(system_prompt=system, tool=tool, user_message=user, max_tokens=1200)
+        raw = await client.acall_with_tool(
+            system_prompt=system, tool=tool, user_message=user, max_tokens=1200, role=agent,
+        )
         LLM_CALLS.labels(agent=agent, outcome="success").inc()
         return raw, provenance.model_copy(update={"latency_ms": round((time.perf_counter() - start) * 1000, 1)})
     except Exception:

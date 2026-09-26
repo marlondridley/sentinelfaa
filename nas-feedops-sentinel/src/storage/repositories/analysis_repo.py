@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 
 import asyncpg
 
@@ -67,6 +68,35 @@ class AnalysisRepository:
             result.alert_id, result.confidence, result.reasoning, json.dumps(result.citations),
             result.pattern, bool(result.escalate), result.evaluated_at,
         )
+
+    async def get_critic_verdicts_since(self, since: datetime) -> list[dict]:
+        """
+        Critic results evaluated since `since`, each with the status of the
+        staged action raised for the same alert (None if there is none).
+
+        A model verdict that passed the output guardrail is the only kind with
+        a confidence; degraded results (disabled, errored, rejected) have none.
+        """
+        rows = await self._pool.fetch(
+            """SELECT c.alert_id, c.confidence, c.escalate, c.reasoning, c.evaluated_at,
+                      s.status AS action_status, s.decided_by
+               FROM critic_results c
+               LEFT JOIN staged_actions s ON s.alert_id = c.alert_id
+               WHERE c.evaluated_at >= $1""",
+            since,
+        )
+        return [dict(r) for r in rows]
+
+    async def get_critic_verdicts_for_alerts(self, alert_ids: list[str]) -> list[dict]:
+        """The Critic's result for each of these alerts, newest first."""
+        if not alert_ids:
+            return []
+        rows = await self._pool.fetch(
+            """SELECT alert_id, confidence, escalate, pattern, evaluated_at
+               FROM critic_results WHERE alert_id = ANY($1::text[]) ORDER BY evaluated_at DESC""",
+            list(alert_ids),
+        )
+        return [dict(r) for r in rows]
 
     async def get_recent_critic_results(self, limit: int = 50) -> list[dict]:
         # NOTE: column list mirrors the full critic_results schema, including the citations

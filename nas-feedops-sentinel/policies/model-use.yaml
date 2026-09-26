@@ -1,0 +1,78 @@
+# Model-use policy for NAS FeedOps Sentinel.
+#
+# Evaluated by the Microsoft Agent Governance Toolkit (agent-os-kernel's
+# PolicyEvaluator) before every model call, in src/governance.py, which
+# LiteLLMClient.acall_with_tool() consults first. A call the policy does not
+# allow never leaves the process: the caller falls back to its deterministic
+# rules, as it does for any model failure, and the refusal is recorded in
+# model_calls with the rule that decided it.
+#
+# Semantics (agent_os.policies): rules are tried highest priority first and
+# the first match decides. "audit" allows and marks the call as recorded;
+# "deny" and "block" refuse it. Anything no rule allows is refused
+# (defaults.action: deny). The evaluator also refuses when it cannot
+# evaluate, and src/governance.py refuses when this file cannot be loaded.
+#
+# Context fields, always present (src/governance.py builds them):
+#   role              advisory role making the call (critic, planner, ...)
+#   model             gateway alias as sent, e.g. openai/primary-model
+#   prompt_chars      characters of prompt after redaction
+#   max_tokens        output budget requested
+#   redacted          whether the prompt went through src/redaction.py
+#   credentials_found credential patterns in the outgoing prompt
+#                     (agent_os.CredentialRedactor)
+#
+# Changing what a model may receive is a change to this file, reviewed like
+# code; tests/test_governance.py pins the decisions below.
+
+version: "1.0"
+name: sentinel-model-use
+description: >
+  Which advisory roles may call a model, through which gateway aliases, and
+  under what limits. Models explain and challenge; they never decide.
+
+defaults:
+  action: deny
+
+rules:
+  - name: no-credentials-in-prompts
+    priority: 100
+    condition: {field: credentials_found, operator: gt, value: 0}
+    action: block
+    message: The prompt contains a credential pattern; it is never sent to a model.
+
+  - name: prompts-must-be-redacted
+    priority: 95
+    condition: {field: redacted, operator: ne, value: true}
+    action: deny
+    message: Prompts go through src/redaction.py before any model sees them.
+
+  - name: gateway-aliases-only
+    priority: 90
+    condition: {field: model, operator: not_in, value: [openai/primary-model, openai/gemini-backup]}
+    action: deny
+    message: >
+      Only the gateway aliases the application's LiteLLM key may call. Which
+      provider serves an alias is gateway configuration; which aliases may
+      receive NAS-derived data is decided here.
+
+  - name: prompt-size-ceiling
+    priority: 80
+    condition: {field: prompt_chars, operator: gt, value: 120000}
+    action: deny
+    message: Prompt exceeds 120,000 characters; send less evidence, not more.
+
+  - name: output-budget-ceiling
+    priority: 75
+    condition: {field: max_tokens, operator: gt, value: 2000}
+    action: deny
+    message: Requested output budget exceeds 2,000 tokens.
+
+  - name: advisory-roles
+    priority: 10
+    condition:
+      field: role
+      operator: in
+      value: [critic, planner, watch_officer, feed_diagnostician, correlation_analyst, red_team_critic]
+    action: audit
+    message: A registered advisory role; the call is allowed and recorded.

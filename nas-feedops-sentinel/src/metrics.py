@@ -39,6 +39,11 @@ EVENTS_INGESTED = Counter(
     ["source", "airport", "service"],
 )
 
+SWIM_MESSAGES_WITHHELD = Counter(
+    "nas_swim_messages_withheld_total",
+    "SWIM messages not ingested because the FAA flagged them blockAtFAA=true.",
+)
+
 EVENTS_VALIDATED = Counter(
     "nas_events_validated_total",
     "Total NAS events that passed/failed validation.",
@@ -66,6 +71,14 @@ LLM_CALLS = Counter(
     "Total LLM calls by outcome.",
     ["agent", "outcome"],  # outcome: success | error | disabled | guardrail_rejected
 )
+
+
+# Agent metrics are computed by the Agent Governance Toolkit and carried by
+# OpenTelemetry (src/telemetry.py): gen_ai.client.operation.duration and
+# gen_ai.client.token.usage per model call, and AGT's agent.tasks.total,
+# agent.task.duration, agent.llm.latency, agent.tool_calls.total,
+# agent.tool.latency, agent.policy.violations and agent.sre.cost.total_usd --
+# served on this same /metrics endpoint by OpenTelemetry's Prometheus reader.
 
 
 # ── Gate metrics ──────────────────────────────────────────────────────────────

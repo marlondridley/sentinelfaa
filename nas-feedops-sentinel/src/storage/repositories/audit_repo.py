@@ -65,3 +65,14 @@ class AuditLogRepository:
                 f"SELECT {columns} FROM action_audit_log ORDER BY created_at DESC LIMIT $1", limit
             )
         return [dict(r) for r in rows]
+
+    async def get_for_actions(self, action_ids: list[str]) -> list[dict]:
+        """Every entry for these actions, oldest first."""
+        if not action_ids:
+            return []
+        rows = await self._pool.fetch(
+            """SELECT audit_id, action_id, previous_status, new_status, actor, note, created_at
+               FROM action_audit_log WHERE action_id = ANY($1::text[]) ORDER BY created_at, audit_id""",
+            list(action_ids),
+        )
+        return [dict(r) for r in rows]

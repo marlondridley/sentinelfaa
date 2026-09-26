@@ -1,13 +1,21 @@
 """
-Local TLS for the edge proxy: `python -m src.devcert /tls`.
+Local TLS for the edge proxy and the identity service: `python -m src.devcert /tls`.
 
-Creates a small local certificate authority and a server certificate for
-localhost / 127.0.0.1 signed by it:
+Creates a small local certificate authority and two server certificates
+signed by it:
 
   edge-ca.crt   the authority's certificate -- trust this ONCE in the OS store
   edge-ca.key   the authority's key (owner-only; never leaves this machine)
-  edge.crt      server certificate + CA chain, served by nginx
-  edge.key      server key (owner-only)
+  edge.crt      nginx's certificate + CA chain, for localhost / 127.0.0.1
+  edge.key      its key (owner-only)
+  keycloak.crt  Keycloak's certificate + CA chain, for keycloak (the compose
+                service name the dashboard and API use), localhost and
+                127.0.0.1 (the admin console on the host, and the health check)
+  keycloak.key  its key: owner and group read, because Keycloak runs as uid
+                1000 in group 0 and the file is created by root
+
+The dashboard and API verify Keycloak against edge-ca.crt (KEYCLOAK_CA_FILE),
+so identity traffic is TLS end to end, including server to server.
 
 Why an authority rather than a bare self-signed certificate: browsers reject a
 self-signed server certificate (NET::ERR_CERT_AUTHORITY_INVALID) unless that
@@ -38,6 +46,14 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 CA_CERT, CA_KEY = "edge-ca.crt", "edge-ca.key"
 CERT_NAME, KEY_NAME = "edge.crt", "edge.key"
+KEYCLOAK_CERT, KEYCLOAK_KEY = "keycloak.crt", "keycloak.key"
+
+# (certificate file, key file, key file mode, DNS names). Every server
+# certificate also carries 127.0.0.1.
+LEAVES = (
+    (CERT_NAME, KEY_NAME, 0o600, ("localhost",)),
+    (KEYCLOAK_CERT, KEYCLOAK_KEY, 0o640, ("keycloak", "localhost")),
+)
 CA_VALID_DAYS = 3650
 VALID_DAYS = 397          # browsers reject leaf certificates valid for longer
 RENEW_WITHIN_DAYS = 30
@@ -48,10 +64,10 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _write_key(path: Path, key) -> None:
+def _write_key(path: Path, key, mode: int = 0o600) -> None:
     path.write_bytes(key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    os.chmod(path, 0o600)
+    os.chmod(path, mode)
 
 
 def _load_cert(path: Path) -> x509.Certificate | None:
@@ -93,27 +109,41 @@ def _ensure_ca(directory: Path) -> tuple[x509.Certificate, ec.EllipticCurvePriva
     return cert, key, True
 
 
-def _leaf_is_current(directory: Path, ca: x509.Certificate) -> bool:
-    leaf = _load_cert(directory / CERT_NAME)
-    if leaf is None or not (directory / KEY_NAME).exists():
+def _leaf_is_current(directory: Path, ca: x509.Certificate, cert_name: str, key_name: str,
+                     dns_names: tuple[str, ...]) -> bool:
+    leaf = _load_cert(directory / cert_name)
+    if leaf is None or not (directory / key_name).exists():
         return False
     if leaf.issuer != ca.subject:
         return False                          # e.g. the old self-signed certificate
+    try:
+        names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return False
+    if set(names.get_values_for_type(x509.DNSName)) != set(dns_names):
+        return False                          # issued for a different set of names
     return leaf.not_valid_after_utc - _now() > dt.timedelta(days=RENEW_WITHIN_DAYS)
 
 
 def ensure_certificate(directory: Path) -> bool:
-    """Ensure the authority and a current server certificate exist. True if anything was written."""
+    """Ensure the authority and current server certificates exist. True if anything was written."""
     directory.mkdir(parents=True, exist_ok=True)
     ca, ca_key, ca_new = _ensure_ca(directory)
-    if not ca_new and _leaf_is_current(directory, ca):
-        return False
+    wrote = ca_new
+    for cert_name, key_name, key_mode, dns_names in LEAVES:
+        if ca_new or not _leaf_is_current(directory, ca, cert_name, key_name, dns_names):
+            _issue_leaf(directory, ca, ca_key, cert_name, key_name, key_mode, dns_names)
+            wrote = True
+    return wrote
 
+
+def _issue_leaf(directory: Path, ca: x509.Certificate, ca_key, cert_name: str, key_name: str,
+                key_mode: int, dns_names: tuple[str, ...]) -> None:
     key = ec.generate_private_key(ec.SECP256R1())
     leaf = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+            x509.NameAttribute(NameOID.COMMON_NAME, dns_names[0]),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, ORG),
         ]))
         .issuer_name(ca.subject)
@@ -121,10 +151,10 @@ def ensure_certificate(directory: Path) -> bool:
         .serial_number(x509.random_serial_number())
         .not_valid_before(_now() - dt.timedelta(minutes=5))
         .not_valid_after(_now() + dt.timedelta(days=VALID_DAYS))
-        .add_extension(x509.SubjectAlternativeName([
-            x509.DNSName("localhost"),
-            x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-        ]), critical=False)
+        .add_extension(x509.SubjectAlternativeName(
+            [x509.DNSName(name) for name in dns_names]
+            + [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+        ), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(
             digital_signature=True, key_cert_sign=False, crl_sign=False, content_commitment=False,
@@ -134,17 +164,16 @@ def ensure_certificate(directory: Path) -> bool:
         .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
-    _write_key(directory / KEY_NAME, key)
-    # Server certificate followed by the authority: the full chain nginx serves.
-    (directory / CERT_NAME).write_bytes(
+    _write_key(directory / key_name, key, key_mode)
+    # Server certificate followed by the authority: the full chain served.
+    (directory / cert_name).write_bytes(
         leaf.public_bytes(serialization.Encoding.PEM) + ca.public_bytes(serialization.Encoding.PEM))
-    return True
 
 
 def main() -> None:
     target = Path(sys.argv[1] if len(sys.argv) > 1 else "/tls")
     wrote = ensure_certificate(target)
-    print(f"{'issued' if wrote else 'kept existing'} {target / CERT_NAME} "
+    print(f"{'issued' if wrote else 'kept existing'} {target / CERT_NAME} and {target / KEYCLOAK_CERT} "
           f"(signed by {target / CA_CERT}; trust that once in the OS store)")
 
 
