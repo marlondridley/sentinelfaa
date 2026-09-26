@@ -336,4 +336,6 @@ class CriticResult(BaseModel):
     citations: list[str] = Field(default_factory=list)
     pattern: str = "UNKNOWN"  # CASCADE_FAILURE | ISOLATED_FAULT | WEATHER_CORRELATED | DATA_ANOMALY | TRANSIENT | UNKNOWN
     escalate: bool = False
+    # One sentence, bottom line up front, for the review queue (prompts/critic.yaml).
+    bluf: str | None = None
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

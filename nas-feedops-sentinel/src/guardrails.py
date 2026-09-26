@@ -167,12 +167,19 @@ class OutputGuardrail:
       5. No schema injection artifacts in string fields
     """
     def verify_critic_output(self, output: dict[str, Any]) -> GuardrailResult:
-        return self._verify_output(
+        result = self._verify_output(
             output=output,
             required_fields=["confidence", "reasoning", "pattern", "escalate", "citations"],
             valid_patterns=_VALID_CRITIC_PATTERNS,
             context="critic",
         )
+        # The one-line summary is asked for but not required: a critique without
+        # it keeps its assessment, and the queue says there is no AI summary.
+        bluf = output.get("bluf")
+        if result.is_compliant and bluf is not None and not isinstance(bluf, str):
+            return GuardrailResult(is_compliant=False, violation_type="STRUCTURAL",
+                                   detail=f"critic bluf must be text, got {type(bluf).__name__}.")
+        return result
 
     def verify_planner_output(self, output: dict[str, Any]) -> GuardrailResult:
         return self._verify_output(
