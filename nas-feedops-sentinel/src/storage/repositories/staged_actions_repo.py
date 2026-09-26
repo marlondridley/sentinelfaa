@@ -162,6 +162,19 @@ class StagedActionsRepository:
             f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE action_id = $1", action_id)
         return _row_to_staged_action(row)
 
+    async def covering_actions(self, alert_ids: list[str]) -> dict[str, dict]:
+        """For each alert, the review that covers it: {"action_id", "status", "decided_by"}."""
+        if not alert_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT x.alert_id, s.action_id, s.status, s.decided_by
+               FROM staged_action_alerts x JOIN staged_actions s ON s.action_id = x.action_id
+               WHERE x.alert_id = ANY($1::text[])""",
+            list(alert_ids),
+        )
+        return {r["alert_id"]: {"action_id": r["action_id"], "status": r["status"],
+                                "decided_by": r["decided_by"]} for r in rows}
+
     async def covered_alert_ids(self, action_id: str) -> list[str]:
         """The CRITICAL alerts this review covers, oldest first."""
         rows = await self._pool.fetch(

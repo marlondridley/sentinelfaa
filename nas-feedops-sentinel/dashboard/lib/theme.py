@@ -222,7 +222,8 @@ def inject_theme() -> None:
         /* ── Canvas ─────────────────────────────────────────────── */
         .stApp {{ background: {BLACK}; }}
         .block-container {{
-            padding-top: 1.1rem; padding-bottom: 3rem;
+            /* Clear Streamlit's fixed header, or it covers each page's title. */
+            padding-top: 4.25rem; padding-bottom: 3rem;
             max-width: 1680px;
         }}
         section[data-testid="stSidebar"] {{
@@ -468,6 +469,35 @@ def kpi(
         + spark_html
         + f"</{tag}>"
     )
+
+
+def event_chips(event_ids: Sequence[str], events: dict[str, dict], limit: int = 8) -> str:
+    """
+    Evidence event ids as chips; hovering one shows the SWIM event it names
+    (service, airport, time, and what the message said), or that it has aged
+    out of the event store.
+    """
+    chips = []
+    for event_id in list(event_ids)[:limit]:
+        e = events.get(event_id)
+        if e is None:
+            about = "No longer in the event store (retention)."
+        else:
+            when = e.get("event_time_utc")
+            parts = [str(e.get("service_name") or "?"), str(e.get("airport_code") or "?"),
+                     f"{when:%Y-%m-%d %H:%M:%S} UTC" if hasattr(when, "strftime") else str(when or "")]
+            detail = {
+                "runway": e.get("runway"), "RVR td/mid/ro": "/".join(
+                    str(e[k]) for k in ("rvr_touchdown", "rvr_midpoint", "rvr_rollout") if e.get(k) is not None),
+                "aircraft": e.get("aircraft_id"), "phase": e.get("flight_phase"), "alt ft": e.get("altitude_ft"),
+                "surface": e.get("surface_event_type"), "feed": e.get("feed_status"),
+            }
+            about = " · ".join(parts + [f"{k} {v}" for k, v in detail.items() if v not in (None, "")])
+        chips.append(f'<span class="chip mono" title="{_esc(about)}" style="font-size:10.5px;padding:1px 7px;'
+                     f'cursor:help;">{_esc(event_id[:14])}</span>')
+    more = f" +{len(event_ids) - limit}" if len(event_ids) > limit else ""
+    return ('<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:11px;color:'
+            f'{GRAY1};">Evidence (hover for the event): ' + "".join(chips) + _esc(more) + "</div>")
 
 
 def kpi_row(tiles: Sequence[str], *, columns: int | None = None) -> None:

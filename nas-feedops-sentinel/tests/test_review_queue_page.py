@@ -55,3 +55,35 @@ async def test_the_queue_is_one_row_per_review_with_counted_filters_and_summarie
     assert rows["KIAD"]["AI suggests"] == "No AI review" and rows["KIAD"]["AI summary"] == "No AI summary yet"
     labels = [o for p in at.get("button_group") for o in p.proto.options] if at.get("button_group") else []
     assert not labels or any("KBWI (1)" in str(o) for o in labels)
+
+
+async def test_a_critic_verdict_opens_its_review_and_its_evidence_explains_itself(db):
+    from datetime import datetime, timezone
+
+    from src.models import NASEvent
+
+    reading = NASEvent(airport_code="KBWI", tracon="PCT", service_name="APDS_RVR", message_type="APDS_RR",
+                       event_time_utc=datetime(2026, 9, 25, 23, 20, tzinfo=timezone.utc),
+                       received_time_utc=datetime(2026, 9, 25, 23, 20, 2, tzinfo=timezone.utc),
+                       runway="10", rvr_touchdown=600, rvr_midpoint=800)
+    await db.save_events([reading])
+    alert = _rvr("KBWI")
+    await db.save_alerts([alert])
+    await stage_critical_alert(alert)
+    await db.save_critic_result(CriticResult(
+        alert_id=alert.alert_id, confidence=0.9, escalate=True, pattern="WEATHER_CORRELATED", reasoning="r",
+        citations=[reading.event_id, "evt-aged-out"]))
+
+    at = AppTest.from_file(str(PAGE), default_timeout=60).run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert "Review escalation" in [b.label for b in at.button], "an escalation verdict leads to its review"
+    html = " ".join(m.value for m in at.markdown)
+    assert "APDS_RVR · KBWI · 2026-09-25 23:20:00 UTC · runway 10 · RVR td/mid/ro 600/800" in html
+    assert "No longer in the event store" in html
+
+
+def test_the_console_offers_no_deploy_or_developer_menu():
+    import tomllib
+    config = tomllib.loads((PAGE.parent.parent.parent / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    assert config["client"]["toolbarMode"] == "minimal"

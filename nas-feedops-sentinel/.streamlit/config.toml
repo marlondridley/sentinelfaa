@@ -30,3 +30,8 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# "minimal": no Deploy button and no developer menu. Nothing in the running
+# console offers to publish it to Streamlit Community Cloud or expose its source.
+toolbarMode = "minimal"
