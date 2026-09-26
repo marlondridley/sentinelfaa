@@ -5,7 +5,8 @@ name: Sentinel CI
 #               (including scripts/e2e_proof.py) against a real Postgres
 #   audit       pip-audit over the hash-locked runtime dependencies
 #   compose     both compose files render with the example env files
-#   image-scan  Trivy over the shipped runtime image (reporting for now)
+#   image-scan  Trivy over the shipped runtime image; a fixable HIGH or
+#               CRITICAL finding fails the build
 
 on:
   push:
@@ -102,9 +103,12 @@ jobs:
   image-scan:
     name: Runtime image scan (Trivy)
     runs-on: ubuntu-latest
-    # Reporting only until the base-image findings are triaged; the job's
-    # log is the report. Make it blocking by removing continue-on-error.
-    continue-on-error: true
+    # Blocking. A HIGH or CRITICAL finding with a published fix fails the
+    # build: rebuild on the patched base image, or bump the locked package.
+    # Findings with no fix released (today: Debian OS packages in
+    # python:3.12-slim) are not actionable here and are ignored. An accepted
+    # exception goes in nas-feedops-sentinel/cve-allowlist.md and a
+    # .trivyignore passed as `trivyignores`, in the same PR.
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -117,7 +121,11 @@ jobs:
           load: true
           cache-from: type=gha
       - name: Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a commit, not a tag: tags can move or disappear. The
+        # unprefixed 0.28.0 tag was removed upstream (tags are v-prefixed
+        # now), and this job then failed at setup on every run, unnoticed
+        # behind continue-on-error.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: nas-feedops-sentinel:ci
           severity: CRITICAL,HIGH
