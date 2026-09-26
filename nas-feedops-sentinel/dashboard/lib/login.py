@@ -69,7 +69,8 @@ def _config_problem(auth: dict[str, Any]) -> str:
 
 def current_principal() -> Principal | None:
     """The signed-in operator, or None. A sign-in past the realm's maximum session is ended here."""
-    if not st.user.is_logged_in:
+    # st.user has no is_logged_in at all without an [auth] section.
+    if not oidc_configured() or not st.user.is_logged_in:
         return None
     claims = st.user.to_dict()
     if session_expired(claims):
