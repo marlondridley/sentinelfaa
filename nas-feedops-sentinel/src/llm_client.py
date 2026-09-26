@@ -107,6 +107,15 @@ def classify(exc: BaseException) -> LLMError:
 
     detail = f"{type(exc).__name__}: {exc}"
 
+    # An exhausted daily quota comes back as a 429 like any rate limit, but it
+    # will not clear for hours. Retrying it only spends the next key's quota:
+    # observed live, failing calls became dozens of upstream requests (client
+    # retries x proxy retries x deployments) and drained a second free-tier
+    # key. Treated as permanent so the caller falls back to rules at once.
+    text = str(exc)
+    if "PerDay" in text or "exceeded your current quota" in text:
+        return LLMPermanentError(detail)
+
     if _PERMANENT_EXC and isinstance(exc, _PERMANENT_EXC):
         return LLMPermanentError(detail)
 
@@ -208,12 +217,19 @@ class LiteLLMClient:
         model: str | None = None,
         temperature: float = 0.0,
     ) -> dict[str, Any]:
-        schema_text = json.dumps(tool.get("input_schema", {}), indent=2)
+        schema = tool.get("input_schema", {})
+        required = list(schema.get("required") or [])
+        schema_text = json.dumps(schema, indent=2)
+        # JSON mode guarantees JSON, not this schema -- DeepSeek in particular
+        # returned objects missing required keys under a large context. Naming
+        # the required keys outright makes that less likely; the one repair
+        # request below handles the rest.
         augmented_system = (
             f"{system_prompt}\n\n"
             f"You MUST respond with a single JSON object matching this schema:\n"
             f"{schema_text}\n"
-            f"Do not include any text outside the JSON object."
+            + (f"The object MUST contain every one of these keys: {', '.join(required)}.\n" if required else "")
+            + "Do not include any text outside the JSON object."
         )
         cid = get_correlation_id()
         target_model = model or self._model
@@ -230,29 +246,57 @@ class LiteLLMClient:
             extra={"model": target_model, "tool": tool.get("name")},
         )
 
+        messages = [
+            {"role": "system", "content": augmented_system},
+            {"role": "user", "content": redacted_user_message},
+        ]
+        result, content = await self._complete(messages, target_model, max_tokens, temperature, cid)
+
+        # One repair request, never more: if the object parsed but lacks
+        # required keys, show the model its answer and name what is missing.
+        # Whatever comes back still goes through the caller's guardrail.
+        missing = [k for k in required if k not in result]
+        if missing:
+            _log.warning("litellm_schema_repair", extra={"model": target_model, "missing": missing})
+            messages += [
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": (
+                    f"Your JSON object is missing required keys: {', '.join(missing)}. "
+                    "Return the complete object with every required key, and nothing else."
+                )},
+            ]
+            result, _ = await self._complete(messages, target_model, max_tokens, temperature, cid)
+        return result
+
+    async def _complete(
+        self,
+        messages: list[dict[str, str]],
+        target_model: str,
+        max_tokens: int,
+        temperature: float,
+        cid: str | None,
+    ) -> tuple[dict[str, Any], str]:
+        """One completion: returns (parsed JSON object, raw content). Raises LLMError."""
         try:
             response = await litellm.acompletion(
                 model=target_model,
-                messages=[
-                    {"role": "system", "content": augmented_system},
-                    {"role": "user", "content": redacted_user_message},
-                ],
+                messages=messages,
                 api_base=self._api_base,
                 api_key=self._api_key or None,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                # Bounded: without it a call inherits litellm's multi-minute
+                # default and pins a worker slot. Timeout is a transient error
+                # (classify() below), so tenacity retries it.
+                timeout=settings.LLM_TIMEOUT_SECONDS,
                 extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
             )
         except Exception as exc:  # noqa: BLE001 -- normalized immediately below
             err = classify(exc)
             _log.warning(
                 "litellm_completion_failed",
-                extra={
-                    "model": target_model,
-                    "retriable": err.retriable,
-                    "error": str(err),
-                },
+                extra={"model": target_model, "retriable": err.retriable, "error": str(err)},
             )
             raise err from exc
 
@@ -261,28 +305,24 @@ class LiteLLMClient:
         except (AttributeError, IndexError, TypeError) as exc:
             # Malformed envelope from the proxy -- usually a transport-layer
             # truncation rather than a modelling problem.
-            raise LLMTransientError(
-                f"Unexpected LiteLLM response shape: {exc}"
-            ) from exc
+            raise LLMTransientError(f"Unexpected LiteLLM response shape: {exc}") from exc
 
         if not content:
             raise LLMTransientError("Empty completion content.")
 
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
         except json.JSONDecodeError as exc:
             if temperature == 0.0:
                 # Deterministic call: a re-roll reproduces the same malformed
                 # text, so this is permanent -- the prompt/schema needs fixing.
-                raise LLMPermanentError(
-                    f"Model returned non-JSON content: {exc}"
-                ) from exc
+                raise LLMPermanentError(f"Model returned non-JSON content: {exc}") from exc
             # Non-zero temperature: a retry may legitimately produce valid
-            # JSON next time, so this is worth one more attempt rather than
-            # failing fast.
-            raise LLMTransientError(
-                f"Model returned non-JSON content: {exc}"
-            ) from exc
+            # JSON next time, so this is worth one more attempt.
+            raise LLMTransientError(f"Model returned non-JSON content: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise LLMPermanentError(f"Model returned JSON {type(parsed).__name__}, not an object")
+        return parsed, content
 
 
 def build_llm_client(model: str | None = None) -> LLMClient | None:

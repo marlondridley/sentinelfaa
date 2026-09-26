@@ -37,9 +37,8 @@ from src.models import (
     StagedAction,
     WatchOfficerBrief,
 )
-from src.storage.pool import close_db_pool, create_asyncpg_pool, get_db_pool
+from src.storage.pool import close_db_pool, get_db_pool
 from src.storage.repositories.analysis_repo import AnalysisRepository
-from src.storage.repositories.audit_repo import AuditLogRepository
 from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
@@ -49,7 +48,6 @@ from src.storage.test_support import override_db_path, reset_db
 
 __all__ = [
     "close_db_pool",
-    "create_asyncpg_pool",
     "get_db_pool",
     "override_db_path",
     "reset_db",
@@ -60,6 +58,7 @@ __all__ = [
     "get_recent_events",
     "get_recent_alerts",
     "get_latest_rvr",
+    "get_origin_counts",
     "get_event_counts_by_service",
     "get_validation_summary",
     "get_events_for_critic",
@@ -129,6 +128,11 @@ async def get_recent_events(limit: int = 500) -> list[dict]:
 async def get_recent_alerts(limit: int = 200) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
     return await repo.get_recent_alerts(limit)
+
+
+async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.get_origin_counts(window_minutes)
 
 
 async def get_latest_rvr() -> list[dict]:
@@ -227,9 +231,9 @@ async def save_critic_result(result: CriticResult) -> None:
 
 # ── HITL staged actions (staged_actions / action_audit_log) ───────────────────
 
-async def create_staged_action(action: StagedAction) -> StagedAction:
+async def create_staged_action(action: StagedAction, note: str = "staged from CRITICAL alert") -> StagedAction:
     repo = StagedActionsRepository(await get_db_pool())
-    return await repo.create(action)
+    return await repo.create(action, note=note)
 
 
 async def get_pending_staged_actions() -> list[StagedAction]:

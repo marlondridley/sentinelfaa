@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, ValidationError
+from prometheus_client import make_asgi_app
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src import storage
 from src.auth import Principal, PrincipalSource, principal_from_api_key
@@ -32,7 +33,14 @@ _log = get_logger(__name__)
 # `version` is the source of truth for the /v1 route prefix below: bump it, and the
 # OpenAPI metadata, alongside any breaking change to IngestRequest or the /ingest
 # response shape.
-app = FastAPI(title="nas-feedops-sentinel", version="1.0.0")
+# Interactive docs only when explicitly enabled; the schema is still in openapi.json.
+app = FastAPI(
+    title="nas-feedops-sentinel",
+    version="1.0.0",
+    docs_url="/docs" if settings.API_DOCS_ENABLED else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if settings.API_DOCS_ENABLED else None,
+)
 
 # Routes live under /v1 so a future contract change can be served alongside the old
 # shape. /health is additionally mounted unprefixed for orchestrator probes that are
@@ -46,8 +54,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["X-API-Key", "Authorization", "Content-Type", IDEMPOTENCY_HEADER, CORRELATION_HEADER],
 )
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -73,12 +81,21 @@ async def verify_auth(
     log or attribute against -- the audit trail can distinguish "ran with auth
     configured" from "ran with no auth configured" instead of conflating the two.
     """
-    expected_key = settings.API_KEY or settings.LITELLM_API_KEY
+    # API_KEY / API_KEYS only. This used to fall back to LITELLM_API_KEY, so
+    # the LLM proxy credential -- now the proxy master key -- doubled as the
+    # ingest API credential.
+    expected_key = settings.API_KEY
     named_keys = settings.API_KEYS
     provided = api_key or (bearer.credentials if bearer else None)
 
     if not expected_key and not named_keys:
-        _log.warning("api_auth_not_configured", extra={"correlation_id": get_correlation_id()})
+        if settings.API_AUTH_REQUIRED:
+            _log.error("api_auth_not_configured", extra={"correlation_id": get_correlation_id()})
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="API authentication is not configured; set API_KEY or API_KEYS.",
+            )
+        _log.warning("api_auth_disabled", extra={"correlation_id": get_correlation_id()})
         return Principal(principal_id="anonymous", role="unauthenticated", source=PrincipalSource.ANONYMOUS)
 
     principal = principal_from_api_key(provided or "", named_keys=named_keys, legacy_key=expected_key)
@@ -92,6 +109,12 @@ async def verify_auth(
 
 
 class IngestRequest(BaseModel):
+    # Unknown fields are refused. source_dir used to be accepted and handed to
+    # scan_swim_folder(), which MOVES every file it finds -- an authenticated
+    # caller could point the worker at any directory it can write (/app/src
+    # included). Ingest folders are server-side configuration now.
+    model_config = ConfigDict(extra="forbid")
+
     events: list[dict[str, Any]] = Field(
         default=[],
         max_length=10000,
@@ -107,13 +130,6 @@ class IngestRequest(BaseModel):
     label: str = Field(
         default="API",
         description="Label attached to the pipeline workflow run, used for tracing/identification in Temporal.",
-    )
-    source_dir: str | None = Field(
-        default=None,
-        description=(
-            "Directory to ingest events from. Only used when `events` is empty; an ingest "
-            "workflow is started against this directory instead of a pipeline workflow."
-        ),
     )
 
 
@@ -207,7 +223,7 @@ async def ready() -> JSONResponse:
     """
     Readiness: probe the dependencies /ingest needs before accepting traffic.
 
-    Currently checks SQLite storage with a lightweight read. Returns 503 and names the
+    Checks storage (Postgres via PgBouncer) with a lightweight read. Returns 503 and names the
     failing dependency so an orchestrator pulls the instance out of rotation without
     killing the process.
     """
@@ -218,7 +234,7 @@ async def ready() -> JSONResponse:
         await storage.get_recent_events(limit=1)
         checks["storage"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        checks["storage"] = f"error: {exc}"
+        checks["storage"] = "error"
         healthy = False
         _log.warning("readiness_check_failed", extra={"dependency": "storage", "error": str(exc)})
 
@@ -277,6 +293,9 @@ async def ingest(
     )
 
     if body.events:
+        # Provenance is the server's to assign: a client cannot label what it
+        # posts as the live feed.
+        body.events = [{**payload, "data_origin": "api"} for payload in body.events]
         _validate_events(body.events)
 
     workflow_key = _idempotency_key(idempotency_key, body.events) or cid
@@ -298,9 +317,7 @@ async def ingest(
                 body.events, label=body.label, correlation_id=workflow_key
             )
         else:
-            workflow_id = await start_ingest_workflow(
-                source_dir=body.source_dir, correlation_id=workflow_key
-            )
+            workflow_id = await start_ingest_workflow(correlation_id=workflow_key)
     except RPCError as exc:
         # Temporal server unreachable/timed out -- an expected, transient
         # infrastructure failure. Anything else (a real bug in workflow
@@ -310,7 +327,7 @@ async def ingest(
         _log.error("ingest_workflow_unavailable", extra={"error": str(exc)})
         return JSONResponse(
             status_code=503,
-            content={"error": "temporal_unavailable", "detail": str(exc), "correlation_id": cid},
+            content={"error": "temporal_unavailable", "correlation_id": cid},
         )
     return JSONResponse(
         {
@@ -324,3 +341,7 @@ async def ingest(
 
 
 app.include_router(router)
+
+# Prometheus scrape endpoint for the API process. Served on the internal
+# network only: the edge proxy (docker/edge/nginx.conf) does not route it.
+app.mount("/metrics", make_asgi_app())

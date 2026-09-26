@@ -72,13 +72,14 @@ import hashlib
 from typing import Any
 
 from src import storage
+from src.auth import Decision, Principal, authorize, format_actor
+from src.config import settings
 from src.logging_config import get_logger
 from src.metrics import HITL_QUEUE_DEPTH
 from src.models import (
     AlertEvent,
     CriticResult,
     OperationalTicket,
-    PlannerResult,
     StagedAction,
 )
 
@@ -354,10 +355,15 @@ async def _build_escalation_package(
         alert=alert,
     )
 
-    # Off the event loop: the LLM path is a blocking CrewAI kickoff().
+    # Rule-based, deliberately. This runs inside staging for every CRITICAL
+    # alert, so a model call here was unbudgeted and serial: a burst of 15
+    # alerts meant 15 model round-trips (with provider fallback and retries)
+    # before the pass finished. The model-written narrative now comes from
+    # the investigation, which runs after staging under
+    # MAX_LLM_INVESTIGATIONS_PER_PASS; staging itself never waits on a model.
     brief = await agenerate_watch_officer_brief(
         context,
-        use_llm=True,
+        use_llm=False,
     )
 
     await storage.save_watch_officer_brief(
@@ -425,6 +431,64 @@ async def _build_escalation_package(
     return await storage.create_operational_ticket(
         ticket
     )
+
+
+async def decide_staged_action(
+    action_id: str,
+    decision: Decision,
+    principal: Principal,
+    note: str = "",
+    *,
+    overridden_recommendation: str | None = None,
+    overridden_severity: str | None = None,
+) -> StagedAction | None:
+    """
+    The one entry point for a human disposition of a staged action.
+
+    Authorizes first (src/auth.authorize: verified sign-in + realm role),
+    then records the decision under format_actor(principal), then moves the
+    linked ticket. Raises AuthorizationError without writing anything if the
+    principal may not decide. MONITOR leaves the action PENDING and only
+    marks the ticket.
+    """
+    try:
+        authorize(principal, decision, allow_unverified=settings.ALLOW_UNVERIFIED_DECISIONS)
+    except Exception:
+        _log.warning("staged_action_decision_denied", extra={
+            "action_id": action_id, "decision": decision.value,
+            "principal_id": principal.principal_id, "source": principal.source.value,
+            "roles": sorted(principal.roles),
+        })
+        raise
+
+    actor = format_actor(principal)
+    ticket = await storage.get_ticket_by_action_id(action_id)
+    result: StagedAction | None = None
+
+    if decision == Decision.APPROVE:
+        result = await storage.approve_staged_action(action_id, actor=actor, note=note)
+        if ticket:
+            await storage.approve_operational_ticket(ticket.ticket_id, actor=actor, note=note)
+    elif decision == Decision.REJECT:
+        result = await storage.reject_staged_action(action_id, actor=actor, note=note)
+        if ticket:
+            await storage.reject_operational_ticket(ticket.ticket_id, actor=actor, note=note)
+    elif decision == Decision.OVERRIDE:
+        result = await storage.override_staged_action(
+            action_id, overridden_recommendation=overridden_recommendation,
+            overridden_severity=overridden_severity, actor=actor, note=note,
+        )
+        if ticket:
+            await storage.mark_operational_ticket_overridden(ticket.ticket_id, actor=actor, note=note)
+    elif decision == Decision.MONITOR:
+        if ticket:
+            await storage.mark_operational_ticket_monitoring(ticket.ticket_id, actor=actor, note=note)
+
+    await _refresh_hitl_queue_metric()
+    _log.info("staged_action_decided", extra={
+        "action_id": action_id, "decision": decision.value, "actor": actor,
+    })
+    return result
 
 
 # ---------------------------------------------------------------------------

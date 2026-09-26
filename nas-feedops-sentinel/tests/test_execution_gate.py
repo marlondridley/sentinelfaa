@@ -210,7 +210,7 @@ class TestDecisionWorkflow:
     async def test_duplicate_approval_is_idempotent(self):
         alert = _critical_alert()
         action = await _persist_and_stage(alert)
-        first = await approve_staged_action(action.action_id, actor="a", note="first")
+        await approve_staged_action(action.action_id, actor="a", note="first")
         second = await approve_staged_action(action.action_id, actor="b", note="second-attempt")
 
         # State must not change on re-approval
@@ -259,7 +259,7 @@ class TestQuerySemantics:
 
     async def test_recent_query_returns_all_statuses(self):
         a1 = await _persist_and_stage(_critical_alert(alert_type="ALERT_LOW_RVR"))
-        a2 = await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
+        await _persist_and_stage(_critical_alert(alert_type="ALERT_ISMC_LINK_DEGRADED",
                                                  service_name="ISMC"))
         await approve_staged_action(a1.action_id, actor="x", note="")
 
@@ -285,49 +285,36 @@ class TestQuerySemantics:
 
 # ── Event-loop responsiveness ────────────────────────────────────────────────
 
-async def test_escalation_package_does_not_block_the_event_loop(monkeypatch):
+async def test_staging_never_waits_on_a_model(monkeypatch):
     """
-    Staging a CRITICAL alert builds the Watch Officer brief, whose LLM path is
-    CrewAI's synchronous Crew.kickoff(). Run directly on the event loop it froze
-    every other coroutine -- in the Temporal worker and the pipeline alike --
-    for the whole model round-trip. A blocking stand-in for kickoff() must not
-    stop a concurrent coroutine from running.
+    Staging a CRITICAL alert must not call a model. It used to write the
+    ticket's Watch Officer brief with an LLM, once per alert, serially, inside
+    staging -- a burst of alerts became a burst of unbudgeted model calls, and
+    the pass waited on every one. The model narrative now comes from the
+    investigation, which runs after staging under a per-pass budget.
     """
-    import asyncio
     import time
 
     import src.watch_officer_agent as watch_officer
 
-    real_brief = watch_officer.generate_watch_officer_brief
+    calls = []
 
-    def blocking_brief(context=None, use_llm=True, mcp_tools=None):
-        time.sleep(0.5)  # stands in for a synchronous LLM round-trip
-        return real_brief(context, use_llm=False)
+    class Model:
+        async def acall_with_tool(self, **kwargs):
+            calls.append(kwargs)
+            raise AssertionError("staging called the model")
 
-    monkeypatch.setattr(watch_officer, "generate_watch_officer_brief", blocking_brief)
+    monkeypatch.setattr(watch_officer.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(watch_officer, "build_llm_client", lambda *a, **k: Model())
 
-    ticks = 0
+    started = time.perf_counter()
+    action = await _persist_and_stage(_critical_alert())
+    elapsed = time.perf_counter() - started
 
-    async def ticker():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.01)
-            ticks += 1
-
-    task = asyncio.create_task(ticker())
-    try:
-        started = time.perf_counter()
-        action = await _persist_and_stage(_critical_alert())
-        elapsed = time.perf_counter() - started
-    finally:
-        task.cancel()
-
-    # The brief really ran and the ticket was built -- otherwise this test
-    # would pass without measuring anything.
-    assert elapsed >= 0.5
-    assert await storage.get_ticket_by_action_id(action.action_id) is not None
-    # A free loop ticks ~50 times in 0.5 s at a 10 ms interval.
-    assert ticks >= 25, f"event loop was blocked: only {ticks} ticks in {elapsed:.2f}s"
+    assert calls == []
+    ticket = await storage.get_ticket_by_action_id(action.action_id)
+    assert ticket is not None, "the ticket is still built, from the rule-based brief"
+    assert elapsed < 5, f"staging took {elapsed:.1f}s"
 
 
 # ── Idempotency key behavior ──────────────────────────────────────────────────

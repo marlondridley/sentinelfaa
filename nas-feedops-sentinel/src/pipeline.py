@@ -8,6 +8,7 @@ from src.config import settings
 from src.critic_agent import CriticAgent
 from src.execution_gate import stage_critical_alert
 from src.feed_health import compute_feed_health
+from src.investigation import investigate_staged
 from src.logging_config import bind_correlation_id, get_logger
 from src.metrics import ALERTS_TRIGGERED, EVENTS_INGESTED, EVENTS_VALIDATED, set_airport_status
 from src.models import NASEvent
@@ -58,7 +59,6 @@ async def run_pipeline(
     if critical_alerts:
         to_evaluate = critical_alerts[: settings.MAX_CRITIC_PER_PASS]
         skipped = len(critical_alerts) - len(to_evaluate)
-        suffix = f" (skipped {skipped})" if skipped > 0 else ""
         _log.info(
         "critic_evaluation_start",
         extra={
@@ -78,11 +78,22 @@ async def run_pipeline(
         critic_results.update(pairs)
 
     staged_count = 0
+    staged_pairs = []
     for alert in critical_alerts:
         critic_for_alert = critic_results.get(alert.alert_id)
         action = await stage_critical_alert(alert, critic_for_alert)
         if action is not None:
             staged_count += 1
+            staged_pairs.append((action, alert))
+
+    # Advisory, after staging: an investigation failure is logged and never
+    # reaches the staged actions above.
+    investigated = 0
+    if settings.INVESTIGATIONS_ENABLED and staged_pairs:
+        try:
+            investigated = len(await investigate_staged(staged_pairs))
+        except Exception as exc:  # noqa: BLE001
+            _log.error("investigations_failed", extra={"error": f"{type(exc).__name__}: {exc}", "staged_count": staged_count})
     if staged_count:
         _log.info(
         "hitl_actions_staged",
@@ -135,5 +146,6 @@ async def run_pipeline(
         "failed": failed,
         "alert_count": len(alerts),
         "staged_count": staged_count,
+        "investigated_count": investigated,
         "airport_status": health["airport_status"],
     }

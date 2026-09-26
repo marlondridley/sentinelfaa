@@ -6,11 +6,43 @@ received from the FAA SWIM feed (or generated/replayed locally).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Namespace for identifiers derived from content (uuid5). Fixed forever: changing
+# it would give every re-ingested record a new identity.
+_ID_NAMESPACE = uuid.UUID("5b3f6f0e-9a41-4c44-9f7c-2e2f7c9d1a10")
+
+
+def stable_id(*parts: object) -> str:
+    """
+    A deterministic identifier for something identified by `parts`.
+
+    Records that arrive twice -- a re-dropped SWIM file, a Temporal activity
+    retry, a double scan -- must land on the same row, not a new one. Random
+    uuid4 identities made every repeat a duplicate event, a duplicate alert and,
+    through the alert, a duplicate staged action and model call.
+    """
+    return str(uuid.uuid5(_ID_NAMESPACE, "|".join("" if p is None else str(p) for p in parts)))
+
+
+def content_key(record: dict) -> str:
+    """A stable digest of a record's content, for records with no better identity."""
+    canonical = json.dumps(record, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# Where a record came from. The trust cockpit must never present test or
+# replayed data as the live FAA picture, so every event carries this and every
+# alert inherits it. `unknown` is for rows ingested before the tag existed --
+# their origin cannot be reconstructed honestly.
+DataOrigin = Literal["live", "replay", "synthetic", "api", "unknown"]
+AlertOrigin = Literal["live", "replay", "synthetic", "api", "unknown", "mixed"]
 
 AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
 TraconCode = Literal["PCT"]
@@ -114,6 +146,23 @@ class ActionAuditEntry(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# surface_event_type values that describe the airport's surface-safety
+# equipment rather than a moving aircraft or vehicle. They are exempt from the
+# moving-entity validation rule and are excluded from surface-movement counts
+# (feed_health smes_counts, ALERT_SURFACE_EVENT_SPIKE), where a burst of
+# equipment status messages would otherwise read as a traffic spike.
+SMES_FACILITY_STATUS_TYPES = frozenset({"SAFETY_LOGIC_HOLD_BAR"})
+
+
+def is_surface_movement(event: "NASEvent") -> bool:
+    """True for SMES events that describe a moving entity (not equipment status)."""
+    return (
+        event.service_name == "SMES"
+        and event.surface_event_type not in SMES_FACILITY_STATUS_TYPES
+    )
+
+
+
 class NASEvent(BaseModel):
     """Normalized FAA SWIM/STDDS terminal event record."""
 
@@ -170,6 +219,15 @@ class NASEvent(BaseModel):
     # Feed / link status (ISMC, TERMINAL_AUTO)
     feed_status: str | None = None    # operational | degraded | unavailable | disconnected
 
+    # Raw facility status word, kept verbatim where the ICD that decodes it is
+    # not public (SMES SafetyLogicHoldBar's hold-bar bitmask). Stored, not
+    # interpreted: nothing downstream alerts on it.
+    status_code: str | None = None
+
+    # Provenance: live (the Jumpstart kit's folder), replay (recorded files),
+    # synthetic (sample generator, demo scenario), api (posted to /v1/ingest).
+    data_origin: DataOrigin = "unknown"
+
     # Validation bookkeeping (populated by validators.py)
     validation_status: str = "PENDING"   # PENDING | PASSED | FAILED
     validation_errors: list[str] = Field(default_factory=list)
@@ -196,6 +254,7 @@ class AlertEvent(BaseModel):
     description: str
     triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     event_id: str | None = None           # Source event that caused the alert
+    data_origin: AlertOrigin = "unknown"  # inherited from the event(s) behind it
 
 
 class ValidationResult(BaseModel):

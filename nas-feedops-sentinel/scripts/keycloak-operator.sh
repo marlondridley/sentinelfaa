@@ -10,6 +10,8 @@
 # NAME` (no value on the command line) and are never echoed. Idempotent.
 set -euo pipefail
 : "${KC_ADMIN_PW:?}" "${APP_USERNAME:?}" "${APP_USER_PW:?}" "${APP_EMAIL:?}"
+# Realm roles for this operator (comma-separated). Defaults to watch_officer.
+APP_ROLES="${APP_ROLES:-watch_officer}"
 KC_SERVER="${KC_SERVER:-http://localhost:8080}"
 
 REALM=nas-sentinel
@@ -67,3 +69,11 @@ else
 fi
 kc set-password -r "$REALM" --username "$APP_USERNAME" --new-password "$APP_USER_PW"
 echo "user $APP_USERNAME: password set"
+
+# ── Authorization ────────────────────────────────────────────────────────────
+# Without a realm role the operator can sign in but decide nothing
+# (src/auth.authorize). Roles must exist first: see scripts/keycloak-rbac.sh.
+for role in $(echo "$APP_ROLES" | tr ',' ' '); do
+    kc add-roles -r "$REALM" --uusername "$APP_USERNAME" --rolename "$role"
+done
+echo "user $APP_USERNAME: roles $APP_ROLES"

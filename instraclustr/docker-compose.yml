@@ -137,7 +137,8 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Loopback only: the app reaches it on nas-network; this is for local psql.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel_user} -d ${POSTGRES_DB:-sentinel_db}"]
       interval: 10s
@@ -145,7 +146,9 @@ services:
       retries: 5
 
   pgbouncer:
-    image: edoburu/pgbouncer:latest
+    # Pinned to the digest that was running as :latest, so a rebuild cannot
+    # silently change the connection pooler under the application.
+    image: edoburu/pgbouncer@sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd
     container_name: nas-pgbouncer
     environment:
       LISTEN_PORT: 6432
@@ -159,7 +162,7 @@ services:
       DEFAULT_POOL_SIZE: 20
       AUTH_TYPE: md5
     ports:
-      - "6432:6432"
+      - "127.0.0.1:6432:6432"
     depends_on:
       postgres:
         condition: service_healthy
@@ -181,7 +184,7 @@ services:
     container_name: vault
     hostname: vault
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
     cap_add:
@@ -239,42 +242,92 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
-      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
+      APP_DB_USER: ${APP_DB_USER:-sentinel_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
     volumes:
       - ./vault-unseal-and-seed.bash:/scripts/vault-unseal-and-seed.bash:ro
       - ./vault-init-data:/vault-init-data
+      # Unseal key share 2 lives only in this volume; share 1 is in
+      # vault-init-data. Automatic unseal needs both (threshold 2 of 3).
+      - vault-unseal-share:/vault-share-2
+      # Share 3, written once for the operator to move off this machine.
+      - ./vault-recovery:/vault-recovery
     entrypoint: ["/bin/sh", "/scripts/vault-unseal-and-seed.bash"]
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    # Pinned: was main-latest, a moving nightly tag. This is the digest that ran.
+    image: ghcr.io/berriai/litellm@sha256:690f24800e2208e4f31b01483b9d0521d79dc508c8191f1c0b2f21549400c580
     container_name: nas-litellm
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     depends_on:
       vault-unseal:
+        condition: service_completed_successfully
+      litellm-db-init:
         condition: service_completed_successfully
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - HCP_VAULT_ADDR=http://vault:8200
-      - HCP_VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2:-}
+      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3:-}
+      # Its own database, for virtual keys (litellm-db-init.sh). Direct to
+      # Postgres: Prisma needs session-level connections, not the pooler.
+      # No Vault token here any more -- the provider keys come from env, and
+      # the proxy never needed root access to Vault.
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@postgres:5432/litellm
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:4000/health/liveliness\")' || exit 0"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:4000/health/liveliness\")' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      start_period: 60s
+      retries: 10
+
+  # One-shot: LiteLLM's own database and login role (idempotent).
+  litellm-db-init:
+    image: postgres:16
+    container_name: litellm-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
+    volumes:
+      - ./litellm-db-init.sh:/scripts/litellm-db-init.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/litellm-db-init.sh"]
+
+  # One-shot: the application's scoped virtual key, stored in Vault
+  # (litellm-bootstrap.sh). The application services read it with their
+  # AppRole; the master key stays with the proxy.
+  litellm-bootstrap:
+    image: hashicorp/vault:1.15.2
+    container_name: litellm-bootstrap
+    depends_on:
+      litellm:
+        condition: service_healthy
+      vault-unseal:
+        condition: service_completed_successfully
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      LITELLM_APP_BUDGET_USD: ${LITELLM_APP_BUDGET_USD:-10}
+      LITELLM_APP_RPM: ${LITELLM_APP_RPM:-30}
+    volumes:
+      - ./litellm-bootstrap.sh:/scripts/litellm-bootstrap.sh:ro
+      - ./vault-init-data/bootstrap:/vault-bootstrap:ro
+    entrypoint: ["/bin/sh", "/scripts/litellm-bootstrap.sh"]
 
 volumes:
   # cassandra-data:      -- unused, see DISABLED block above
   # elasticsearch-data:  -- unused, see DISABLED block above
   postgres-data:
   vault-data:
+  vault-unseal-share:
 
 networks:
   default:

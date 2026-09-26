@@ -1,0 +1,10 @@
+# Lint gate enforced in CI (.github/workflows/pyapp-ci.yml).
+# Pyflakes (undefined names, unused imports/variables) and syntax errors:
+# the checks that find real bugs -- this set found an undefined-name method
+# and a KeyError in the context router. Style rules can be added once the
+# codebase is formatted; adding them now would bury real findings.
+target-version = "py312"
+extend-exclude = ["jumpstart", ".venv", ".local"]
+
+[lint]
+select = ["F", "E9"]

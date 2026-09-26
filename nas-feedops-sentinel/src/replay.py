@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src import config
-from src.models import NASEvent
+from src.models import NASEvent, stable_id
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)
@@ -29,11 +29,13 @@ def load_raw_messages(source_dir: Path | None = None) -> list[dict]:
         try:
             data = json.loads(json_file.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                for item in data:
+                for position, item in enumerate(data):
                     item["_source_file"] = str(json_file)
+                    item["_source_index"] = position
                 messages.extend(data)
             elif isinstance(data, dict):
                 data["_source_file"] = str(json_file)
+                data["_source_index"] = 0
                 messages.append(data)
             else:
                 _log.warning(
@@ -55,6 +57,10 @@ def parse_raw_message(raw: dict) -> tuple[NASEvent | None, str | None]:
     Returns (event, None) on success or (None, error_string) on failure.
     """
     source_file = raw.pop("_source_file", None)
+    source_index = raw.pop("_source_index", None)
+    # Replaying the same file twice must not duplicate its events.
+    if source_file and not raw.get("event_id"):
+        raw["event_id"] = stable_id("replay", Path(source_file).name, source_index)
     try:
         # Coerce ISO timestamp strings to datetime objects
         for ts_field in ("event_time_utc", "received_time_utc"):
@@ -68,6 +74,7 @@ def parse_raw_message(raw: dict) -> tuple[NASEvent | None, str | None]:
 
         if source_file:
             raw["raw_message_path"] = source_file
+        raw["data_origin"] = "replay"
 
         return NASEvent(**raw), None
     except Exception as exc:  # noqa: BLE001

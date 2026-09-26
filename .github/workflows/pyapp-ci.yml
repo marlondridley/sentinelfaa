@@ -1,62 +1,125 @@
-name: Python App CI
+name: Sentinel CI
+
+# Every push and PR touching the application or its infrastructure:
+#   test        build the test image once; lint, then the full suite
+#               (including scripts/e2e_proof.py) against a real Postgres
+#   audit       pip-audit over the hash-locked runtime dependencies
+#   compose     both compose files render with the example env files
+#   image-scan  Trivy over the shipped runtime image (reporting for now)
 
 on:
   push:
-    branches: [ main, master ]
     paths:
       - 'nas-feedops-sentinel/**'
+      - 'instraclustr/**'
       - '.github/workflows/pyapp-ci.yml'
   pull_request:
     branches: [ main, master ]
-    paths:
-      - 'nas-feedops-sentinel/**'
-      - '.github/workflows/pyapp-ci.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  dependency-audit:
-    name: Dependency & CVE Audit
+  test:
+    name: Lint and test (test image, Postgres 16)
     runs-on: ubuntu-latest
-
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sentinel_ci
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          # The suite TRUNCATEs every table; it refuses any database whose
+          # name is not marked disposable ("ci" is).
+          POSTGRES_DB: sentinel_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sentinel_ci -d sentinel_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
         with:
-          python-version: '3.13'
+          context: nas-feedops-sentinel
+          file: nas-feedops-sentinel/docker/Dockerfile
+          target: test
+          tags: nas-feedops-sentinel:test
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Install pip-audit
-        run: pip install pip-audit --break-system-packages || pip install pip-audit
+      - name: Lint (ruff, rules in ruff.toml)
+        working-directory: nas-feedops-sentinel
+        run: docker run --rm -v "$PWD:/w:ro" -w /w nas-feedops-sentinel:test ruff check --no-cache src tests scripts dashboard
 
-      # Accepted exceptions are tracked in nas-feedops-sentinel/cve-allowlist.md.
-      # Any --ignore-vuln flag below MUST have a matching, justified entry there,
-      # reviewed at least quarterly. Do not add an ignore here without updating
-      # that file in the same PR.
-      - name: Run pip-audit against locked dependencies
+      - name: Test suite and end-to-end proof
+        run: |
+          docker run --rm --network host \
+            -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=5432 \
+            -e POSTGRES_USER=sentinel_ci -e POSTGRES_PASSWORD=ci-only-not-a-secret \
+            -e POSTGRES_DB=sentinel_ci -e DATABASE_URL= \
+            -e VAULT_ADDR= -e VAULT_TOKEN= -e CRITIC_ENABLED=0 \
+            nas-feedops-sentinel:test \
+            python -m pytest -p no:cacheprovider -q --cov=src --cov-report=term
+
+  audit:
+    name: Dependency CVE audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Accepted exceptions must be listed in nas-feedops-sentinel/cve-allowlist.md
+      # and passed here as --ignore-vuln in the same PR. There are none.
+      - name: pip-audit (runtime lock)
         working-directory: nas-feedops-sentinel
         run: |
-          python -m pip_audit \
-            -r requirements.lock \
-            --ignore-vuln CVE-2026-45829 \
-            --ignore-vuln CVE-2026-45830 \
-            --ignore-vuln CVE-2026-45831 \
-            --ignore-vuln CVE-2026-45833
+          pip install pip-audit
+          python -m pip_audit -r requirements.lock
 
-  syntax-check:
-    name: Compile Check
+  compose:
+    name: Compose files render
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: |
+          docker network create nas-network
+          docker compose -f instraclustr/docker-compose.yml --env-file instraclustr/.env.example config -q
+          docker compose -f nas-feedops-sentinel/docker-compose.yml --env-file nas-feedops-sentinel/.env.example config -q
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+  image-scan:
+    name: Runtime image scan (Trivy)
+    runs-on: ubuntu-latest
+    # Reporting only until the base-image findings are triaged; the job's
+    # log is the report. Make it blocking by removing continue-on-error.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
         with:
-          python-version: '3.13'
-
-      - name: Byte-compile source tree
-        working-directory: nas-feedops-sentinel
-        run: python -m py_compile $(find src dashboard -name '*.py')
+          context: nas-feedops-sentinel
+          file: nas-feedops-sentinel/docker/Dockerfile
+          tags: nas-feedops-sentinel:ci
+          load: true
+          cache-from: type=gha
+      - name: Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nas-feedops-sentinel:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.execution_gate import stage_critical_alert, _build_escalation_package
-from src.models import AlertEvent, CriticResult, OperationalTicket, StagedAction, WatchOfficerBrief
+from src.models import AlertEvent, CriticResult, StagedAction, WatchOfficerBrief
 
 
 @pytest.mark.asyncio
@@ -79,16 +79,8 @@ async def test_stage_non_critical_alert_returns_none_without_storage_call():
 async def test_build_escalation_package_awaits_storage():
     # patch("src.watch_officer_agent....") below resolves the target by
     # getattr on the `src` package, which only works once that submodule has
-    # actually been imported. execution_gate imports it lazily *inside*
-    # _build_escalation_package (deliberately -- it pulls crewai), so without
-    # this the test died on
-    #     AttributeError: module 'src' has no attribute 'watch_officer_agent'
-    # before reaching a single assertion.
-    #
-    # importorskip rather than a module-level import: this is the only test
-    # in the file that needs crewai, and the control-boundary tests below it
-    # are deliberately dependency-light so they stay runnable anywhere.
-    pytest.importorskip("crewai")
+    # been imported; execution_gate imports it lazily inside
+    # _build_escalation_package.
     import src.watch_officer_agent  # noqa: F401  (registers the submodule)
 
     alert = AlertEvent(
@@ -115,7 +107,7 @@ async def test_build_escalation_package_awaits_storage():
 
     with patch("src.storage.get_ticket_by_action_id", new_callable=AsyncMock) as mock_get_ticket, \
          patch("src.watch_officer_agent.build_watch_officer_context", new_callable=AsyncMock) as mock_ctx, \
-         patch("src.watch_officer_agent.generate_watch_officer_brief", return_value=brief) as mock_brief, \
+         patch("src.watch_officer_agent.agenerate_watch_officer_brief", new_callable=AsyncMock, return_value=brief), \
          patch("src.storage.save_watch_officer_brief", new_callable=AsyncMock) as mock_save_brief, \
          patch("src.storage.create_operational_ticket", new_callable=AsyncMock) as mock_create_ticket:
 

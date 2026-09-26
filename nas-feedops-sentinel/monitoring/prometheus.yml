@@ -3,16 +3,34 @@ global:
   evaluation_interval: 15s
   external_labels:
     cluster: nas-feedops
-    environment: demo
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+# No Alertmanager is configured yet: rules evaluate and show under Alerts
+# (https://localhost:8447/alerts). Routing them to on-call is the next step.
 
 scrape_configs:
+  # Live SWIM watcher + reconciler (src/main.py --watch).
   - job_name: nas-sentinel
-    metrics_path: /metrics
     static_configs:
       - targets: ["sentinel:9108"]
-        labels:
-          service: nas-feedops-sentinel
-          tracon: PCT
+        labels: {service: sentinel, tracon: PCT}
+
+  # Temporal worker: runs API-started pipelines, so Critic, investigation and
+  # HITL metrics for those runs live here.
+  - job_name: nas-temporal-worker
+    static_configs:
+      - targets: ["temporal-worker:9108"]
+        labels: {service: temporal-worker, tracon: PCT}
+
+  # HTTP API process (internal /metrics; not routed by the edge proxy).
+  - job_name: nas-api
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["api:8000"]
+        labels: {service: api, tracon: PCT}
 
   - job_name: prometheus
     static_configs:

@@ -26,10 +26,12 @@ class EventsRepository:
                 aircraft_id, vehicle_id, surface_event_type,
                 lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
                 flight_phase, flight_rules, beacon_code,
-                feed_status, validation_status, validation_errors, raw_message_path
+                feed_status, validation_status, validation_errors, raw_message_path,
+                status_code, data_origin
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+                $29, $30
             )
             ON CONFLICT (event_id) DO UPDATE SET
                 airport_code = EXCLUDED.airport_code,
@@ -58,7 +60,9 @@ class EventsRepository:
                 feed_status = EXCLUDED.feed_status,
                 validation_status = EXCLUDED.validation_status,
                 validation_errors = EXCLUDED.validation_errors,
-                raw_message_path = EXCLUDED.raw_message_path;
+                raw_message_path = EXCLUDED.raw_message_path,
+                status_code = EXCLUDED.status_code,
+                data_origin = EXCLUDED.data_origin;
         """
         await self._pool.execute(
             query,
@@ -69,14 +73,15 @@ class EventsRepository:
             event.lat, event.lon, event.altitude_ft, event.ground_speed_kt, event.vertical_speed_fpm,
             event.flight_phase, event.flight_rules, event.beacon_code,
             event.feed_status, event.validation_status, json.dumps(event.validation_errors), event.raw_message_path,
+            event.status_code, event.data_origin,
         )
 
     async def save_alert(self, alert: AlertEvent) -> None:
         query = """
             INSERT INTO alert_events (
                 alert_id, alert_type, severity, airport_code, service_name,
-                description, triggered_at, event_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                description, triggered_at, event_id, data_origin
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (alert_id) DO UPDATE SET
                 alert_type = EXCLUDED.alert_type,
                 severity = EXCLUDED.severity,
@@ -84,12 +89,14 @@ class EventsRepository:
                 service_name = EXCLUDED.service_name,
                 description = EXCLUDED.description,
                 triggered_at = EXCLUDED.triggered_at,
-                event_id = EXCLUDED.event_id;
+                event_id = EXCLUDED.event_id,
+                data_origin = EXCLUDED.data_origin;
         """
         await self._pool.execute(
             query,
             alert.alert_id, alert.alert_type, alert.severity, alert.airport_code,
             alert.service_name, alert.description, alert.triggered_at, alert.event_id,
+            alert.data_origin,
         )
 
     async def save_events(self, events: list[NASEvent]) -> None:
@@ -112,7 +119,8 @@ class EventsRepository:
                       aircraft_id, vehicle_id, surface_event_type,
                       lat, lon, altitude_ft, ground_speed_kt, vertical_speed_fpm,
                       flight_phase, flight_rules, beacon_code,
-                      feed_status, validation_status, validation_errors, raw_message_path
+                      feed_status, validation_status, validation_errors, raw_message_path,
+                      status_code, data_origin
                FROM nas_events ORDER BY received_time_utc DESC LIMIT $1""",
             limit,
         )
@@ -123,11 +131,21 @@ class EventsRepository:
         # so this is purely about making the read an explicit contract rather than SELECT *.
         rows = await self._pool.fetch(
             """SELECT alert_id, alert_type, severity, airport_code, service_name,
-                      description, triggered_at, event_id
+                      description, triggered_at, event_id, data_origin
                FROM alert_events ORDER BY triggered_at DESC LIMIT $1""",
             limit,
         )
         return [dict(r) for r in rows]
+
+    async def get_origin_counts(self, window_minutes: int = 60) -> dict[str, int]:
+        """Events received in the window, by data_origin (for the dashboard's provenance banner)."""
+        rows = await self._pool.fetch(
+            """SELECT data_origin, count(*) AS n FROM nas_events
+               WHERE received_time_utc >= now() - make_interval(mins => $1)
+               GROUP BY data_origin""",
+            window_minutes,
+        )
+        return {r["data_origin"]: r["n"] for r in rows}
 
     async def get_latest_rvr(self) -> list[dict]:
         query = """

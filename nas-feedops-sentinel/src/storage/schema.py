@@ -103,6 +103,55 @@ _MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS overridden_recommendation TEXT;
         ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS overridden_severity TEXT;
     """),
+    ("2026_09_nas_events_status_code", """
+        ALTER TABLE nas_events ADD COLUMN IF NOT EXISTS status_code TEXT;
+    """),
+    # One row per finished investigation (src/investigation/): the whole
+    # structured record as JSONB plus its SHA-256. Append-only for the same
+    # reason as action_audit_log: it is the evidence behind what a reviewer
+    # was shown, so rewriting it must not be an ordinary write path. The
+    # partial unique index allows one COMPLETE record per staged action while
+    # keeping failed attempts for audit.
+    ("2026_09_investigations", """
+        CREATE TABLE IF NOT EXISTS investigations (
+            investigation_id  TEXT PRIMARY KEY,
+            action_id         TEXT NOT NULL REFERENCES staged_actions(action_id) ON DELETE RESTRICT,
+            alert_id          TEXT,
+            status            TEXT NOT NULL,
+            opened_at         TIMESTAMPTZ NOT NULL,
+            completed_at      TIMESTAMPTZ,
+            -- record_json is the exact text that was hashed; JSONB normalizes
+            -- documents (key order, numbers), so it cannot be the evidence of
+            -- integrity. record is the same document, for querying.
+            record_json       TEXT NOT NULL,
+            record            JSONB NOT NULL,
+            record_sha256     TEXT NOT NULL,
+            stored_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_investigations_complete_per_action
+            ON investigations (action_id) WHERE status = 'COMPLETE';
+        CREATE INDEX IF NOT EXISTS idx_investigations_opened_at ON investigations (opened_at DESC);
+
+        CREATE OR REPLACE FUNCTION investigations_append_only()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            RAISE EXCEPTION 'investigations is append-only; % is not permitted on this table', TG_OP;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_investigations_append_only ON investigations;
+        CREATE TRIGGER trg_investigations_append_only
+            BEFORE UPDATE OR DELETE ON investigations
+            FOR EACH ROW EXECUTE FUNCTION investigations_append_only();
+    """),
+    # Provenance of every event and alert (models.DataOrigin). Existing rows
+    # get 'unknown': their origin cannot be reconstructed honestly.
+    ("2026_09_data_origin", """
+        ALTER TABLE nas_events   ADD COLUMN IF NOT EXISTS data_origin TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS data_origin TEXT NOT NULL DEFAULT 'unknown';
+        CREATE INDEX IF NOT EXISTS idx_nas_events_origin_time
+            ON nas_events (data_origin, received_time_utc DESC);
+    """),
 ]
 
 
