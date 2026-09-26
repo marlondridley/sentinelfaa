@@ -88,8 +88,12 @@ async def test_every_critical_alert_is_staged_whatever_the_llm_does(monkeypatch,
     pending = await storage.get_pending_staged_actions()
 
     assert critical, "scenario must produce CRITICAL alerts or this test measures nothing"
-    assert summary["staged_count"] == len(critical)
-    assert {p.alert_id for p in pending} == {a["alert_id"] for a in critical}
+    # One review per condition, each covering its alerts: every CRITICAL alert
+    # is covered by exactly one pending review, and each review has a ticket.
+    conditions = {(a["alert_type"], a["airport_code"], a["service_name"]) for a in critical}
+    assert summary["staged_count"] == len(pending) == len(conditions)
+    covered = [alert_id for action in pending for alert_id in await storage.get_covered_alert_ids(action.action_id)]
+    assert sorted(covered) == sorted(a["alert_id"] for a in critical)
     for action in pending:
         assert await storage.get_ticket_by_action_id(action.action_id) is not None
 
