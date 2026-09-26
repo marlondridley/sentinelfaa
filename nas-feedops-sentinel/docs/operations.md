@@ -24,6 +24,14 @@ localhost, 127.0.0.1). Each is re-issued when missing or near expiry. Trust
 `tls/edge-ca.crt` once in the Windows certificate store and renewals stay
 trusted, or replace the pairs with certificates from your own CA.
 
+Each container mounts one directory under `./tls/`, holding only what it
+needs: `edge/` (nginx's pair), `keycloak/` (Keycloak's pair and the
+authority's certificate), `trust/` (the authority's certificate, for the
+dashboard). Only `edge-certs` sees the authority's key. The mounts are
+directories, never single files: `docker compose up` creates every container
+before `edge-certs` has run, and Docker creates a missing file-mount source
+as an empty directory, which then blocks the file from being written.
+
 | Service | URL |
 |---|---|
 | Dashboard | https://localhost:8443 |

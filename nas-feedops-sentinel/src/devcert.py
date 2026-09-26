@@ -2,17 +2,28 @@
 Local TLS for the edge proxy and the identity service: `python -m src.devcert /tls`.
 
 Creates a small local certificate authority and two server certificates
-signed by it:
+signed by it, one directory per container that uses them:
 
-  edge-ca.crt   the authority's certificate -- trust this ONCE in the OS store
-  edge-ca.key   the authority's key (owner-only; never leaves this machine)
-  edge.crt      nginx's certificate + CA chain, for localhost / 127.0.0.1
-  edge.key      its key (owner-only)
-  keycloak.crt  Keycloak's certificate + CA chain, for keycloak (the compose
-                service name the dashboard and API use), localhost and
-                127.0.0.1 (the admin console on the host, and the health check)
-  keycloak.key  its key: owner and group read, because Keycloak runs as uid
-                1000 in group 0 and the file is created by root
+  edge-ca.crt            the authority's certificate -- trust this ONCE in the OS store
+  edge-ca.key            the authority's key (owner-only; never leaves this machine)
+  edge/edge.crt          nginx's certificate + CA chain, for localhost / 127.0.0.1
+  edge/edge.key          its key (owner-only)
+  keycloak/keycloak.crt  Keycloak's certificate + CA chain, for keycloak (the
+                         compose service name the dashboard and API use),
+                         localhost and 127.0.0.1 (the admin console on the
+                         host, and the health check)
+  keycloak/keycloak.key  its key: owner and group read, because Keycloak runs
+                         as uid 1000 in group 0 and the file is created by root
+  keycloak/edge-ca.crt   the authority's certificate, for its health check
+  trust/edge-ca.crt      the authority's certificate, for the dashboard
+
+Each directory is mounted whole, never file by file. `docker compose up`
+creates every container before edge-certs has run, and Docker creates a
+missing bind-mount source as an empty directory -- which for a file mount
+leaves a directory where the key should be, and issuing then fails. A missing
+directory mount is created as a directory, which is what it should be. Each
+container also sees only what it needs: no container but edge-certs mounts
+the authority's key.
 
 The dashboard and API verify Keycloak against edge-ca.crt (KEYCLOAK_CA_FILE),
 so identity traffic is TLS end to end, including server to server.
@@ -48,12 +59,21 @@ CA_CERT, CA_KEY = "edge-ca.crt", "edge-ca.key"
 CERT_NAME, KEY_NAME = "edge.crt", "edge.key"
 KEYCLOAK_CERT, KEYCLOAK_KEY = "keycloak.crt", "keycloak.key"
 
-# (certificate file, key file, key file mode, DNS names). Every server
-# certificate also carries 127.0.0.1.
+# One directory per container, each mounted whole (see the module docstring).
+EDGE_DIR, KEYCLOAK_DIR, TRUST_DIR = "edge", "keycloak", "trust"
+MOUNT_DIRS = (EDGE_DIR, KEYCLOAK_DIR, TRUST_DIR)
+
+# (directory, certificate file, key file, key file mode, DNS names). Every
+# server certificate also carries 127.0.0.1.
 LEAVES = (
-    (CERT_NAME, KEY_NAME, 0o600, ("localhost",)),
-    (KEYCLOAK_CERT, KEYCLOAK_KEY, 0o640, ("keycloak", "localhost")),
+    (EDGE_DIR, CERT_NAME, KEY_NAME, 0o600, ("localhost",)),
+    (KEYCLOAK_DIR, KEYCLOAK_CERT, KEYCLOAK_KEY, 0o640, ("keycloak", "localhost")),
 )
+# Where the authority's public certificate is published for verification.
+CA_PUBLISHED_IN = (KEYCLOAK_DIR, TRUST_DIR)
+# The earlier layout kept server certificates beside the authority, mounted
+# file by file.
+FLAT_LAYOUT = (CERT_NAME, KEY_NAME, KEYCLOAK_CERT, KEYCLOAK_KEY)
 CA_VALID_DAYS = 3650
 VALID_DAYS = 397          # browsers reject leaf certificates valid for longer
 RENEW_WITHIN_DAYS = 30
@@ -128,13 +148,35 @@ def _leaf_is_current(directory: Path, ca: x509.Certificate, cert_name: str, key_
 def ensure_certificate(directory: Path) -> bool:
     """Ensure the authority and current server certificates exist. True if anything was written."""
     directory.mkdir(parents=True, exist_ok=True)
+    for name in MOUNT_DIRS:
+        (directory / name).mkdir(exist_ok=True)
     ca, ca_key, ca_new = _ensure_ca(directory)
     wrote = ca_new
-    for cert_name, key_name, key_mode, dns_names in LEAVES:
-        if ca_new or not _leaf_is_current(directory, ca, cert_name, key_name, dns_names):
-            _issue_leaf(directory, ca, ca_key, cert_name, key_name, key_mode, dns_names)
+    for sub, cert_name, key_name, key_mode, dns_names in LEAVES:
+        if ca_new or not _leaf_is_current(directory / sub, ca, cert_name, key_name, dns_names):
+            _issue_leaf(directory / sub, ca, ca_key, cert_name, key_name, key_mode, dns_names)
             wrote = True
+    ca_pem = (directory / CA_CERT).read_bytes()
+    for sub in CA_PUBLISHED_IN:
+        published = directory / sub / CA_CERT
+        if not published.is_file() or published.read_bytes() != ca_pem:
+            published.write_bytes(ca_pem)
+            wrote = True
+    _remove_flat_layout(directory)
     return wrote
+
+
+def _remove_flat_layout(directory: Path) -> None:
+    """Remove the earlier layout's server files, and the empty directories Docker made for them."""
+    for name in FLAT_LAYOUT:
+        path = directory / name
+        try:
+            if path.is_dir():
+                path.rmdir()          # only if empty: anything else is not ours to delete
+            elif path.exists():
+                path.unlink()
+        except OSError as exc:
+            print(f"left {path} in place: {exc}", file=sys.stderr)
 
 
 def _issue_leaf(directory: Path, ca: x509.Certificate, ca_key, cert_name: str, key_name: str,
@@ -173,7 +215,8 @@ def _issue_leaf(directory: Path, ca: x509.Certificate, ca_key, cert_name: str, k
 def main() -> None:
     target = Path(sys.argv[1] if len(sys.argv) > 1 else "/tls")
     wrote = ensure_certificate(target)
-    print(f"{'issued' if wrote else 'kept existing'} {target / CERT_NAME} and {target / KEYCLOAK_CERT} "
+    print(f"{'issued' if wrote else 'kept existing'} {target / EDGE_DIR / CERT_NAME} and "
+          f"{target / KEYCLOAK_DIR / KEYCLOAK_CERT} "
           f"(signed by {target / CA_CERT}; trust that once in the OS store)")
 
 

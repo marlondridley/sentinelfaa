@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 from cryptography import x509
 
 from src import devcert
@@ -31,7 +32,7 @@ REPO = Path(__file__).resolve().parent.parent
 def test_keycloak_gets_its_own_certificate_from_the_local_authority(tmp_path: Path):
     devcert.ensure_certificate(tmp_path)
     ca = x509.load_pem_x509_certificate((tmp_path / devcert.CA_CERT).read_bytes())
-    leaf, chained_ca = x509.load_pem_x509_certificates((tmp_path / devcert.KEYCLOAK_CERT).read_bytes())
+    leaf, chained_ca = x509.load_pem_x509_certificates((tmp_path / devcert.KEYCLOAK_DIR / devcert.KEYCLOAK_CERT).read_bytes())
 
     assert leaf.issuer == ca.subject and chained_ca == ca
     sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
@@ -40,18 +41,65 @@ def test_keycloak_gets_its_own_certificate_from_the_local_authority(tmp_path: Pa
     assert set(sans.get_values_for_type(x509.DNSName)) == {"keycloak", "localhost"}
     assert [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)] == ["127.0.0.1"]
     # Keycloak runs as uid 1000 in group 0; the key is group-readable, never world-readable.
-    assert stat.S_IMODE((tmp_path / devcert.KEYCLOAK_KEY).stat().st_mode) == 0o640
+    assert stat.S_IMODE((tmp_path / devcert.KEYCLOAK_DIR / devcert.KEYCLOAK_KEY).stat().st_mode) == 0o640
     assert stat.S_IMODE((tmp_path / devcert.CA_KEY).stat().st_mode) == 0o600
 
 
 def test_an_existing_edge_setup_gains_the_keycloak_certificate_without_a_new_authority(tmp_path: Path):
     devcert.ensure_certificate(tmp_path)
     ca_before = (tmp_path / devcert.CA_CERT).read_bytes()
-    (tmp_path / devcert.KEYCLOAK_CERT).unlink()                 # a tls/ directory from before this change
-    (tmp_path / devcert.KEYCLOAK_KEY).unlink()
+    (tmp_path / devcert.KEYCLOAK_DIR / devcert.KEYCLOAK_CERT).unlink()  # a tls/ directory from before Keycloak had TLS
+    (tmp_path / devcert.KEYCLOAK_DIR / devcert.KEYCLOAK_KEY).unlink()
     assert devcert.ensure_certificate(tmp_path) is True
     assert (tmp_path / devcert.CA_CERT).read_bytes() == ca_before, "the operator's trusted authority is kept"
-    assert (tmp_path / devcert.KEYCLOAK_CERT).exists()
+    assert (tmp_path / devcert.KEYCLOAK_DIR / devcert.KEYCLOAK_CERT).exists()
+
+
+# -- Every certificate mount is a directory ----------------------------------
+# `docker compose up` creates every container before edge-certs has run, and
+# Docker creates a missing bind-mount source as an empty directory. Mounted
+# file by file, that left directories named keycloak.crt and keycloak.key in
+# tls/, and edge-certs then failed on them (IsADirectoryError).
+
+def test_every_tls_mount_in_compose_is_a_directory_devcert_fills():
+    compose = yaml.safe_load((REPO / "docker-compose.yml").read_text(encoding="utf-8"))
+    sources = {
+        volume.split(":")[0]
+        for service in compose["services"].values()
+        for volume in service.get("volumes", [])
+        if isinstance(volume, str) and volume.startswith("./tls")
+    }
+    allowed = {"./tls"} | {f"./tls/{name}" for name in devcert.MOUNT_DIRS}
+    assert sources and sources <= allowed, f"file mounts under ./tls: {sorted(sources - allowed)}"
+
+
+def test_certificates_are_issued_into_the_directories_docker_created_first(tmp_path: Path):
+    for name in devcert.MOUNT_DIRS:          # what `docker compose up` leaves before edge-certs runs
+        (tmp_path / name).mkdir()
+    assert devcert.ensure_certificate(tmp_path) is True
+    contents = {name: sorted(p.name for p in (tmp_path / name).iterdir()) for name in devcert.MOUNT_DIRS}
+    # Each container gets only what it needs; none gets the authority's key.
+    assert contents == {
+        devcert.EDGE_DIR: sorted([devcert.CERT_NAME, devcert.KEY_NAME]),
+        devcert.KEYCLOAK_DIR: sorted([devcert.CA_CERT, devcert.KEYCLOAK_CERT, devcert.KEYCLOAK_KEY]),
+        devcert.TRUST_DIR: [devcert.CA_CERT],
+    }
+    ca = (tmp_path / devcert.CA_CERT).read_bytes()
+    assert all((tmp_path / name / devcert.CA_CERT).read_bytes() == ca for name in devcert.CA_PUBLISHED_IN)
+
+
+def test_the_flat_layout_is_cleared_and_the_trusted_authority_kept(tmp_path: Path):
+    devcert.ensure_certificate(tmp_path)
+    ca_before = (tmp_path / devcert.CA_CERT).read_bytes()
+    # The earlier layout: server files beside the authority, and the empty
+    # directories Docker made in place of the Keycloak pair.
+    (tmp_path / devcert.CERT_NAME).write_bytes(b"old")
+    (tmp_path / devcert.KEY_NAME).write_bytes(b"old")
+    (tmp_path / devcert.KEYCLOAK_CERT).mkdir()
+    (tmp_path / devcert.KEYCLOAK_KEY).mkdir()
+    devcert.ensure_certificate(tmp_path)
+    assert (tmp_path / devcert.CA_CERT).read_bytes() == ca_before, "the operator's trusted authority is kept"
+    assert not any((tmp_path / name).exists() for name in devcert.FLAT_LAYOUT)
 
 
 class _Discovery(BaseHTTPRequestHandler):
@@ -72,7 +120,8 @@ def keycloak_like_server(tmp_path: Path):
     """An HTTPS server on loopback presenting Keycloak's certificate."""
     devcert.ensure_certificate(tmp_path)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(tmp_path / devcert.KEYCLOAK_CERT, tmp_path / devcert.KEYCLOAK_KEY)
+    keycloak_dir = tmp_path / devcert.KEYCLOAK_DIR
+    context.load_cert_chain(keycloak_dir / devcert.KEYCLOAK_CERT, keycloak_dir / devcert.KEYCLOAK_KEY)
     server = HTTPServer(("127.0.0.1", 0), _Discovery)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
