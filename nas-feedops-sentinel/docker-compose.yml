@@ -192,7 +192,9 @@ services:
       - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
       # Keycloak client settings (secrets.toml) and theme; read-only, never baked in.
       - ./.streamlit:/app/.streamlit:ro
-      - ./tls/edge-ca.crt:/run/tls/edge-ca.crt:ro
+      # The authority's public certificate only (tls/trust/edge-ca.crt). A
+      # directory, never a file: see src/devcert.py.
+      - ./tls/trust:/run/tls:ro
     depends_on:
       <<: *after-migrate
       api:
@@ -296,9 +298,8 @@ services:
       - ./keycloak/realm-nas-sentinel.json:/opt/keycloak/data/import/realm-nas-sentinel.json:ro
       # Its own certificate and key, and the authority's public certificate
       # (for the health check and the admin scripts) -- never the authority's key.
-      - ./tls/keycloak.crt:/opt/keycloak/conf/tls/keycloak.crt:ro
-      - ./tls/keycloak.key:/opt/keycloak/conf/tls/keycloak.key:ro
-      - ./tls/edge-ca.crt:/opt/keycloak/conf/tls/edge-ca.crt:ro
+      # A directory, never files: see src/devcert.py.
+      - ./tls/keycloak:/opt/keycloak/conf/tls:ro
       - ./keycloak/TlsHealth.java:/opt/keycloak/healthcheck/TlsHealth.java:ro
     healthcheck:
       # The image has no curl or openssl; the JDK checks /health/ready over
@@ -381,7 +382,7 @@ services:
         condition: service_started
     volumes:
       - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./tls:/etc/nginx/tls:ro
+      - ./tls/edge:/etc/nginx/tls:ro     # its own certificate and key only
     ports:
       - "127.0.0.1:8443:8443"   # dashboard
       - "127.0.0.1:8444:8444"   # API (/health, /v1/*)
