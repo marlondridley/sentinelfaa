@@ -230,6 +230,16 @@ def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
         st.rerun()
 
 
+# A link that names a review (the attention strip, the Overview's investigation
+# card) opens it, once: the parameter is dropped so closing the drawer is final.
+_linked = st.query_params.get("review")
+if _linked:
+    del st.query_params["review"]
+    if _linked in _by_id:
+        _open_review(_linked)
+    else:
+        st.info("That review has already been decided or merged; the queue below shows what is open.")
+
 # ── Critic verdicts ───────────────────────────────────────────────────────────
 _critic_rows_all = run(storage.get_recent_critic_results(limit=50))
 

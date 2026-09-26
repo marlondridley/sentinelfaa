@@ -58,7 +58,7 @@ from lib.data import (
     reconstruct_nas_events,
 )
 from lib.page_setup import bootstrap_page
-from lib.ticker import render_ticker
+from lib.attention import render_attention
 from src import storage
 from src.async_bridge import run_async as run
 from src.evaluation import load_gate_config
@@ -68,8 +68,6 @@ from src.storage import save_planner_result
 from src.watch_officer_agent import build_watch_officer_context, generate_watch_officer_brief
 
 bootstrap_page(page_title="PCT TAIS FeedOps Sentinel", page_icon="✈")
-
-render_ticker()
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 val_summary = run(storage.get_validation_summary())
@@ -81,6 +79,8 @@ phase_counts = run(storage.get_flight_phase_counts(window_minutes=15))
 
 live_events = reconstruct_nas_events(events_raw)
 health = compute_feed_health(live_events[:500]) if live_events else {"airport_status": {}}
+
+render_attention(health.get("airport_status", {}), alerts_raw)
 
 total_validated = val_summary.get("total", 0) or 0
 passed = val_summary.get("passed", 0) or 0
