@@ -46,7 +46,6 @@ from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.observers.polling import PollingObserver
 
 from src import config, storage
 from src.async_bridge import run_async
@@ -77,6 +76,9 @@ FAILED_DIR: Path = config.DATA_DIR / "failed"
 # Accept .json/.xml/.txt AND extension-less files (Kit's MessageFileOutput
 # writes one file per JMS message named by epoch millis, no extension).
 SCAN_EXTENSIONS: set[str] = {".json", ".xml", ".txt", ""}
+
+# The Jumpstart kit names each file with its arrival time in epoch millis.
+_ARRIVAL_MILLIS = re.compile(r"(\d{12,})$")
 
 # PCT TRACON primary airports -- used to filter TAIS records to in-scope traffic.
 _PCT_PRIMARY_AIRPORTS: set[str] = {"KDCA", "KIAD", "KBWI", "KADW"}
@@ -118,8 +120,9 @@ def _get_already_processed(candidate_names: list[str]) -> set[str]:
     return run_async(storage.get_ingested_file_names(candidate_names))
 
 
-def _append_log_entry(entry: dict) -> None:
-    run_async(storage.record_ingest_log_entry(entry))
+def _append_log_entries(entries: list[dict]) -> None:
+    if entries:
+        run_async(storage.record_ingest_log_entries(entries))
 
 
 #   File parsers  
@@ -483,6 +486,9 @@ def _extract_records(
     if "SafetyLogicHoldBar" in root_name:
         return _extract_smes_holdbar(headers, payload), True
 
+    if "SurfaceMovementEventMessage" in root_name:
+        return _extract_smes_event(headers, payload), True
+
     return [], False
 
 
@@ -573,7 +579,12 @@ def _scale_rvr(value: Any) -> int | None:
     than stored as a reading far above every alert threshold.
     """
     raw = _coerce_int(value)
-    if raw is None:
+    # 0 is a not-reporting code, not zero visibility. Live on 2026-09-25, KBWI
+    # 10/28 and KIAD 01C/19C read 0 on both ends while every other runway at the
+    # same airport read 5000-6000 ft, and flipped between 0 and 6000 from one
+    # update to the next. Read as feet, it staged a CRITICAL ALERT_LOW_RVR per
+    # update for an idle sensor.
+    if raw is None or raw == 0:
         return None
     feet = raw * config.APDS_RVR_SCALE_FT
     if feet > config.APDS_RVR_MAX_PLAUSIBLE_FT:
@@ -645,7 +656,7 @@ def _parse_tdls_time(value: Any) -> str | None:
     """
     text = str(value or "").strip()
     try:
-        parsed = datetime.strptime(text, "%m%d%Y%H%M%S")
+        parsed = datetime.strptime(text, "%m%d%Y%H%M%S").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -741,10 +752,36 @@ def _extract_smes_holdbar(headers: dict[str, str], payload: dict) -> list[dict]:
 
 
 # Report arrays in an asdexMsg that this extractor has been verified against.
-# The ASDE-X schema defines others (positionReport among them), but none has
-# appeared in captured traffic, so their field layout is unconfirmed.
-_SMES_VERIFIED_REPORTS = frozenset({"adsbReport"})
+# positionReport and systemStatus were verified on 2026-09-25 against 160,399
+# live reports quarantined from KIAD, KDCA and KBWI: every report carried time,
+# track and position; decoded positions sat a median 0.5 NM from the named
+# airport's reference point (99% within 11.4 NM, i.e. surface plus final
+# approach); and report times were UTC, within 0.36 s of the JMS timestamp.
+_SMES_VERIFIED_REPORTS = frozenset({"adsbReport", "positionReport", "systemStatus"})
 _SMES_NON_REPORT_KEYS = frozenset({"airport"})
+
+
+def _as_list(value: Any) -> list:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _scalar(value: Any) -> Any:
+    # A field that carries an XML attribute arrives as {"content": v, "r": 1}.
+    return value.get("content") if isinstance(value, dict) else value
+
+
+def _keep_position(time_text: Any) -> bool:
+    """Deterministic sampling; see SMES_POSITION_SAMPLE_SECONDS in src/config.py."""
+    period = config.SMES_POSITION_SAMPLE_SECONDS
+    if period <= 1:
+        return True
+    try:
+        when = _as_utc(datetime.fromisoformat(str(time_text).replace("Z", "+00:00")))
+    except ValueError:
+        return True  # kept, so normalisation rejects the bad time visibly
+    return int(when.timestamp()) % period == 0
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -759,10 +796,10 @@ def _coerce_float(value: Any) -> float | None:
 
 def _extract_smes(headers: dict[str, str], payload: dict) -> list[dict]:
     """
-    ns2:asdexMsg -> one event per ADS-B surface report.
+    ns2:asdexMsg -> one event per surface report.
 
-    Shape (confirmed against tests/fixtures/swim_kit/smes_sample, a real
-    captured message):
+    adsbReport shape (confirmed against tests/fixtures/swim_kit/smes_sample, a
+    real captured message):
 
         { "airport": "KIAD",
           "adsbReport": [
@@ -781,11 +818,22 @@ def _extract_smes(headers: dict[str, str], payload: dict) -> list[dict]:
     derived from it. eramGufi identifies the ERAM flight, not the aircraft,
     so it is not put in aircraft_id; NASEvent has no field for it.
 
-    A message carrying any report type other than adsbReport is refused
-    rather than partly ingested. Guessing at an unseen layout could store
-    wrong positions, and silently extracting only the ADS-B half would drop
-    the rest while reporting success. Refused files land in data/failed/
-    with the unverified keys named, and can be re-ingested once supported.
+    positionReport (msgType AT; tests/fixtures/swim_kit/smes_position_sample)
+    is the ASDE-X fused track: {"time", "track", "position": {"latitude",
+    "longitude", ...}, "flightId": {"aircraftId", ...}, ...}. aircraftId is
+    usually absent or "UNKN"; only a real callsign becomes aircraft_id.
+    Reports are sampled per SMES_POSITION_SAMPLE_SECONDS.
+
+    systemStatus (msgType AY; tests/fixtures/swim_kit/smes_status_sample) is
+    {"mode", "state"} for the airport's ASDE-X. It is kept verbatim in
+    status_code and not mapped to feed_status: state read "degraded" in every
+    captured message, all day, so mapping it would mark SMES degraded forever.
+
+    A message carrying any other report type is refused rather than partly
+    ingested. Guessing at an unseen layout could store wrong positions, and
+    silently extracting only part of a message would drop the rest while
+    reporting success. Refused files land in data/failed/ with the unverified
+    keys named.
     """
     unverified = sorted(
         k for k in payload
@@ -807,28 +855,116 @@ def _extract_smes(headers: dict[str, str], payload: dict) -> list[dict]:
     if airport is None:
         return []
 
-    reports = payload.get("adsbReport") or []
-    if isinstance(reports, dict):
-        reports = [reports]
-
+    base = {
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"SMES_{msg_type}",
+        "feed_status": "operational",
+    }
     records = []
-    for report in reports:
+    for report in _as_list(payload.get("adsbReport")):
         basic = ((report or {}).get("report") or {}).get("basicReport") or {}
         position = basic.get("position") or {}
         track = basic.get("track")
         records.append({
-            "airport_code": airport,
-            "tracon": tracon,
-            "service_name": service_name,
-            "message_type": f"SMES_{msg_type}",
+            **base,
             "event_time_utc": basic.get("time") or header_ts,
             "track_id": str(track) if track not in (None, "") else None,
             "lat": _coerce_float(position.get("lat")),
             "lon": _coerce_float(position.get("lon")),
             "surface_event_type": "ADSB_REPORT",
-            "feed_status": "operational",
+        })
+    for report in _as_list(payload.get("positionReport")):
+        report = report or {}
+        if not _keep_position(_scalar(report.get("time"))):
+            continue
+        position = report.get("position") or {}
+        track = _scalar(report.get("track"))
+        callsign = _scalar((report.get("flightId") or {}).get("aircraftId"))
+        records.append({
+            **base,
+            "event_time_utc": _scalar(report.get("time")) or header_ts,
+            "track_id": str(track) if track not in (None, "") else None,
+            "aircraft_id": callsign if callsign not in (None, "", "UNKN") else None,
+            "lat": _coerce_float(_scalar(position.get("latitude"))),
+            "lon": _coerce_float(_scalar(position.get("longitude"))),
+            "surface_event_type": "POSITION_REPORT",
+        })
+    for status in _as_list(payload.get("systemStatus")):
+        status = status or {}
+        records.append({
+            **base,
+            "event_time_utc": header_ts,
+            "surface_event_type": "ASDEX_SYSTEM_STATUS",
+            "status_code": f"mode={_scalar(status.get('mode'))};state={_scalar(status.get('state'))}",
         })
     return records
+
+
+# ASDE-X surface events, named for what the event/status pairs in live traffic
+# showed: "off" always came with status airborne, "on" with onrunway or
+# onsurface, "spotin" with onramp.
+_SURFACE_EVENTS = {
+    "on": "WHEELS_ON",
+    "off": "WHEELS_OFF",
+    "runwayin": "RUNWAY_ENTRY",
+    "runwayout": "RUNWAY_EXIT",
+    "spotin": "SPOT_IN",
+    "spotout": "SPOT_OUT",
+}
+
+
+def _extract_smes_event(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:SurfaceMovementEventMessage (msgType SE) -> one discrete surface event.
+
+    Shape (tests/fixtures/swim_kit/smes_event_sample, a real captured message):
+
+        { "airport": "KIAD", "time": "2026-09-25T23:09:11.665Z", "track": 3553,
+          "callsign": "SVA038", "mode3ACode": 7056, "altitude": 418.75,
+          "position": { "latitude": ..., "longitude": ... },
+          "event": "off", "status": "airborne", "runway": "12/30",
+          "events": { "eventRecord": [ <this flight's earlier events> ] }, ... }
+
+    Verified on 2026-09-25 against 1,299 live messages: every one carried time,
+    track, event, status and position; positions lay within 1.8 NM of the named
+    airport; time equalled the JMS timestamp; every runway named exists at that
+    airport; and surface altitudes matched field elevation in feet. eventRecord
+    is the flight's history (a median 45 s older), so it is not re-ingested.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "SE")
+
+    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    if airport is None:
+        return []
+
+    event = str(_scalar(payload.get("event")) or "").strip().lower()
+    position = payload.get("position") or {}
+    track = _scalar(payload.get("track"))
+    callsign = _scalar(payload.get("callsign"))
+    beacon = _scalar(payload.get("mode3ACode"))
+    altitude = _coerce_float(_scalar(payload.get("altitude")))
+    status = _scalar(payload.get("status"))
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"SMES_{msg_type}",
+        "event_time_utc": _scalar(payload.get("time")) or header_ts,
+        "track_id": str(track) if track not in (None, "") else None,
+        "aircraft_id": callsign if callsign not in (None, "", "UNKN") else None,
+        # Octal digits; a numeric JSON value has lost its leading zeros.
+        "beacon_code": str(beacon).zfill(4) if beacon not in (None, "") else None,
+        "lat": _coerce_float(_scalar(position.get("latitude"))),
+        "lon": _coerce_float(_scalar(position.get("longitude"))),
+        "altitude_ft": round(altitude) if altitude is not None else None,
+        "runway": _scalar(payload.get("runway")) or None,
+        "surface_event_type": _SURFACE_EVENTS.get(event, f"SURFACE_{event.upper()}"),
+        "status_code": f"status={status}" if status else None,
+        "feed_status": "operational",
+    }]
 
 
 # ── TAIS -- terminal automation tracks ────────────────────────────────────────
@@ -955,17 +1091,36 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
         return [], str(exc)
 
 
-# Record normaliser 
+# Record normaliser
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _receipt_time(path: Path) -> datetime:
+    # The kit writes each message the moment the broker delivers it, so the
+    # file's write time is the receipt time. Stamping "now" at scan instead
+    # counted every minute a file waited for the watcher (a restart, a backlog)
+    # as feed latency. Never later than now, whatever the host clock says.
+    now = datetime.now(timezone.utc)
+    try:
+        return min(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc), now)
+    except OSError:
+        return now
+
 
 def _normalise_record(
     raw: dict, source_file: str, index: int | None = None, data_origin: str = "live",
+    received_at: datetime | None = None,
 ) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
-    Injects received_time_utc = now so every live-ingested event has a receipt stamp.
+
+    received_time_utc is when the message reached this system: `received_at`
+    (the scanner passes the kit's file write time) or, without one, now.
     Returns (event, error_string).
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = received_at or datetime.now(timezone.utc)
     raw = dict(raw)
 
     # Stable identity: the same message ingested twice is the same event.
@@ -979,9 +1134,11 @@ def _normalise_record(
         raw["event_id"] = stable_id(
             "swim", source_key, index if index is not None else content_key(raw))
 
-    # Coerce ISO timestamp strings; strip timezone info to keep all datetimes naive UTC
+    # Every timestamp becomes UTC-aware; one without an offset is taken to be UTC.
     for ts_field in ("event_time_utc", "received_time_utc"):
-        if ts_field in raw and isinstance(raw[ts_field], str):
+        if isinstance(raw.get(ts_field), datetime):
+            raw[ts_field] = _as_utc(raw[ts_field])
+        elif isinstance(raw.get(ts_field), str):
             try:
                 # STDDS timestamps are Zulu-suffixed (2026-08-27T20:42:16.000Z).
                 # datetime.fromisoformat() only learned to accept a trailing Z in
@@ -993,12 +1150,7 @@ def _normalise_record(
                 ts_text = raw[ts_field].strip()
                 if ts_text.endswith(("Z", "z")):
                     ts_text = ts_text[:-1] + "+00:00"
-                parsed = datetime.fromisoformat(ts_text)
-                # Replace timezone-aware datetime with its naive UTC equivalent
-                if parsed.tzinfo is not None:
-                    parsed = parsed.utctimetuple()
-                    parsed = datetime(*parsed[:6])
-                raw[ts_field] = parsed
+                raw[ts_field] = _as_utc(datetime.fromisoformat(ts_text))
             except ValueError:
                 # event_time_utc is load-bearing: latency_ms is derived from it and
                 # drives ALERT_HIGH_LATENCY. Dropping it here would hand the record to
@@ -1006,7 +1158,7 @@ def _normalise_record(
                 # stale message look perfectly fresh. Fail the record instead.
                 if ts_field == "event_time_utc":
                     return None, f"invalid event_time_utc: {raw[ts_field]!r}"
-                # received_time_utc is overwritten with `now` on the live-ingest path,
+                # received_time_utc is overwritten with the receipt time below,
                 # so a malformed inbound value is safe to discard.
                 raw.pop(ts_field, None)
 
@@ -1056,7 +1208,7 @@ class IngestStats:
         self.events_parsed: int = 0
         self.latest_file_time: datetime | None = None
         self.latest_service: str | None = None
-        self.scan_time: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.scan_time: datetime = datetime.now(timezone.utc)
 
     def as_dict(self) -> dict:
         return {
@@ -1110,12 +1262,18 @@ def scan_swim_folder(
     # SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
     # extension either -- it was being ingested as a message, and its empty
     # record crashed the watcher.
-    all_candidates = [
-        f for f in sorted(source_dir.iterdir())
-        if f.is_file()
-        and not f.name.startswith(".")
-        and f.suffix.lower() in SCAN_EXTENSIONS
-    ]
+    #
+    # scandir, not iterdir + is_file: the entry type comes with the directory
+    # read. On the Windows host bind mount every stat is a round trip, and
+    # stat-ing a 22,000-file backlog took ~27 s per scan -- longer than the
+    # scan's own work, so the backlog could only grow.
+    with os.scandir(source_dir) as entries:
+        all_candidates = [
+            Path(e.path) for e in entries
+            if e.is_file(follow_symlinks=False)
+            and not e.name.startswith(".")
+            and Path(e.name).suffix.lower() in SCAN_EXTENSIONS
+        ]
     stats.files_detected = len(all_candidates)
 
     already_processed = _get_already_processed([f.name for f in all_candidates])
@@ -1124,17 +1282,16 @@ def scan_swim_folder(
     unprocessed = [f for f in all_candidates if f.name not in already_processed]
     stats.files_skipped = len(all_candidates) - len(unprocessed)
 
-    # Cap files per scan so a backlog doesn't pin the pipeline for minutes.
-    def _mtime(p: Path) -> float:
-        # Another scanner may claim (rename away) a file between the listing
-        # above and this stat; that raised FileNotFoundError and killed the
-        # whole pass. A vanished file sorts last and is skipped at claim time.
-        try:
-            return p.stat().st_mtime
-        except OSError:
-            return 0.0
+    # Cap files per scan so a backlog doesn't pin the pipeline for minutes, and
+    # take the newest first so the live picture stays current. The kit names
+    # each file with its arrival time in epoch millis, so the name orders them
+    # without a stat per file (see above); requeue_<millis> files sort by their
+    # original arrival, and a name with no such number sorts last.
+    def _arrival(p: Path) -> tuple[int, str]:
+        match = _ARRIVAL_MILLIS.search(p.stem)
+        return (int(match.group(1)) if match else 0, p.name)
 
-    candidate_files = sorted(unprocessed, key=_mtime, reverse=True)[:max_files]
+    candidate_files = sorted(unprocessed, key=_arrival, reverse=True)[:max_files]
     
     # Account for files deferred due to the max_files backlog cap
     excess_backlog = len(unprocessed) - len(candidate_files)
@@ -1150,6 +1307,7 @@ def scan_swim_folder(
             },
         )
 
+    log_entries: list[dict] = []  # written once, after the loop
     for path in candidate_files:
         if _shutdown_requested.is_set():
             _log.warning(
@@ -1161,6 +1319,7 @@ def scan_swim_folder(
             )
             break
 
+        received_at = _receipt_time(path)  # before the claim, which re-stamps the file's mtime
         work = _claim(path)
         if work is None:
             stats.files_skipped += 1
@@ -1173,12 +1332,12 @@ def scan_swim_folder(
             # Archived like any other file, so it is not rescanned; nothing
             # from it reaches the pipeline.
             _archive_to_processed(work, path, processed_dir)
-            _append_log_entry({
+            log_entries.append({
                 "file": path.name,
                 "status": "withheld",
                 "event_count": 0,
                 "error": str(withheld),
-                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             stats.files_withheld += 1
             SWIM_MESSAGES_WITHHELD.inc()
@@ -1190,11 +1349,11 @@ def scan_swim_folder(
 
         if parse_error and not raw_records:
             _move_to_failed(work, parse_error, failed_dir)
-            _append_log_entry({
+            log_entries.append({
                 "file": path.name,
                 "status": "failed",
                 "error": parse_error,
-                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             stats.files_failed += 1
             continue
@@ -1206,7 +1365,8 @@ def scan_swim_folder(
             # exception escaping here used to abort scan_swim_folder(), and in
             # watch mode that crash-looped the whole nas-sentinel container.
             try:
-                event, err = _normalise_record(raw, str(path), index=record_index, data_origin=data_origin)
+                event, err = _normalise_record(
+                    raw, str(path), index=record_index, data_origin=data_origin, received_at=received_at)
             except Exception as exc:  # noqa: BLE001
                 event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
             if event:
@@ -1218,11 +1378,11 @@ def scan_swim_folder(
 
         if not events and errors:
             _move_to_failed(work, "; ".join(errors), failed_dir)
-            _append_log_entry({
+            log_entries.append({
                 "file": path.name,
                 "status": "failed",
                 "error": "; ".join(errors[:3]),
-                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             stats.files_failed += 1
             continue
@@ -1230,18 +1390,18 @@ def scan_swim_folder(
         _archive_to_processed(work, path, processed_dir)
 
         services = list({e.service_name for e in events if e.service_name})
-        _append_log_entry({
+        log_entries.append({
             "file": path.name,
             "status": "processed",
             "event_count": len(events),
             "services": services,
             "parse_errors": len(errors),
-            "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
         stats.files_processed += 1
         stats.events_parsed += len(events)
-        stats.latest_file_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        stats.latest_file_time = datetime.now(timezone.utc)
         all_events.extend(events)
         _log.info(
         "swim_ingest_file_success",
@@ -1251,13 +1411,12 @@ def scan_swim_folder(
             "parse_errors": len(errors),
             },
         )
-        if stats.files_detected == 0:
-            _log.info("swim_ingest_no_new_files", extra={"source_dir": str(source_dir)})
-        else:
-            _log.info(
-                "swim_ingest_scan_complete",
-                extra=stats.as_dict(),
-            )
+
+    _append_log_entries(log_entries)
+    if stats.files_detected == 0:
+        _log.debug("swim_ingest_no_new_files", extra={"source_dir": str(source_dir)})
+    else:
+        _log.info("swim_ingest_scan_complete", extra=stats.as_dict())
 
     return all_events, stats
 
@@ -1317,34 +1476,39 @@ def watch_swim_folder(
     scan_lock = threading.Lock()
     trigger = threading.Event()
 
-    def _run_scan(reason: str) -> None:
+    def _run_scan(reason: str) -> int:
+        """Scan once; returns how many files it consumed (0 if another scan held the lock)."""
         if not scan_lock.acquire(blocking=False):
             # A scan is already in flight; whatever prompted this call will
             # be picked up by that scan (or the next reconciliation pass) --
             # safe to skip rather than queue up overlapping scans.
-            return
+            return 0
         try:
-            _log.info("swim_watch_scan_triggered", extra={"reason": reason})
+            (_log.debug if reason == "poll" else _log.info)("swim_watch_scan_triggered", extra={"reason": reason})
             events, stats = scan_swim_folder(source_dir, max_files=max_files)
             if events and on_events is not None:
                 on_events(events, stats)
+            return stats.files_processed + stats.files_failed
         finally:
             scan_lock.release()
 
     # Native file events do not cross a Docker Desktop bind mount from a
     # Windows or macOS host into a Linux container: the kit writes on the
     # host, no inotify event fires, and a new message waited for the next
-    # reconcile pass (up to reconcile_interval, 5 minutes). Polling the
-    # folder works everywhere; SWIM_WATCH_POLLING turns it on.
-    observer = (
-        PollingObserver(timeout=config.SWIM_WATCH_POLL_SECONDS)
-        if config.SWIM_WATCH_POLLING else Observer()
-    )
-    observer.schedule(_NewFileHandler(trigger), str(source_dir), recursive=False)
-    observer.start()
+    # reconcile pass (up to reconcile_interval, 5 minutes). SWIM_WATCH_POLLING
+    # polls instead -- by scanning. watchdog's PollingObserver was used here,
+    # but it snapshots the folder by stat-ing every file every poll: ~27 s per
+    # poll at a 24,000-file backlog on the host mount, running beside the scan
+    # and starving it. A scan already lists the folder in one directory read.
+    observer = None
+    if not config.SWIM_WATCH_POLLING:
+        observer = Observer()
+        observer.schedule(_NewFileHandler(trigger), str(source_dir), recursive=False)
+        observer.start()
     _log.info(
         "swim_watch_started",
-        extra={"source_dir": str(source_dir), "reconcile_interval": reconcile_interval},
+        extra={"source_dir": str(source_dir), "reconcile_interval": reconcile_interval,
+               "polling": observer is None},
     )
 
     # Catch up immediately on anything already sitting in the folder (or that
@@ -1355,6 +1519,11 @@ def watch_swim_folder(
 
     try:
         while not _shutdown_requested.is_set():
+            if observer is None:
+                # Straight back in while a backlog remains; otherwise idle one poll.
+                if not _run_scan("poll"):
+                    _shutdown_requested.wait(config.SWIM_WATCH_POLL_SECONDS)
+                continue
             fired = trigger.wait(timeout=1.0)
             if _shutdown_requested.is_set():
                 break
@@ -1371,8 +1540,9 @@ def watch_swim_folder(
                 _run_scan("reconcile")
                 last_reconcile = time.monotonic()
     finally:
-        observer.stop()
-        observer.join(timeout=5.0)
+        if observer is not None:
+            observer.stop()
+            observer.join(timeout=5.0)
         _log.info("swim_watch_stopped")
 
 
@@ -1444,7 +1614,7 @@ def _archive_to_processed(work: Path, path: Path, processed_dir: Path) -> None:
     """Move a finished file (claimed as `work`, originally `path`) into processed_dir."""
     dest = processed_dir / path.name
     if dest.exists():
-        dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
+        dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
     try:
         shutil.move(str(work), str(dest))
     except OSError as exc:
@@ -1482,7 +1652,7 @@ def _move_to_failed(path: Path, reason: str, failed_dir: Path | None = None) -> 
     failed_dir.mkdir(parents=True, exist_ok=True)
     dest = failed_dir / path.name
     if dest.exists():
-        dest = failed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
+        dest = failed_dir / f"{path.stem}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}{path.suffix}"
     try:
         shutil.move(str(path), str(dest))
         _log.warning(

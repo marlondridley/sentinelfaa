@@ -94,11 +94,9 @@ class Settings(BaseSettings):
     )
 
     # ── Credentials (Will be populated by Vault if active, else .env) ──
+    # Only the proxy's scoped virtual key. Provider keys and the proxy master key
+    # belong to the LiteLLM container, never to this application.
     LITELLM_API_KEY: str | None = None
-    LITELLM_MASTER_KEY: str | None = None
-    OPENAI_API_KEY: str | None = None
-    GEMINI_API_KEY: str | None = None
-    DEEPSEEK_API_KEY: str | None = None
 
     # ── Postgres and DB Configuration ──────────────────────────────────────
     POSTGRES_USER: str | None = None
@@ -195,6 +193,15 @@ class Settings(BaseSettings):
     SURFACE_SPIKE_COUNT: int = 10
     SURFACE_SPIKE_WINDOW_SECONDS: int = 60
     RVR_LOW_THRESHOLD_FT: int = 1200
+
+    # SMES_POSITION_SAMPLE_SECONDS -- ENGINEERING-CHOSEN.
+    #   ASDE-X positionReports arrive once per target per second, on whole
+    #   seconds (measured 2026-09-25: ~86 reports/s across KIAD/KDCA/KBWI,
+    #   ~7M rows/day unsampled). A report is kept when its time is a multiple
+    #   of this many seconds, so every track is sampled at that interval and
+    #   re-ingesting a message yields the same events. 10 kept 10% of reports
+    #   and 95% of tracks in the measured sample. 1 keeps every report.
+    SMES_POSITION_SAMPLE_SECONDS: int = 10
 
     # APDS_RVR_SCALE_FT -- multiplier converting a wire RVR reading to feet.
     #

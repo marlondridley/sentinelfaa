@@ -6,7 +6,7 @@ The application: SWIM ingest, the alert and escalation pipeline, the investigati
 - Identities, secrets, certificates, the live feed and alerting: [docs/operations.md](docs/operations.md)
 - A scripted demonstration: [docs/walkthrough.md](docs/walkthrough.md)
 - How AI is governed, boundary by boundary, with the Sentinel ↔ AGT crosswalk: [docs/agent-governance.md](docs/agent-governance.md)
-- Where every agent metric comes from (AGT or in-repo, and why): [docs/agent-metrics.md](docs/agent-metrics.md)
+- Where every agent metric comes from (AGT-native, AGT-compatible or Sentinel-specific, and why): [docs/agent-metrics.md](docs/agent-metrics.md)
 - For operators: [docs/playbook.md](docs/playbook.md) · when something breaks: [docs/runbooks.md](docs/runbooks.md)
 - The HTTP API: [API_DEPLOYMENT.md](API_DEPLOYMENT.md)
 
@@ -28,7 +28,7 @@ src/
   telemetry.py            OpenTelemetry: GenAI spans and metrics, AGT instruments, OTLP export
   model_telemetry.py      one model_calls row per call, projected from its chat span
   evaluation.py           the evaluation layer: per-investigation measures and gates, window metrics
-  agt_metrics.py          AGT adapters (agent-sre, agent-os-kernel) and the in-repo exceptions
+  agt_metrics.py          AGT adapters (agent-sre, agent-os-kernel), the metric categories, AGT-compatible calculations
   readiness.py            the readiness verdict and deployment gate (python -m src.readiness)
   redaction.py  guardrails.py
   auth.py  keycloak_auth.py  Keycloak over HTTPS only
@@ -54,8 +54,6 @@ monitoring/  keycloak/  docker/  jumpstart/
 Run inside the application image (`docker compose run --rm --no-deps sentinel …`) or anywhere the database and Vault settings resolve:
 
 ```bash
-python -m src.main --mode demo                  # labelled synthetic cascade failure, then one planner question
-python -m src.main --mode sample                # a random synthetic batch of 50 events
 python -m src.main --mode replay --path DIR     # scan a folder of captured messages once
 python -m src.main --mode replay --watch        # the live watcher (what the sentinel service runs)
 python -m src.main --mode eval                  # guardrail cases and deterministic scenarios
@@ -64,7 +62,7 @@ python -m src.readiness [--hours N] [--json] [--gate]   # model readiness verdic
 python -m src.storage.migrate                   # schema, migrations and the app role (as schema owner)
 ```
 
-Everything written by `demo`, `sample` and `replay` is tagged `synthetic` or `replay`, and the dashboard says so while it is on screen.
+Real FAA data only; there is no synthetic mode. Events from the kit's folder are tagged `live` and any other folder `replay`, and the dashboard says so while non-live data is on screen.
 
 ## Tests
 

@@ -79,11 +79,16 @@ if ($missing) {
 # --- Verify the Java runtime ----------------------------------------------
 # The jar is bytecode major 69 (Java 25). An older JRE fails with
 # UnsupportedClassVersionError, which is a confusing error to hit at 2am.
-try {
-    $versionOutput = & java -version 2>&1 | Out-String
-} catch {
+$javaCmd = Get-Command java -ErrorAction SilentlyContinue
+if (-not $javaCmd) {
     throw "No 'java' on PATH. The shipped jar needs a Java 25+ runtime (e.g. Temurin 25)."
 }
+# java -version writes to stderr. Under 'Stop', Windows PowerShell 5.1 turns
+# redirected stderr into a terminating error, so the check threw even with
+# Java 25 installed and the launcher's window closed before the kit started.
+$ErrorActionPreference = 'Continue'
+$versionOutput = & $javaCmd.Source -version 2>&1 | Out-String
+$ErrorActionPreference = 'Stop'
 if ($versionOutput -match 'version "(\d+)') {
     $major = [int]$Matches[1]
     if ($major -lt 25) {

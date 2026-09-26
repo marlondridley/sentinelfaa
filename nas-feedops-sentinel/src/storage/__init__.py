@@ -48,6 +48,7 @@ from src.storage.repositories.model_calls_repo import ModelCallsRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
 from src.storage.test_support import override_db_path, reset_db
+from src.storage.unit_of_work import UnitOfWork
 
 __all__ = [
     "close_db_pool",
@@ -86,7 +87,7 @@ __all__ = [
     "get_latency_stats",
     "is_file_ingested",
     "get_ingested_file_names",
-    "record_ingest_log_entry",
+    "record_ingest_log_entries",
     "get_recent_ingest_log",
     "create_staged_action",
     "get_pending_staged_actions",
@@ -108,6 +109,7 @@ __all__ = [
     "reject_operational_ticket",
     "mark_operational_ticket_monitoring",
     "mark_operational_ticket_overridden",
+    "decide_staged_action_with_ticket",
 ]
 
 
@@ -210,9 +212,9 @@ async def get_ingested_file_names(file_names: list[str]) -> set[str]:
     return await repo.get_processed_subset(file_names)
 
 
-async def record_ingest_log_entry(entry: dict) -> None:
+async def record_ingest_log_entries(entries: list[dict]) -> None:
     repo = IngestLogRepository(await get_db_pool())
-    await repo.append(entry)
+    await repo.append_many(entries)
 
 
 async def get_recent_ingest_log(limit: int = 100) -> list[dict]:
@@ -426,3 +428,33 @@ async def mark_operational_ticket_overridden(
 ) -> OperationalTicket | None:
     repo = TicketsRepository(await get_db_pool())
     return await repo.mark_overridden(ticket_id, actor, note)
+
+
+async def decide_staged_action_with_ticket(
+    action_id: str,
+    ticket_id: str | None,
+    new_status: str,
+    ticket_status: str,
+    actor: str,
+    note: str = "",
+    *,
+    overridden_recommendation: str | None = None,
+    overridden_severity: str | None = None,
+) -> StagedAction | None:
+    """
+    Decide a staged action and move its ticket in one transaction: both land or neither.
+
+    The ticket moves only when the action itself changed, so a decision that arrives
+    after the action was already decided cannot move the ticket to a status that
+    disagrees with it.
+    """
+    pool = await get_db_pool()
+    async with UnitOfWork(pool) as uow:
+        action, changed = await StagedActionsRepository(pool).decide_in(
+            uow.conn, action_id, new_status, actor, note,
+            overridden_recommendation=overridden_recommendation,
+            overridden_severity=overridden_severity,
+        )
+        if changed and ticket_id:
+            await TicketsRepository(pool).transition_in(uow.conn, ticket_id, ticket_status, actor, note)
+    return action

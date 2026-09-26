@@ -55,7 +55,7 @@ FEED_STATUS_WEIGHTS: list[float] = [0.75, 0.12, 0.08, 0.05]
 
 def _event_time() -> datetime:
     """Recent event time with slight random jitter (simulates real-time stream)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(milliseconds=random.randint(50, 5_000))
+    return datetime.now(timezone.utc) - timedelta(milliseconds=random.randint(50, 5_000))
 
 
 

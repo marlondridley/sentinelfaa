@@ -296,10 +296,12 @@ class _FakeCompletion:
         import json as _json
         self.replies = [_json.dumps(r) for r in replies]
         self.calls = []
+        self.kwargs = []
 
     async def __call__(self, **kwargs):
         from types import SimpleNamespace
         self.calls.append(kwargs["messages"])
+        self.kwargs.append(kwargs)
         content = self.replies[min(len(self.calls), len(self.replies)) - 1]
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
@@ -312,7 +314,7 @@ async def test_missing_required_keys_get_exactly_one_repair_request(monkeypatch)
 
     fake = _FakeCompletion({"confidence": 0.8}, {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
     monkeypatch.setattr(llm.litellm, "acompletion", fake)
-    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
+    out = await llm.LiteLLMClient(model="openai/primary-model").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert out == {"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False}
     assert len(fake.calls) == 2
     assert "missing required keys: pattern, escalate" in fake.calls[1][-1]["content"]
@@ -324,11 +326,37 @@ async def test_complete_reply_needs_no_repair_and_bad_repair_is_not_retried(monk
 
     complete = _FakeCompletion({"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
     monkeypatch.setattr(llm.litellm, "acompletion", complete)
-    await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
+    await llm.LiteLLMClient(model="openai/primary-model").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert len(complete.calls) == 1
 
     stubborn = _FakeCompletion({"confidence": 0.8})
     monkeypatch.setattr(llm.litellm, "acompletion", stubborn)
-    out = await llm.LiteLLMClient(model="openai/primary-model", api_key="k").acall_with_tool("sys", _TOOL, "user", role="critic")
+    out = await llm.LiteLLMClient(model="openai/primary-model").acall_with_tool("sys", _TOOL, "user", role="critic")
     assert out == {"confidence": 0.8}, "returned as-is for the caller's guardrail to reject"
     assert len(stubborn.calls) == 2
+
+
+# ── The client reaches models only through the LiteLLM proxy ─────────────────
+
+async def test_every_call_goes_to_the_configured_proxy_as_an_alias(monkeypatch):
+    import src.llm_client as llm
+
+    fake = _FakeCompletion({"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
+    monkeypatch.setattr(llm.litellm, "acompletion", fake)
+    # The client's own settings object: other tests reload src.config.
+    monkeypatch.setattr(llm.settings, "LITELLM_PROXY_URL", "http://router:4000/v1")
+    monkeypatch.setattr(llm.settings, "LITELLM_API_KEY", "sk-virtual")
+    await llm.LiteLLMClient().acall_with_tool("sys", _TOOL, "user", model="primary-model", role="critic")
+    sent = fake.kwargs[0]
+    assert (sent["api_base"], sent["api_key"], sent["model"]) == ("http://router:4000/v1", "sk-virtual", "openai/primary-model")
+
+
+@pytest.mark.parametrize("route", ["deepseek/deepseek-chat", "gemini/gemini-3.8-flash", "anthropic/claude"])
+async def test_a_provider_route_never_reaches_litellm(monkeypatch, route):
+    import src.llm_client as llm
+
+    fake = _FakeCompletion({"confidence": 0.8, "pattern": "TRANSIENT", "escalate": False})
+    monkeypatch.setattr(llm.litellm, "acompletion", fake)
+    with pytest.raises(llm.LLMPermanentError, match="provider route"):
+        await llm.LiteLLMClient().acall_with_tool("sys", _TOOL, "user", model=route, role="critic")
+    assert fake.calls == []

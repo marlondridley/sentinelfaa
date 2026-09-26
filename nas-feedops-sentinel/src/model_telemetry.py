@@ -113,13 +113,14 @@ def response_cost(response: Any) -> float | None:
     """
     hidden = getattr(response, "_hidden_params", None) or {}
     try:
-        from litellm.cost_calculator import get_response_cost_from_hidden_params
+        # Prices a reply already received; no model is called (ruff TID251).
+        from litellm.cost_calculator import get_response_cost_from_hidden_params  # noqa: TID251
 
         cost = get_response_cost_from_hidden_params(hidden)
         if cost is None and isinstance(hidden, dict):
             cost = hidden.get("response_cost")
         if cost is None:
-            import litellm
+            import litellm  # noqa: TID251
 
             cost = litellm.completion_cost(completion_response=response)
         cost = float(cost)

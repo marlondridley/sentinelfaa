@@ -26,7 +26,7 @@ from src.models import NASEvent
 
 
 def _now_minus(minutes: float) -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes)
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
 
 def _event(**kwargs) -> NASEvent:
@@ -40,7 +40,7 @@ def _event(**kwargs) -> NASEvent:
     if "latency_ms" not in base:
         base["latency_ms"] = 220.0
     if "received_time_utc" not in base:
-        base["received_time_utc"] = base.get("event_time_utc", datetime.now(timezone.utc).replace(tzinfo=None))
+        base["received_time_utc"] = base.get("event_time_utc", datetime.now(timezone.utc))
     return NASEvent(**base)
 
 
