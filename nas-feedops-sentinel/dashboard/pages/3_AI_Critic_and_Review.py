@@ -20,6 +20,7 @@ row, decided by the same gate call.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,127 +91,9 @@ theme.page_header(
     ),
 )
 
-# ── Critic verdicts ───────────────────────────────────────────────────────────
-_critic_rows_all = run(storage.get_recent_critic_results(limit=50))
-
-_cri_total = len(_critic_rows_all)
-_cri_escalate = sum(1 for r in _critic_rows_all if r.get("escalate"))
-_cri_cascade = sum(1 for r in _critic_rows_all if r.get("pattern") == "CASCADE_FAILURE")
-_cri_isolated = sum(1 for r in _critic_rows_all if r.get("pattern") == "ISOLATED_FAULT")
-_cri_avg_conf = (
-    sum(r.get("confidence", 0) or 0 for r in _critic_rows_all) / _cri_total
-) if _cri_total else None
-
-theme.section(
-    "Critic verdicts",
-    "Advisory only — no verdict here has executed anything.",
-    tone="bad" if _cri_escalate else "info",
-)
-
-theme.kpi_row(
-    [
-        theme.kpi(
-            "Alerts evaluated", f"{_cri_total:,}", tone="info",
-            foot="Most recent 50 Critic runs",
-            href=theme.drill_href("alerts", severity="CRITICAL"),
-            drill="SOURCE →",
-        ),
-        theme.kpi(
-            "Escalations suggested", f"{_cri_escalate:,}",
-            tone="bad" if _cri_escalate else "ok",
-            foot="Awaiting a human decision below" if _cri_escalate else "None suggested",
-        ),
-        theme.kpi(
-            "Mean confidence",
-            f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—",
-            tone="neutral",
-            foot="Model-reported — not a measured accuracy",
-        ),
-        theme.kpi(
-            "Cascade failures", f"{_cri_cascade:,}",
-            tone="bad" if _cri_cascade else "ok",
-            foot="Multiple services failing together",
-        ),
-        theme.kpi(
-            "Isolated faults", f"{_cri_isolated:,}", tone="info",
-            foot="Contained to one service or facility",
-        ),
-    ],
-    columns=5,
-)
-
-if not _critic_rows_all:
-    st.info(
-        "No Critic verdicts yet. Configure LLM_PROVIDER in .env and trigger a CRITICAL "
-        "alert to populate this view."
-    )
-else:
-    _alert_id_to_row = {a.get("alert_id"): a for a in alerts_raw}
-    _PATTERN_TONE = {
-        "CASCADE_FAILURE": "bad",
-        "ISOLATED_FAULT": "warn",
-        "WEATHER_CORRELATED": "warn",
-        "DATA_ANOMALY": "info",
-        "TRANSIENT": "neutral",
-        "UNKNOWN": "neutral",
-    }
-    _latest_verdicts = st.expander(f"Latest Critic verdicts ({min(10, _cri_total)})", expanded=False)
-    for cr in _critic_rows_all[:10]:
-        alert_row = _alert_id_to_row.get(cr.get("alert_id"), {})
-        conf = cr.get("confidence")
-        conf_str = f"{conf:.0%}" if conf is not None else "N/A"
-        pattern = str(cr.get("pattern", "UNKNOWN"))
-        escalate = bool(cr.get("escalate"))
-        reasoning = cr.get("reasoning", "")
-        alert_type = alert_row.get("alert_type", "—")
-        airport = alert_row.get("airport_code", "—")
-        service = alert_row.get("service_name", "—")
-        _ptone = _PATTERN_TONE.get(pattern, "neutral")
-
-        with _latest_verdicts, st.container(border=True):
-            st.markdown(
-                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
-                '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
-                + theme._esc(alert_type) + "</span>"
-                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
-                + theme._esc(airport) + " · " + theme._esc(service) + "</span>"
-                '<span class="chip" style="color:' + theme.TONES[_ptone][0]
-                + ";border-color:" + theme.TONES[_ptone][1]
-                + ';padding:2px 8px;font-size:10.5px;">' + theme._esc(pattern) + "</span>"
-                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
-                "confidence " + theme._esc(conf_str) + "</span>"
-                + (
-                    '<span class="chip" style="color:' + theme.RED5
-                    + ";border-color:" + theme.TONES["bad"][1]
-                    + ";background:" + theme.TONES["bad"][2]
-                    + ';margin-left:auto;padding:2px 9px;font-size:10.5px;">'
-                    "ESCALATE TO SUPERVISOR</span>"
-                    if escalate else
-                    '<span class="mono" style="margin-left:auto;font-size:11px;color:'
-                    + theme.GRAY1 + ';">no escalation proposed</span>'
-                )
-                + "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(reasoning if reasoning else "_No reasoning recorded._")
-            cits = parse_json_str_list(cr.get("citations", "[]"), "citations")
-            if cits:
-                st.markdown(
-                    f'<div class="mono" style="font-size:11px;color:{theme.GRAY1};">'
-                    f'Evidence event_ids: {theme._esc(", ".join(cits[:6]))}</div>',
-                    unsafe_allow_html=True,
-                )
-
-# ── Human review queue (HITL execution gate) ──────────────────────────────────
+# ── Reviews: loaded once, opened from the verdicts and from the queue ──────────
 _pending_actions = run(get_pending_staged_actions())
 _by_id = {a.action_id: a for a in _pending_actions}
-
-theme.section(
-    "Human review queue",
-    "One review per condition; nothing executes until a named operator decides.",
-    tone="bad" if _pending_actions else "ok",
-    right=f"{len(_pending_actions)} review(s) · {sum(a.occurrences for a in _pending_actions):,} reading(s)",
-)
 
 _alert_by_id = {a.get("alert_id"): a for a in alerts_raw}
 # Newest verdict per alert: the storage call returns newest first.
@@ -347,6 +230,136 @@ def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
         st.rerun()
 
 
+# ── Critic verdicts ───────────────────────────────────────────────────────────
+_critic_rows_all = run(storage.get_recent_critic_results(limit=50))
+
+_cri_total = len(_critic_rows_all)
+_cri_escalate = sum(1 for r in _critic_rows_all if r.get("escalate"))
+_cri_cascade = sum(1 for r in _critic_rows_all if r.get("pattern") == "CASCADE_FAILURE")
+_cri_isolated = sum(1 for r in _critic_rows_all if r.get("pattern") == "ISOLATED_FAULT")
+_cri_avg_conf = (
+    sum(r.get("confidence", 0) or 0 for r in _critic_rows_all) / _cri_total
+) if _cri_total else None
+
+theme.section(
+    "Critic verdicts",
+    "Advisory only — no verdict here has executed anything.",
+    tone="bad" if _cri_escalate else "info",
+)
+
+theme.kpi_row(
+    [
+        theme.kpi(
+            "Alerts evaluated", f"{_cri_total:,}", tone="info",
+            foot="Most recent 50 Critic runs",
+            href=theme.drill_href("alerts", severity="CRITICAL"),
+            drill="SOURCE →",
+        ),
+        theme.kpi(
+            "Escalations suggested", f"{_cri_escalate:,}",
+            tone="bad" if _cri_escalate else "ok",
+            foot="Awaiting a human decision below" if _cri_escalate else "None suggested",
+        ),
+        theme.kpi(
+            "Mean confidence",
+            f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—",
+            tone="neutral",
+            foot="Model-reported — not a measured accuracy",
+        ),
+        theme.kpi(
+            "Cascade failures", f"{_cri_cascade:,}",
+            tone="bad" if _cri_cascade else "ok",
+            foot="Multiple services failing together",
+        ),
+        theme.kpi(
+            "Isolated faults", f"{_cri_isolated:,}", tone="info",
+            foot="Contained to one service or facility",
+        ),
+    ],
+    columns=5,
+)
+
+if not _critic_rows_all:
+    st.info(
+        "No Critic verdicts yet. Configure LLM_PROVIDER in .env and trigger a CRITICAL "
+        "alert to populate this view."
+    )
+else:
+    _alert_id_to_row = {a.get("alert_id"): a for a in alerts_raw}
+    _PATTERN_TONE = {
+        "CASCADE_FAILURE": "bad",
+        "ISOLATED_FAULT": "warn",
+        "WEATHER_CORRELATED": "warn",
+        "DATA_ANOMALY": "info",
+        "TRANSIENT": "neutral",
+        "UNKNOWN": "neutral",
+    }
+    _latest_verdicts = st.expander(f"Latest Critic verdicts ({min(10, _cri_total)})", expanded=False)
+    _covering = run(storage.get_covering_actions([r.get("alert_id") for r in _critic_rows_all[:10]]))
+    _cited_events = run(storage.get_events_by_ids(sorted({
+        e for r in _critic_rows_all[:10] for e in parse_json_str_list(r.get("citations", "[]"), "citations")})))
+    for cr in _critic_rows_all[:10]:
+        alert_row = _alert_id_to_row.get(cr.get("alert_id"), {})
+        conf = cr.get("confidence")
+        conf_str = f"{conf:.0%}" if conf is not None else "N/A"
+        pattern = str(cr.get("pattern", "UNKNOWN"))
+        escalate = bool(cr.get("escalate"))
+        reasoning = cr.get("reasoning", "")
+        alert_type = alert_row.get("alert_type", "—")
+        airport = alert_row.get("airport_code", "—")
+        service = alert_row.get("service_name", "—")
+        _ptone = _PATTERN_TONE.get(pattern, "neutral")
+
+        with _latest_verdicts, st.container(border=True):
+            st.markdown(
+                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+                '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+                + theme._esc(alert_type) + "</span>"
+                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
+                + theme._esc(airport) + " · " + theme._esc(service) + "</span>"
+                '<span class="chip" style="color:' + theme.TONES[_ptone][0]
+                + ";border-color:" + theme.TONES[_ptone][1]
+                + ';padding:2px 8px;font-size:10.5px;">' + theme._esc(pattern) + "</span>"
+                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
+                "confidence " + theme._esc(conf_str) + "</span>"
+                + (
+                    '<span class="chip" style="color:' + theme.RED5
+                    + ";border-color:" + theme.TONES["bad"][1]
+                    + ";background:" + theme.TONES["bad"][2]
+                    + ';margin-left:auto;padding:2px 9px;font-size:10.5px;">'
+                    "ESCALATE TO SUPERVISOR</span>"
+                    if escalate else
+                    '<span class="mono" style="margin-left:auto;font-size:11px;color:'
+                    + theme.GRAY1 + ';">no escalation proposed</span>'
+                )
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(reasoning if reasoning else "_No reasoning recorded._")
+            cits = parse_json_str_list(cr.get("citations", "[]"), "citations")
+            if cits:
+                st.markdown(theme.event_chips(cits, _cited_events), unsafe_allow_html=True)
+            # The verdict is advisory; what a person acts on is the review covering its alert.
+            review = _covering.get(cr.get("alert_id"))
+            if review and review["status"] == "PENDING" and review["action_id"] in _by_id:
+                if st.button("Review escalation" if escalate else "Open review", key=f"verdict_{cr.get('alert_id')}",
+                             type="primary" if escalate else "secondary"):
+                    _open_review(review["action_id"])
+            elif review:
+                st.caption(f"Review {review['status'].lower()}"
+                           + (f" by {review['decided_by']}" if review.get("decided_by") else "") + ".")
+            else:
+                st.caption("No review: only CRITICAL alerts are staged for a decision.")
+
+# ── Human review queue (HITL execution gate) ──────────────────────────────────
+
+theme.section(
+    "Human review queue",
+    "One review per condition; nothing executes until a named operator decides.",
+    tone="bad" if _pending_actions else "ok",
+    right=f"{len(_pending_actions)} review(s) · {sum(a.occurrences for a in _pending_actions):,} reading(s)",
+)
+
 if not _pending_actions:
     st.markdown(
         f'<div style="border:1px solid {theme.TONES["ok"][1]};border-left:3px solid '
@@ -392,7 +405,10 @@ else:
     _view = _rows[_keep].reset_index(drop=True)
 
     _picked = st.dataframe(
-        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True, key="q_table",
+        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True,
+        # A selection is only meaningful for the rows it was made on: a decision
+        # or a filter that changes them starts a fresh table (and selection).
+        key="q_table_" + hashlib.sha1("|".join(_view["action_id"]).encode()).hexdigest()[:12],
         on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
         column_config={
             "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
@@ -401,7 +417,7 @@ else:
             "AI summary": st.column_config.TextColumn(width="large"),
         },
     )
-    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows]
+    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows if 0 <= i < len(_view)]
 
     a1, a2, a3, a4 = st.columns([1.2, 1.5, 2.1, 2.4])
     if a1.button("Open review", type="primary", use_container_width=True, disabled=len(_chosen) != 1,

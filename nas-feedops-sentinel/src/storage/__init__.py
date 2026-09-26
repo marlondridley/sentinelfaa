@@ -93,6 +93,8 @@ __all__ = [
     "create_staged_action",
     "merge_pending_duplicates",
     "get_covered_alert_ids",
+    "get_covering_actions",
+    "get_events_by_ids",
     "get_pending_staged_actions",
     "get_recent_staged_actions",
     "approve_staged_action",
@@ -321,6 +323,16 @@ async def create_staged_action(
 ) -> StagedAction:
     repo = StagedActionsRepository(await get_db_pool())
     return await repo.create(action, note=note, condition_window=condition_window)
+
+
+async def get_covering_actions(alert_ids: list[str]) -> dict[str, dict]:
+    repo = StagedActionsRepository(await get_db_pool())
+    return await repo.covering_actions(alert_ids)
+
+
+async def get_events_by_ids(event_ids: list[str]) -> dict[str, dict]:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.get_by_ids(event_ids)
 
 
 async def get_covered_alert_ids(action_id: str) -> list[str]:

@@ -8,6 +8,7 @@
 !.env.example
 .streamlit/*
 !.streamlit/secrets.toml.example
+!.streamlit/config.toml
 .venv/
 .local/
 data/
