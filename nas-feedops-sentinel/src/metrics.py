@@ -39,6 +39,11 @@ EVENTS_INGESTED = Counter(
     ["source", "airport", "service"],
 )
 
+SWIM_MESSAGES_WITHHELD = Counter(
+    "nas_swim_messages_withheld_total",
+    "SWIM messages not ingested because the FAA flagged them blockAtFAA=true.",
+)
+
 EVENTS_VALIDATED = Counter(
     "nas_events_validated_total",
     "Total NAS events that passed/failed validation.",
