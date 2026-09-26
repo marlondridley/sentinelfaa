@@ -122,11 +122,11 @@ class TestStaging:
     async def test_duplicate_critical_alert_does_not_create_duplicate(self):
         alert = _critical_alert()
         first  = await _persist_and_stage(alert)
-        second = await _persist_and_stage(alert)  # same alert object → same idempotency_key
+        second = await _persist_and_stage(alert)  # the same alert again: nothing new is opened
 
-        assert first.action_id == second.action_id, \
-            "Re-staging the same alert must return the existing action, not a new one"
-        assert len(await get_pending_staged_actions()) == 1
+        assert first is not None and second is None, \
+            "Re-staging the same alert must open nothing: its review already covers it"
+        assert [a.action_id for a in await get_pending_staged_actions()] == [first.action_id]
 
     async def test_different_critical_alerts_create_different_actions(self):
         a1 = _critical_alert(alert_type="ALERT_LOW_RVR")

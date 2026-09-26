@@ -281,6 +281,13 @@ class Settings(BaseSettings):
     RECONCILE_INTERVAL_SECONDS: float = 60.0
     RECONCILE_STAGE_WINDOW_MINUTES: int = 60
 
+    # CONDITION_QUIET_MINUTES -- one review per condition, not per reading.
+    #   A CRITICAL alert joins the latest staged action for its condition
+    #   (alert type, airport, service) when that condition last fired within
+    #   this many minutes; otherwise it opens a new one. On 2026-09-25 a single
+    #   low-RVR episode at KBWI staged 202 separate reviews in one hour.
+    CONDITION_QUIET_MINUTES: int = 30
+
     INVESTIGATIONS_ENABLED: bool = True
     MAX_LLM_INVESTIGATIONS_PER_PASS: int = 3
     INVESTIGATION_WINDOW_MINUTES: int = 60

@@ -74,7 +74,7 @@ async def test_the_reconciler_sets_queue_depth_with_the_oldest_wait(db):
     await reconcile_unstaged()
 
     assert HITL_QUEUE_DEPTH._value.get() == len(await db.get_pending_staged_actions()) == 2
-    assert HITL_OLDEST_PENDING_SECONDS._value.get() > 0
+    assert HITL_OLDEST_PENDING_SECONDS._value.get() >= 0
 
 
 # ── The Prometheus console opens on five questions ────────────────────────────

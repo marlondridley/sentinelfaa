@@ -37,8 +37,8 @@ _UNSTAGED_SQL = """
     SELECT a.alert_id, a.alert_type, a.severity, a.airport_code, a.service_name,
            a.description, a.triggered_at, a.event_id, a.data_origin
     FROM alert_events a
-    LEFT JOIN staged_actions s ON s.alert_id = a.alert_id
-    WHERE a.severity = 'CRITICAL' AND s.action_id IS NULL
+    LEFT JOIN staged_action_alerts x ON x.alert_id = a.alert_id
+    WHERE a.severity = 'CRITICAL' AND x.alert_id IS NULL
     ORDER BY a.triggered_at
     LIMIT $1
 """
@@ -84,6 +84,9 @@ async def reconcile_unstaged(*, limit: int = 1000) -> dict[str, int]:
         except Exception as exc:  # noqa: BLE001 -- advisory; the staging above stands
             _log.error("reconcile_investigation_failed", extra={"error": str(exc)})
 
+    # Reviews staged before one-review-per-condition fold into one per condition.
+    merged = await storage.merge_pending_duplicates(timedelta(minutes=settings.CONDITION_QUIET_MINUTES))
+
     remaining = len(await pool.fetch(_UNSTAGED_SQL, limit))
     CRITICAL_ALERTS_UNSTAGED.set(remaining)
     # Both review-queue gauges from one read, on every pass. The depth was set
@@ -92,10 +95,12 @@ async def reconcile_unstaged(*, limit: int = 1000) -> dict[str, int]:
     pending = await storage.get_pending_staged_actions()
     oldest = min((p.created_at for p in pending), default=None)
     HITL_QUEUE_DEPTH.set(len(pending))
-    HITL_OLDEST_PENDING_SECONDS.set((now - oldest).total_seconds() if oldest else 0)
+    waited = (datetime.now(timezone.utc) - oldest).total_seconds() if oldest else 0.0
+    HITL_OLDEST_PENDING_SECONDS.set(max(0.0, waited))
 
-    summary = {"staged_pending": len(staged), "recorded_expired": expired, "still_unstaged": remaining}
-    if staged or expired or remaining:
+    summary = {"staged_pending": len(staged), "recorded_expired": expired, "still_unstaged": remaining,
+               "merged": merged}
+    if staged or expired or remaining or merged:
         _log.warning("reconcile_repaired", extra=summary)
     return summary
 

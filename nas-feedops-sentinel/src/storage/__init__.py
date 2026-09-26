@@ -28,7 +28,7 @@ not deprecated -- they're the stable public surface other modules already depend
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.models import (
     AlertEvent,
@@ -91,6 +91,8 @@ __all__ = [
     "get_recent_ingest_log",
     "get_ingest_failure_reasons",
     "create_staged_action",
+    "merge_pending_duplicates",
+    "get_covered_alert_ids",
     "get_pending_staged_actions",
     "get_recent_staged_actions",
     "approve_staged_action",
@@ -314,9 +316,21 @@ async def save_critic_result(result: CriticResult) -> None:
 
 # ── HITL staged actions (staged_actions / action_audit_log) ───────────────────
 
-async def create_staged_action(action: StagedAction, note: str = "staged from CRITICAL alert") -> StagedAction:
+async def create_staged_action(
+    action: StagedAction, note: str = "staged from CRITICAL alert", *, condition_window: timedelta | None = None,
+) -> StagedAction:
     repo = StagedActionsRepository(await get_db_pool())
-    return await repo.create(action, note=note)
+    return await repo.create(action, note=note, condition_window=condition_window)
+
+
+async def get_covered_alert_ids(action_id: str) -> list[str]:
+    repo = StagedActionsRepository(await get_db_pool())
+    return await repo.covered_alert_ids(action_id)
+
+
+async def merge_pending_duplicates(condition_window: timedelta) -> int:
+    repo = StagedActionsRepository(await get_db_pool())
+    return await repo.merge_pending_duplicates(condition_window)
 
 
 async def get_pending_staged_actions() -> list[StagedAction]:
