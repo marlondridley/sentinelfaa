@@ -202,6 +202,9 @@ _MIGRATIONS: list[tuple[str, str]] = [
     # service -- and staged_action_alerts records every CRITICAL alert it
     # covers, its own first alert included, so "is this alert staged?" has one
     # answer. Existing actions cover the alert they were staged from.
+    ("2026_09_critic_results_bluf", """
+        ALTER TABLE critic_results ADD COLUMN IF NOT EXISTS bluf TEXT;
+    """),
     ("2026_09_staged_action_conditions", """
         ALTER TABLE staged_actions ADD COLUMN IF NOT EXISTS condition_key TEXT;
         UPDATE staged_actions SET condition_key = concat_ws('|', alert_type, airport_code, service_name)
