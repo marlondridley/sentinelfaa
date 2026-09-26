@@ -17,10 +17,13 @@ it?" -- and it answers it in a deliberate order:
      for, and the previous version of this page had six of them.
   3. Per-airport status, so "is this isolated or sector-wide?" is
      answered before anyone has to read a table.
-  4. The Watch Officer brief -- the narrative layer, which may be
+  4. One "AI investigation" card: five indicators for the latest
+     investigation (evidence quality, confidence, time, cost, human
+     review), measured from the record. Detail is one click deeper.
+  5. The Watch Officer brief -- the narrative layer, which may be
      LLM-assisted and is labelled as such, kept visually subordinate to
      the deterministic verdict above it so the two are never confused.
-  5. The AI Planner, for questions the fixed panels do not answer.
+  6. The AI Planner, for questions the fixed panels do not answer.
 
 Everything else (the live airspace map, feed/service health, the AI
 Critic and human review queue, the alert log, and ingest/replay tooling)
@@ -47,7 +50,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 
 import streamlit as st
 
-from lib import theme
+from lib import agent_eval, theme
 from lib.data import (
     PCT_AIRPORTS,
     bucket_counts,
@@ -58,6 +61,7 @@ from lib.page_setup import bootstrap_page
 from lib.ticker import render_ticker
 from src import storage
 from src.async_bridge import run_async as run
+from src.evaluation import load_gate_config
 from src.feed_health import compute_feed_health
 from src.planner_agent import PlannerAgent
 from src.storage import save_planner_result
@@ -286,6 +290,24 @@ for _code, _info in PCT_AIRPORTS.items():
         "</a>"
     )
 theme.kpi_row(_cards, columns=4)
+
+# ── AI investigation (Layer 1 of the agent evaluation) ────────────────────────
+# Five indicators for the latest investigation, no more: the operator's
+# picture stays mission-first. Detail is one click deeper (Review page), and
+# the full evaluation is on Agent Evaluation. Every number is measured from
+# the record by src/evaluation.py, never reported by an agent about itself.
+theme.section(
+    "AI investigation",
+    "What did the agents add to the latest CRITICAL alert, and was it sound?",
+    tone="info",
+    right="advisory only · a person decides",
+)
+_gates = load_gate_config()
+agent_eval.render_card(
+    agent_eval.load_latest(),
+    sla_s=_gates.budget.max_duration_seconds,
+    budget_usd=_gates.budget.max_cost_usd,
+)
 
 # ── Watch Officer brief ───────────────────────────────────────────────────────
 theme.section(
