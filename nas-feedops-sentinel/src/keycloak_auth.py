@@ -61,7 +61,7 @@ against the realm's published JWKS, then issuer, audience, authorised
 party, and expiry. That verification is not redundant just because the
 token arrived over a direct connection we opened -- it is what pins the
 token to *this realm and this client*, and it is the difference between
-"Keycloak said so" and "something answering on port 8080 said so".
+"Keycloak said so" and "something answering on Keycloak's port said so".
 
 This module deliberately does not import Streamlit. It is transport and
 verification only; dashboard/lib/login.py owns the UI, reads settings out
@@ -69,9 +69,12 @@ of st.secrets, and is the only place session state is touched.
 """
 from __future__ import annotations
 
+import ssl
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -105,6 +108,25 @@ class KeycloakSettings:
     client_secret: str
     metadata_url: str
     timeout_s: float = DEFAULT_TIMEOUT_S
+    # PEM file of the authority that signed Keycloak's certificate: tls/edge-ca.crt
+    # from src/devcert.py, or an internal PKI's. None trusts the system store.
+    ca_file: str | None = None
+
+
+class InsecureIdentityEndpoint(ValueError):
+    """An identity URL that is not HTTPS. The password grant must never travel in cleartext."""
+
+
+def require_https(url: str, what: str) -> str:
+    if urlsplit(url).scheme.lower() != "https":
+        raise InsecureIdentityEndpoint(f"{what} is not HTTPS: {url}")
+    return url
+
+
+@lru_cache(maxsize=8)
+def _tls_context(ca_file: str | None) -> ssl.SSLContext:
+    """Certificate and hostname verification, against ca_file when one is configured."""
+    return ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
 
 
 @dataclass(frozen=True)
@@ -127,8 +149,9 @@ class AuthOutcome:
     remediation: str = ""
 
 
-def _get_json(url: str, timeout_s: float) -> dict[str, Any]:
-    resp = httpx.get(url, timeout=timeout_s, follow_redirects=True)
+def _get_json(url: str, timeout_s: float, ca_file: str | None = None) -> dict[str, Any]:
+    resp = httpx.get(require_https(url, "Keycloak URL"), timeout=timeout_s, follow_redirects=True,
+                     verify=_tls_context(ca_file))
     resp.raise_for_status()
     return resp.json()
 
@@ -141,21 +164,27 @@ def fetch_metadata(settings: KeycloakSettings) -> dict[str, Any]:
     string we pin tokens to, the logout endpoint -- comes from here rather
     than from hand-built URLs, because this deployment deliberately serves
     two different hostnames for the same realm: KC_HOSTNAME advertises
-    browser-facing URLs on localhost:8081 while KC_HOSTNAME_BACKCHANNEL_DYNAMIC
-    lets server-to-server URLs follow the request host (keycloak:8080 on the
+    browser-facing URLs on https://localhost:8081 while KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+    lets server-to-server URLs follow the request host (https://keycloak:8443 on the
     compose network). Guessing either one would work in exactly one of the
     two contexts this dashboard runs in.
     """
-    doc = _get_json(settings.metadata_url, settings.timeout_s)
+    doc = _get_json(require_https(settings.metadata_url, "server_metadata_url"), settings.timeout_s,
+                    settings.ca_file)
     missing = [k for k in ("token_endpoint", "jwks_uri", "issuer") if not doc.get(k)]
     if missing:
         raise ValueError(f"discovery document missing required keys: {', '.join(missing)}")
+    # The endpoints the credential and tokens will travel to must be HTTPS
+    # too: a realm behind a misconfigured proxy can advertise http:// ones.
+    for key in ("token_endpoint", "jwks_uri", "end_session_endpoint"):
+        if doc.get(key):
+            require_https(str(doc[key]), key)
     return doc
 
 
-def fetch_jwks(jwks_uri: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, Any]:
+def fetch_jwks(jwks_uri: str, timeout_s: float = DEFAULT_TIMEOUT_S, ca_file: str | None = None) -> dict[str, Any]:
     """Fetch the realm's public signing keys."""
-    return _get_json(jwks_uri, timeout_s)
+    return _get_json(jwks_uri, timeout_s, ca_file)
 
 
 def _decode_verified(id_token: str, jwks: dict[str, Any]) -> dict[str, Any]:
@@ -313,17 +342,30 @@ def password_login(
 
     try:
         meta = fetch_metadata(settings)
-    except Exception as exc:  # noqa: BLE001 -- any failure here is "realm unreachable"
+    except InsecureIdentityEndpoint as exc:
+        _log.warning("keycloak_endpoint_not_https", extra={"error": str(exc)})
+        return AuthOutcome(
+            ok=False,
+            error_code="identity_endpoint_not_https",
+            message="Sign-in refused: the identity service is configured over plain HTTP.",
+            remediation=(
+                "Keycloak serves HTTPS only. In .streamlit/secrets.toml set server_metadata_url to "
+                "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration and "
+                "ca_file to /run/tls/edge-ca.crt (see .streamlit/secrets.toml.example)."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 -- any other failure here is "realm unreachable"
         _log.warning("keycloak_discovery_failed", extra={"error": str(exc)})
         return AuthOutcome(
             ok=False,
             error_code="realm_unreachable",
             message="Cannot reach Keycloak to verify the sign-in.",
             remediation=(
-                "Confirm the nas-keycloak container is running and healthy, and that "
+                "Confirm the nas-keycloak container is running and healthy, that "
                 "server_metadata_url in .streamlit/secrets.toml resolves from inside "
-                "the dashboard container (use http://keycloak:8080/... on the compose "
-                "network, not localhost:8081)."
+                "the dashboard container (https://keycloak:8443/... on the compose "
+                "network, not localhost:8081), and that ca_file names the authority "
+                "that signed Keycloak's certificate (a certificate error lands here too)."
             ),
         )
 
@@ -339,6 +381,7 @@ def password_login(
                 "scope": _SCOPE,
             },
             timeout=settings.timeout_s,
+            verify=_tls_context(settings.ca_file),
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("keycloak_token_request_failed", extra={"error": str(exc)})
@@ -381,7 +424,7 @@ def password_login(
         )
 
     try:
-        jwks = fetch_jwks(meta["jwks_uri"], settings.timeout_s)
+        jwks = fetch_jwks(meta["jwks_uri"], settings.timeout_s, settings.ca_file)
         claims = _decode_verified(id_token, jwks)
     except Exception as exc:  # noqa: BLE001
         _log.warning("keycloak_token_verify_failed", extra={"error": str(exc)})
@@ -426,6 +469,21 @@ def password_login(
     )
 
 
+def backchannel_url(endpoint: str | None, token_endpoint: str) -> str | None:
+    """
+    `endpoint` moved onto the token endpoint's scheme and host.
+
+    Keycloak advertises the logout endpoint on its browser-facing hostname
+    (KC_HOSTNAME, https://localhost:8081), which inside the dashboard
+    container is not Keycloak at all; the token endpoint follows the host the
+    request used (https://keycloak:8443). The path is the realm's either way.
+    """
+    if not endpoint:
+        return None
+    target, via = urlsplit(endpoint), urlsplit(token_endpoint)
+    return urlunsplit((via.scheme, via.netloc, target.path, target.query, target.fragment))
+
+
 def end_session(settings: KeycloakSettings, refresh_token: str) -> bool:
     """
     Revoke the operator's Keycloak session on sign-out.
@@ -441,7 +499,7 @@ def end_session(settings: KeycloakSettings, refresh_token: str) -> bool:
         return False
     try:
         meta = fetch_metadata(settings)
-        endpoint = meta.get("end_session_endpoint")
+        endpoint = backchannel_url(meta.get("end_session_endpoint"), meta["token_endpoint"])
         if not endpoint:
             return False
         resp = httpx.post(
@@ -452,6 +510,7 @@ def end_session(settings: KeycloakSettings, refresh_token: str) -> bool:
                 "refresh_token": refresh_token,
             },
             timeout=settings.timeout_s,
+            verify=_tls_context(settings.ca_file),
         )
         return resp.status_code in (200, 204)
     except Exception as exc:  # noqa: BLE001
