@@ -1,0 +1,22 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = SMES
+Property name = msgType; value = AY
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = SMES/all/false/AY/KDCA/PCT
+Property name = globalID; value = 100740267
+Property name = msgSeqID; value = 84324
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KDCA
+Property name = pubNode; value = NEMS_ZTL
+Property name = tracon; value = PCT
+Property name = timeline; value = 1790377447123 1790377447123 1790377447152
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-09-25T23:04:07.123Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:asdexMsg":{"xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:smes:surfacemovementevent","systemStatus":{"mode":"operational","state":"degraded"},"airport":"KDCA"}}

@@ -437,6 +437,14 @@ async def _build_escalation_package(
     )
 
 
+# (staged action status, ticket status) each decision records.
+_DECISION_STATUSES: dict[Decision, tuple[str, str]] = {
+    Decision.APPROVE: ("APPROVED", "APPROVED_FOR_ESCALATION"),
+    Decision.REJECT: ("REJECTED", "REJECTED"),
+    Decision.OVERRIDE: ("OVERRIDDEN", "OVERRIDDEN"),
+}
+
+
 async def decide_staged_action(
     action_id: str,
     decision: Decision,
@@ -472,153 +480,22 @@ async def decide_staged_action(
 
     actor = format_actor(principal)
     ticket = await storage.get_ticket_by_action_id(action_id)
+    ticket_id = ticket.ticket_id if ticket else None
     result: StagedAction | None = None
 
-    if decision == Decision.APPROVE:
-        result = await storage.approve_staged_action(action_id, actor=actor, note=note)
-        if ticket:
-            await storage.approve_operational_ticket(ticket.ticket_id, actor=actor, note=note)
-    elif decision == Decision.REJECT:
-        result = await storage.reject_staged_action(action_id, actor=actor, note=note)
-        if ticket:
-            await storage.reject_operational_ticket(ticket.ticket_id, actor=actor, note=note)
-    elif decision == Decision.OVERRIDE:
-        result = await storage.override_staged_action(
-            action_id, overridden_recommendation=overridden_recommendation,
-            overridden_severity=overridden_severity, actor=actor, note=note,
+    if decision == Decision.MONITOR:
+        if ticket_id:
+            await storage.mark_operational_ticket_monitoring(ticket_id, actor=actor, note=note)
+    else:
+        new_status, ticket_status = _DECISION_STATUSES[decision]
+        result = await storage.decide_staged_action_with_ticket(
+            action_id, ticket_id, new_status, ticket_status, actor, note,
+            overridden_recommendation=overridden_recommendation,
+            overridden_severity=overridden_severity,
         )
-        if ticket:
-            await storage.mark_operational_ticket_overridden(ticket.ticket_id, actor=actor, note=note)
-    elif decision == Decision.MONITOR:
-        if ticket:
-            await storage.mark_operational_ticket_monitoring(ticket.ticket_id, actor=actor, note=note)
 
     await _refresh_hitl_queue_metric()
     _log.info("staged_action_decided", extra={
         "action_id": action_id, "decision": decision.value, "actor": actor,
     })
     return result
-
-
-# ---------------------------------------------------------------------------
-# Legacy compatibility
-# ---------------------------------------------------------------------------
-
-_PATTERN_BASE_TIER: dict[str, str] = {
-    "CASCADE_FAILURE": "CRITICAL",
-    "ISOLATED_FAULT": "HIGH",
-    "WEATHER_CORRELATED": "HIGH",
-    "DATA_ANOMALY": "MEDIUM",
-    "TRANSIENT": "LOW",
-    "UNKNOWN": "MEDIUM",
-}
-
-
-def _derive_tier(
-    pattern: str,
-    confidence: float | None,
-    escalate: bool,
-    critical_alert_count: int,
-) -> tuple[str, list[str]]:
-    """
-    Legacy risk-tier derivation.
-
-    This exists for older evaluator/test callers.
-
-    New production code should use stage_critical_alert().
-    """
-
-    factors: list[str] = []
-
-    tier = _PATTERN_BASE_TIER.get(
-        pattern,
-        "MEDIUM",
-    )
-
-    if escalate:
-        factors.append(
-            f"escalation_flag=True (pattern={pattern})"
-        )
-
-        if tier in ("MEDIUM", "LOW"):
-            tier = "HIGH"
-
-    if critical_alert_count > 0:
-        factors.append(
-            f"critical_alert_count={critical_alert_count}"
-        )
-
-        if tier == "MEDIUM":
-            tier = "HIGH"
-
-        elif tier == "LOW":
-            tier = "MEDIUM"
-
-    if (
-        confidence is not None
-        and confidence < 0.5
-    ):
-        factors.append(
-            f"low_confidence={confidence:.2f} "
-            "(uncertainty penalty)"
-        )
-
-        if tier == "MEDIUM":
-            tier = "HIGH"
-
-        elif tier == "LOW":
-            tier = "MEDIUM"
-
-    if not factors:
-        factors.append(
-            f"pattern={pattern} confidence={confidence}"
-        )
-
-    return tier, factors
-
-
-def _safe_airport_from_alert_id(
-    alert_id: str | None,
-) -> str | None:
-    """
-    Safely recover the legacy airport prefix.
-
-    Never assumes alert_id is non-null or hyphen-delimited.
-    """
-
-    if not alert_id:
-        return None
-
-    parts = alert_id.split("-")
-
-    if len(parts) < 2:
-        return None
-
-    airport = parts[0].strip()
-
-    return airport or None
-
-
-def get_staged_actions(
-    status: str = "PENDING",
-) -> list[dict]:
-    """
-    Legacy alias returning staged_actions as dictionaries.
-    """
-    from src.async_bridge import run_async
-
-    if status == "PENDING":
-        actions = run_async(storage.get_pending_staged_actions())
-    else:
-        actions = run_async(storage.get_recent_staged_actions())
-
-    return [
-        {
-            **a.model_dump(),
-            "ticket_id": (
-                f"HITL-{a.action_id[:8].upper()}"
-            ),
-        }
-        for a in actions
-        if a.status == status or status != "PENDING"
-    ]

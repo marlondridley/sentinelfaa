@@ -120,6 +120,36 @@ async def test_gate_records_an_authorized_decision_with_roles_and_moves_the_tick
     assert ticket.status == "APPROVED_FOR_ESCALATION"
 
 
+async def test_a_crash_moving_the_ticket_rolls_back_the_decision(db, monkeypatch):
+    """The action and its ticket land together or not at all."""
+    from src.execution_gate import decide_staged_action
+    from src.storage.repositories.tickets_repo import TicketsRepository
+
+    action = await _staged(db)
+    audit_before = await db.get_action_audit_log(action_id=action.action_id)
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("crash between the two writes")
+
+    monkeypatch.setattr(TicketsRepository, "transition_in", crash)
+    with pytest.raises(RuntimeError, match="crash"):
+        await decide_staged_action(action.action_id, Decision.APPROVE, _kc("watch_officer"), "verified")
+
+    assert [a.action_id for a in await db.get_pending_staged_actions()] == [action.action_id]
+    assert (await db.get_ticket_by_action_id(action.action_id)).status == "DRAFT"
+    assert await db.get_action_audit_log(action_id=action.action_id) == audit_before
+
+
+async def test_a_late_decision_cannot_move_the_ticket_away_from_the_action(db):
+    from src.execution_gate import decide_staged_action
+
+    action = await _staged(db)
+    await db.reject_staged_action(action.action_id, actor="earlier", note="")
+    result = await decide_staged_action(action.action_id, Decision.APPROVE, _kc("watch_officer"), "late")
+    assert result.status == "REJECTED"
+    assert (await db.get_ticket_by_action_id(action.action_id)).status == "DRAFT"
+
+
 # ── API: fail closed, no LiteLLM-key fallback, no client paths ───────────────
 
 @pytest.fixture

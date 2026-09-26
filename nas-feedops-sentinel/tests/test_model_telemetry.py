@@ -57,7 +57,7 @@ class _Scripted:
 async def _call(monkeypatch, *items, role="critic"):
     fake = _Scripted(*items)
     monkeypatch.setattr(llm.litellm, "acompletion", fake)
-    client = llm.LiteLLMClient(model="openai/primary-model", api_key="k")
+    client = llm.LiteLLMClient(model="openai/primary-model")
     try:
         return await client.acall_with_tool("sys", _TOOL, "user", role=role), fake
     except llm.LLMError as exc:

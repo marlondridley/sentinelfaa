@@ -118,7 +118,7 @@ async def test_a_refused_call_sends_nothing_and_is_recorded_as_costing_nothing(m
         raise AssertionError("a refused call reached the model")
 
     monkeypatch.setattr(llm.litellm, "acompletion", must_not_be_called)
-    client = llm.LiteLLMClient(model="openai/primary-model", api_key="k")
+    client = llm.LiteLLMClient(model="openai/primary-model")
 
     with pytest.raises(llm.LLMPolicyDenied):
         await client.acall_with_tool("sys", {"name": "t", "input_schema": {}}, "user")   # no role
@@ -140,7 +140,7 @@ async def test_a_refusal_degrades_the_critic_to_its_rules_like_any_model_failure
     governance.reload_policy()
 
     agent = CriticAgent()
-    agent._llm = llm.LiteLLMClient(model="openai/primary-model", api_key="k")
+    agent._llm = llm.LiteLLMClient(model="openai/primary-model")
     result = await agent.critique(AlertEvent(
         alert_type="ALERT_LOW_RVR", severity="CRITICAL", airport_code="KDCA",
         service_name="APDS_RVR", description="Low RVR 800 ft at touchdown on runway 01 at KDCA.",

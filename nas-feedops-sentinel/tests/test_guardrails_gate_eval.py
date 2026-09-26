@@ -1,6 +1,6 @@
 """
-Tests for guardrails, execution gate, and agent evaluator.
-All tests are fully deterministic — no API key required.
+Tests for guardrails and the agent evaluator. The execution gate is covered in
+test_execution_gate.py. All tests are fully deterministic — no API key required.
 """
 from __future__ import annotations
 
@@ -8,16 +8,7 @@ import pytest
 
 from src import storage
 from src.agent_evaluator import _GUARDRAIL_CASES, AgentEvaluator
-from src.async_bridge import run_async
-from src.execution_gate import (
-    _derive_tier,
-    _safe_airport_from_alert_id,
-    approve_staged_action,
-    get_staged_actions,
-    stage_critical_alert,
-)
 from src.guardrails import InputGuardrail, OutputGuardrail
-from src.models import AlertEvent, CriticResult, GateDecision, PlannerResult
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -142,161 +133,6 @@ class TestOutputGuardrail:
     def test_planner_empty_answer_blocked(self):
         result = self.guard.verify_planner_output(self._valid_planner(answer=""))
         assert not result.is_compliant
-
-
-# ── ExecutionGate tests ───────────────────────────────────────────────────────
-
-class TestExecutionGate:
-    def _plan(self, **kwargs) -> PlannerResult:
-        defaults = dict(
-            question="eval",
-            answer="KDCA is in cascade failure.",
-            confidence=0.85,
-            recommended_actions=["Notify duty manager."],
-        )
-        defaults.update(kwargs)
-        return PlannerResult(**defaults)
-
-    def _critic(self, pattern: str, escalate: bool, confidence: float = 0.85) -> CriticResult:
-        return CriticResult(
-            alert_id="alert-001",
-            pattern=pattern,
-            escalate=escalate,
-            confidence=confidence,
-            reasoning="Test reasoning sufficient length.",
-        )
-
-    def _evaluate(
-        self,
-        planner_result: PlannerResult,
-        critic_result: CriticResult | None = None,
-        idempotency_key: str | None = None,
-        critical_alert_count: int = 0,
-    ) -> GateDecision:
-        """
-        Drives the same tier-derivation + staging path the retired
-        ExecutionGate.evaluate() shim used to wrap, built directly from the
-        current primitives (_derive_tier + stage_critical_alert) so these
-        tests keep exercising real production logic instead of a deleted
-        legacy class.
-        """
-        if critic_result:
-            pattern = critic_result.pattern or "UNKNOWN"
-            escalate = bool(critic_result.escalate)
-            confidence = (
-                critic_result.confidence
-                if critic_result.confidence is not None
-                else planner_result.confidence
-            )
-        else:
-            pattern = (
-                "CASCADE_FAILURE"
-                if critical_alert_count >= 3
-                else ("ISOLATED_FAULT" if critical_alert_count > 0 else "TRANSIENT")
-            )
-            escalate = False
-            confidence = planner_result.confidence
-
-        tier, factors = _derive_tier(pattern, confidence, escalate, critical_alert_count)
-
-        idem_key = idempotency_key or (
-            (planner_result.question or "")[:64]
-            + (critic_result.alert_id if critic_result and critic_result.alert_id else "")
-        )
-
-        blocked = tier in ("CRITICAL", "HIGH")
-        ticket_id = None
-
-        if blocked:
-            airport_code = _safe_airport_from_alert_id(
-                critic_result.alert_id if critic_result else None
-            )
-            synthetic = AlertEvent(
-                alert_id=idem_key,
-                alert_type=f"LEGACY_{pattern}",
-                severity="CRITICAL",
-                airport_code=airport_code,
-                service_name=None,
-                description=f"Legacy gate evaluation: tier={tier} factors={factors}",
-                event_id=None,
-            )
-            # Persist first, as src/pipeline.py does: staged_actions.alert_id
-            # is a foreign key to alert_events.
-            run_async(storage.save_alert(synthetic))
-            staged = run_async(stage_critical_alert(synthetic, critic_result))
-            if staged:
-                ticket_id = f"HITL-{staged.action_id[:8].upper()}"
-
-        return GateDecision(
-            allowed=not blocked,
-            risk_tier=tier,
-            hitl_required=blocked,
-            idempotency_key=idem_key,
-            risk_factors=factors,
-            ticket_id=ticket_id,
-        )
-
-    def test_cascade_failure_escalation_is_critical(self):
-        plan = self._plan()
-        critic = self._critic("CASCADE_FAILURE", escalate=True)
-        decision = self._evaluate(plan, critic, idempotency_key="test-001", critical_alert_count=3)
-        assert decision.risk_tier == "CRITICAL"
-        assert decision.hitl_required is True
-        assert not decision.allowed
-        assert decision.ticket_id is not None
-        assert decision.ticket_id.startswith("HITL-")
-
-    def test_isolated_fault_escalation_is_high(self):
-        plan = self._plan()
-        critic = self._critic("ISOLATED_FAULT", escalate=True)
-        decision = self._evaluate(plan, critic, idempotency_key="test-002")
-        assert decision.risk_tier == "HIGH"
-        assert decision.hitl_required is True
-
-    def test_transient_no_escalation_is_low(self):
-        plan = self._plan(confidence=0.8)
-        critic = self._critic("TRANSIENT", escalate=False, confidence=0.8)
-        decision = self._evaluate(plan, critic, idempotency_key="test-003")
-        assert decision.risk_tier == "LOW"
-        assert decision.hitl_required is False
-        assert decision.allowed is True
-        assert decision.ticket_id is None
-
-    def test_low_confidence_raises_tier(self):
-        plan = self._plan(confidence=0.3)
-        critic = self._critic("DATA_ANOMALY", escalate=False, confidence=0.3)
-        decision = self._evaluate(plan, critic, idempotency_key="test-004")
-        assert decision.risk_tier in ("HIGH", "MEDIUM")
-
-    def test_idempotency_same_key_no_duplicate_ticket(self):
-        plan = self._plan()
-        critic = self._critic("CASCADE_FAILURE", escalate=True)
-        d1 = self._evaluate(plan, critic, idempotency_key="idem-key-abc")
-        d2 = self._evaluate(plan, critic, idempotency_key="idem-key-abc")
-        assert d1.ticket_id == d2.ticket_id
-
-    def test_hitl_approve_workflow(self):
-        plan = self._plan()
-        critic = self._critic("CASCADE_FAILURE", escalate=True)
-        decision = self._evaluate(plan, critic, idempotency_key="approve-test")
-        assert decision.ticket_id is not None
-
-        # New HITL system uses status="PENDING" instead of "STAGED"
-        staged = get_staged_actions(status="PENDING")
-        assert any(s["ticket_id"] == decision.ticket_id for s in staged), \
-            f"Expected ticket {decision.ticket_id} in {[s['ticket_id'] for s in staged]}"
-
-        matching = [s for s in staged if s["ticket_id"] == decision.ticket_id]
-        action_id = matching[0]["action_id"]
-
-        # approve_staged_action is async; this suite drives the gate through the
-        # synchronous bridge, the way src/main.py does, so it goes through run_async.
-        result = run_async(approve_staged_action(action_id, actor="test_supervisor", note="ok"))
-        assert result is not None
-        assert result.status == "APPROVED"
-
-        still_pending = get_staged_actions(status="PENDING")
-        assert not any(s["action_id"] == action_id for s in still_pending)
 
 
 # ── AgentEvaluator deterministic tests ───────────────────────────────────────
