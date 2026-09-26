@@ -188,29 +188,35 @@ Fix the file, then restart the service. Policies are cached per process.
 
 ### Sign-in fails
 
-1. The sign-in form states the problem and the one thing to do:
-   - "configured over plain HTTP" means `.streamlit/secrets.toml` still has
-     an `http://` URL.
-   - "Cannot reach Keycloak" means Keycloak is down or the certificate is
-     not trusted.
-2. `docker ps` shows whether `nas-keycloak` is healthy. Its health check
-   runs over TLS.
-3. `server_metadata_url` must be
-   `https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration`,
-   and `ca_file` must be `/run/tls/edge-ca.crt`.
-4. `scripts/Collect-Diagnostics.ps1` fetches the discovery document from
-   inside the dashboard container, verified the same way.
+1. The sign-in screen names a configuration problem it can see, such as an
+   `http://` identity URL in `.streamlit/secrets.toml`.
+2. Keycloak's page says "Invalid parameter: redirect_uri": the client does
+   not list `https://localhost:8443/oauth2callback`. Run
+   `scripts/keycloak-rbac.sh` (Setup-Keycloak.ps1 does), which brings a live
+   realm to the client settings in `keycloak/realm-nas-sentinel.json`.
+3. The browser comes back to the sign-in screen with no error: the code
+   exchange failed on the server. `docker logs nas-dashboard` shows why;
+   usually the certificate (`[auth.keycloak.client_kwargs] verify` must be
+   `/run/tls/edge-ca.crt`) or a `client_secret` that no longer matches the
+   realm.
+4. The browser warns about the certificate: trust `tls/edge-ca.crt` once in
+   the Windows certificate store.
+5. `docker ps` shows whether `nas-keycloak` is healthy (its health check runs
+   over TLS). `scripts/Collect-Diagnostics.ps1` fetches the discovery
+   document from inside the dashboard container, verified the same way.
 
 ### Upgrade from HTTP Keycloak
 
-1. Update `.streamlit/secrets.toml`:
+1. Update `.streamlit/secrets.toml` to match `secrets.toml.example`:
+   - `redirect_uri = "https://localhost:8443/oauth2callback"`
    - `server_metadata_url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"`
-   - `ca_file = "/run/tls/edge-ca.crt"`
-2. Recreate the services:
+   - `[auth.keycloak.client_kwargs]` with `verify = "/run/tls/edge-ca.crt"`
+2. Bring the live realm's client up to date: `scripts/keycloak-rbac.sh`.
+3. Recreate the services:
    `docker compose up -d --force-recreate edge-certs keycloak dashboard`
    - `edge-certs` issues Keycloak's certificate from the existing local
      authority, so nothing needs trusting again.
-3. Admin console: https://localhost:8081/admin
+4. Admin console: https://localhost:8081/admin
 
 ### Certificates
 

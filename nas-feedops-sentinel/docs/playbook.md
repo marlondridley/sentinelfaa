@@ -29,8 +29,8 @@ person, with an investigation behind each one.
 | signed in, no role | read | decide anything |
 
 Every decision is recorded with the person's id, their roles at that moment,
-and how their identity was verified (`[keycloak-password]`, `[oidc]`,
-`[api_key]`). A `[self-declared]` identity appears only when the deployment
+and how their identity was verified (`[oidc]`, `[api_key]`; decisions before
+2026-09-26 show `[keycloak-password]`, the retired in-app sign-in). A `[self-declared]` identity appears only when the deployment
 allows unverified decisions; the evaluation flags it.
 
 ## Start of shift

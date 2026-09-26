@@ -23,9 +23,12 @@ Section 'git branch / last commit' { git -C $appDir rev-parse --abbrev-ref HEAD;
 Section 'compose: temporal env var check' { Select-String -Path (Join-Path $appDir 'docker-compose.yml') -Pattern 'DYNAMIC_CONFIG' }
 
 $kcProbe = @'
-import json, os, ssl, urllib.request, urllib.error
-# Keycloak serves HTTPS only; verify it the way the dashboard does.
-tls = ssl.create_default_context(cafile=os.environ.get('KEYCLOAK_CA_FILE') or None)
+import json, ssl, tomllib, urllib.request, urllib.error
+# Keycloak serves HTTPS only; verify it the way the dashboard does, against
+# [auth.keycloak.client_kwargs] verify in its secrets.toml.
+with open('/app/.streamlit/secrets.toml', 'rb') as f:
+    ca = tomllib.load(f).get('auth', {}).get('keycloak', {}).get('client_kwargs', {}).get('verify')
+tls = ssl.create_default_context(cafile=ca or None)
 url = 'https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration'
 try:
     with urllib.request.urlopen(url, timeout=10, context=tls) as r:

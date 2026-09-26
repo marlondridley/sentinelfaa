@@ -84,7 +84,7 @@ async def _investigate(monkeypatch, *, use_llm: bool):
 
 
 def _officer() -> Principal:
-    return Principal(principal_id="jsmith", role="Watch Officer", source=PrincipalSource.PASSWORD_GRANT,
+    return Principal(principal_id="jsmith", role="Watch Officer", source=PrincipalSource.OIDC,
                      roles=frozenset({"watch_officer"}))
 
 

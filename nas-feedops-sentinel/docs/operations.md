@@ -41,16 +41,20 @@ as an empty directory, which then blocks the file from being written.
 | Prometheus (and its alerts) | https://localhost:8447/alerts |
 | Keycloak admin (HTTPS, loopback) | https://localhost:8081/admin |
 
-The identity service is HTTPS end to end. Keycloak terminates TLS itself
-(`KC_HTTP_ENABLED=false`); the dashboard's sign-in reaches it at
-`https://keycloak:8443` and verifies it against `tls/edge-ca.crt`
-(`KEYCLOAK_CA_FILE`), and refuses an `http://` identity URL outright,
-because the sign-in sends the operator's password. Keycloak's health check
-runs over TLS too (`keycloak/TlsHealth.java`; the image has no curl).
-Upgrading from the HTTP setup: in `.streamlit/secrets.toml` set
-`server_metadata_url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"`
-and `ca_file = "/run/tls/edge-ca.crt"`, then recreate `edge-certs`,
-`keycloak` and `dashboard`.
+Keycloak is the identity provider; Streamlit keeps the session. "Sign in
+with Keycloak" sends the browser to the realm's own login page
+(https://localhost:8081, the authorization code flow with PKCE S256). Keycloak
+returns it to `https://localhost:8443/oauth2callback`, and the dashboard
+exchanges the code at `https://keycloak:8443` server to server, verifying
+Keycloak against `tls/edge-ca.crt` (`[auth.keycloak.client_kwargs] verify` in
+`.streamlit/secrets.toml`). Streamlit validates the ID token and keeps the
+identity in its signed, HttpOnly cookie, so a sign-in survives page loads and
+new tabs. A sign-in lasts at most the realm's maximum SSO session (10 hours)
+from authentication, and "Sign out" ends the realm session too. The password
+is typed into Keycloak only; the client allows no direct access grant.
+Identity URLs must be HTTPS: the dashboard refuses to start a sign-in
+otherwise. Keycloak's health check runs over TLS too
+(`keycloak/TlsHealth.java`; the image has no curl).
 
 Other traffic between containers stays plain HTTP on `nas-network`, which
 nothing outside the host can reach. The API's `/metrics` and `/docs` are not
