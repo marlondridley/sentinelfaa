@@ -108,7 +108,7 @@ with st.expander("What each dimension measures"):
 # ── Latency ──────────────────────────────────────────────────────────────────
 lat = m.get("latency", {})
 theme.section("Latency", "Alert → investigation → evidence → human review: where the time goes.",
-              right="percentiles: agent-sre ResponseLatency")
+              right="percentiles AGT-native: agent-sre ResponseLatency")
 
 
 def _p_row(name: str, p: dict) -> dict:
@@ -131,11 +131,11 @@ with c2:
     rows.append(_p_row("one model call", lat.get("model_call", {})))
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption(f"Timeouts {pct((lat.get('timeout_rate') or {}).get('value'), 1)} · "
-               f"retried calls {pct((lat.get('retry_rate') or {}).get('value'), 1)} of calls sent (in-repo)")
+               f"retried calls {pct((lat.get('retry_rate') or {}).get('value'), 1)} of calls sent (Sentinel-specific)")
 
 # ── Cost ─────────────────────────────────────────────────────────────────────
 cost = m.get("cost", {})
-theme.section("Cost", "What the models cost, per unit of work.", right="agent-sre CostGuard; ratios in-repo")
+theme.section("Cost", "What the models cost, per unit of work.", right="AGT-native: agent-sre CostGuard; ratios Sentinel-specific")
 per_inv, per_alert = cost.get("per_investigation") or {}, cost.get("per_alert") or {}
 tokens = cost.get("tokens") or {}
 theme.kpi_row([
@@ -170,7 +170,7 @@ st.caption(f"Spent on retried calls {usd(cost.get('retry_cost_usd'))} · on fail
 # ── Reliability ──────────────────────────────────────────────────────────────
 rel = m.get("reliability", {})
 theme.section("Reliability", "Do the agents and the providers behind the gateway hold up?",
-              right="agent-sre FleetManager, TaskSuccessRate")
+              right="AGT-native: agent-sre FleetManager, TaskSuccessRate")
 agents = (rel.get("agents") or {}).get("members") or {}
 providers = (rel.get("providers") or {}).get("members") or {}
 c1, c2 = st.columns(2)
@@ -248,7 +248,7 @@ with c2:
 # ── Governance gates ─────────────────────────────────────────────────────────
 gov = m.get("governance", {})
 theme.section("Governance gates", "Did every investigation pass its quality, safety, cost, latency and audit gates?",
-              right="cost and latency: agent-os-kernel BudgetTracker")
+              right="cost and latency AGT-native: agent-os-kernel BudgetTracker")
 gates = gov.get("gates") or {}
 st.dataframe(pd.DataFrame([
     {"gate": group, **{status: counts_.get(status, 0) for status in ("PASS", "WARN", "FAIL", "PENDING", "N/A")},
@@ -256,7 +256,7 @@ st.dataframe(pd.DataFrame([
     for group, counts_ in gates.items()
 ]) if gates else pd.DataFrame([{"": NO_DATA}]), hide_index=True, width="stretch")
 pc = gov.get("policy_compliance") or {}
-st.caption(f"Policy compliance (agent-os-kernel GovernanceMetrics): {pc.get('allowed', 0)} of {pc.get('checks', 0)} "
+st.caption(f"Policy compliance (AGT-native: agent-os-kernel GovernanceMetrics): {pc.get('allowed', 0)} of {pc.get('checks', 0)} "
            f"model calls allowed, {pc.get('refused', 0)} refused. Every decision, including tool calls, is in AGT's "
            "audit log (OpenTelemetry log records, agt.*).")
 

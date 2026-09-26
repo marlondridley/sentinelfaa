@@ -130,8 +130,9 @@ operations floor.
 
    The same verdict gates deployment: `python -m src.readiness --gate`.
 2. **Health table**: each dimension, current value, target and status.
-   - The *Source* column says whether AGT computed it or it is in-repo, and
-     why (`docs/agent-metrics.md`).
+   - The *Source* column names the category first (AGT-native,
+     AGT-compatible or Sentinel-specific), then what computed it
+     (`docs/agent-metrics.md`).
    - "Too little evidence (n of m)" is honest: the dimension is not judged
      until there is enough.
 3. **Latency**: the path from alert to investigation to evidence to human

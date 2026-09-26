@@ -16,8 +16,9 @@ verdict:
 
 The measurements come from the evaluation layer (src/evaluation.py), which
 computes them with the Agent Governance Toolkit wherever AGT computes them
-correctly (docs/agent-metrics.md). What stays in-repo here is the verdict:
-the error-budget arithmetic and the grading. agent-sre's ErrorBudget adds
+correctly (docs/agent-metrics.md). The verdict is AGT-compatible: AGT
+defines error budgets and SLOs, but the error-budget arithmetic and the
+grading are Sentinel's until the installed AGT's are fixed. agent-sre's ErrorBudget adds
 1.0 per failed event against a fractional budget, so one failure in a
 hundred calls against a 95% objective reads as EXHAUSTED, and its burn rate
 divides by the window in seconds (tests/test_agt_known_bugs.py).
@@ -124,7 +125,7 @@ def load_spec(path: Path | None = None) -> tuple[dict[str, Any], list[Objective]
     return data, objectives
 
 
-# ── Status arithmetic (in-repo: AGT ErrorBudget bugs A, B) ───────────────────
+# ── Status arithmetic (AGT-compatible: ErrorBudget bugs A, B) ───────────────────
 
 def score_status(value: float | None, samples: int, target: float, at_risk: float,
                  min_samples: int) -> tuple[str, float | None]:
@@ -169,8 +170,8 @@ def _read(metrics: dict[str, Any], name: str) -> tuple[float | None, int, str, s
     value = entry.get(value_key)
     samples = int(entry.get(count_key) or 0)
     source = entry.get("source") or {
-        "latency": "agent-sre ResponseLatency", "cost": "agent-sre CostGuard",
-    }.get(group, "in-repo")
+        "latency": "AGT-native: agent-sre ResponseLatency", "cost": "AGT-native: agent-sre CostGuard",
+    }.get(group, "Sentinel-specific")
     return (float(value) if value is not None else None), samples, unit, source
 
 

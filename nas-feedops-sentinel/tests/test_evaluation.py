@@ -18,7 +18,7 @@ import pytest
 import tenacity
 
 import src.llm_client as llm
-from src import evaluation, governance, readiness, storage
+from src import agt_metrics, evaluation, governance, readiness, storage
 from src.auth import Decision, Principal, PrincipalSource
 from src.models import AlertEvent, CriticResult
 
@@ -116,7 +116,9 @@ async def test_an_investigation_is_evaluated_from_the_record_not_from_the_agents
     assert gates[("Safety", "Advisory only")].status == "PASS"
     assert gates[("Safety", "Human approval")].status == "PASS"
     assert gates[("Safety", "Policy enforced")].status == "PASS"
-    assert gates[("Cost", "Budget")].source == "agent-os-kernel BudgetTracker"
+    assert gates[("Cost", "Budget")].source == "AGT-native: agent-os-kernel BudgetTracker"
+    # Every gate names its kind first: AGT-native, AGT-compatible or Sentinel-specific.
+    assert all(g.source.startswith(agt_metrics.CATEGORIES) for g in ev.gates), [g.source for g in ev.gates]
     assert gates[("Cost", "Budget")].status == "PASS"
     assert gates[("Audit", "Sealed record")].status == "PASS"
     assert gates[("Audit", "Model calls on record")].status == "PASS"
@@ -159,7 +161,7 @@ async def test_the_window_is_aggregated_by_agt_components(monkeypatch):
     assert m["counts"]["investigations"] == 2 and m["counts"]["with_model"] == 2
     q = m["quality"]
     assert q["unsupported_claim_rate"]["value"] == pytest.approx(2 / 12)
-    assert q["unsupported_claim_rate"]["source"].startswith("agent-sre HallucinationRate")
+    assert q["unsupported_claim_rate"]["source"].startswith("AGT-native: agent-sre HallucinationRate")
     assert q["missed_escalation_rate"]["value"] == 1.0, "approved where the Critic said not to escalate"
     assert q["recommendation_accuracy"]["value"] == 0.0
     assert q["contradiction_rate"]["value"] == 1.0
@@ -169,6 +171,19 @@ async def test_the_window_is_aggregated_by_agt_components(monkeypatch):
     assert m["latency"]["investigation"]["n"] == 2 and m["latency"]["investigation"]["p95"] is not None
     assert m["orchestration"]["depth_within_limit"]["value"] == 1.0
     assert m["governance"]["policy_compliance"]["rate"] == 1.0
+
+    def sources(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "source":
+                    yield v
+                elif k == "sources":
+                    yield from v.values()
+                else:
+                    yield from sources(v)
+
+    labels = list(sources(m))
+    assert labels and all(label.startswith(agt_metrics.CATEGORIES) for label in labels), labels
 
 
 async def test_readiness_with_no_evidence_says_so_and_fails_the_gate():

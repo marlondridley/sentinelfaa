@@ -243,7 +243,7 @@ authority is kept, so nothing needs trusting again.
    the locks (the commands are at the top of that file).
 2. Run the suite. In `tests/test_agt_known_bugs.py`, any strict xfail that
    now passes means AGT fixed that bug, and the suite fails on purpose.
-   - Remove the matching workaround or in-repo code; `docs/agent-metrics.md`
-     names it.
+   - Remove the matching AGT-compatible calculation, which makes the metric
+     AGT-native again; `docs/agent-metrics.md` names it.
    - Delete the test's xfail marker.
 3. Re-read `docs/agent-metrics.md` and move newly correct metrics to AGT.
