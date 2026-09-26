@@ -159,7 +159,7 @@ async def run(require_llm: bool) -> int:
     proof.step("3. Authorization: an auditor may not decide")
     target = pending[0]
     auditor = Principal(principal_id="e2e-proof-auditor (synthetic)", role="Auditor",
-                        source=PrincipalSource.PASSWORD_GRANT, roles=frozenset({"auditor"}))
+                        source=PrincipalSource.OIDC, roles=frozenset({"auditor"}))
     audit_before = await storage.get_action_audit_log(action_id=target.action_id)
     try:
         await decide_staged_action(target.action_id, Decision.APPROVE, auditor, "should be refused")
@@ -172,7 +172,7 @@ async def run(require_llm: bool) -> int:
     # 4 ── Decision ────────────────────────────────────────────────────────────
     proof.step("4. A watch officer approves")
     officer = Principal(principal_id="e2e-proof-officer (synthetic)", role="Watch Officer",
-                        source=PrincipalSource.PASSWORD_GRANT, roles=frozenset({"watch_officer"}))
+                        source=PrincipalSource.OIDC, roles=frozenset({"watch_officer"}))
     decided = await decide_staged_action(target.action_id, Decision.APPROVE, officer, "e2e proof approval")
     proof.check(decided is not None and decided.status == "APPROVED", "action APPROVED",
                 decided.decided_by if decided else "")

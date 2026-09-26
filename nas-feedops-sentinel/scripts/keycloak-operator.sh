@@ -36,29 +36,6 @@ if ! kc get "realms/$REALM" >/dev/null 2>&1; then
     exit 1
 fi
 
-# ── Dashboard client: in-app sign-in ──────────────────────────────────────────
-# keycloak/realm-nas-sentinel.json sets directAccessGrantsEnabled on the
-# dashboard client, but realm import is skip-if-exists: a realm that was
-# already imported before that flag was added keeps the old client and the
-# dashboard's own login form gets "Client not allowed for direct access
-# grants" with no obvious cause. Reconciling it here means the fix ships with
-# the script every operator already runs, instead of requiring the realm to be
-# deleted and re-imported (which would take every user account with it).
-CLIENT_ID=nas-feedops-sentinel
-CLIENT_UUID=$(kc get clients -r "$REALM" -q clientId="$CLIENT_ID" --fields id --format csv --noquotes)
-if [ -z "$CLIENT_UUID" ]; then
-    echo "ERROR: client $CLIENT_ID is missing from realm $REALM." >&2
-    echo "It is defined in keycloak/realm-nas-sentinel.json; check nas-keycloak's import log." >&2
-    exit 1
-fi
-DAG=$(kc get "clients/$CLIENT_UUID" -r "$REALM" --fields directAccessGrantsEnabled --format csv --noquotes)
-if [ "$DAG" = "true" ]; then
-    echo "client $CLIENT_ID: direct access grants already enabled"
-else
-    kc update "clients/$CLIENT_UUID" -r "$REALM" -s directAccessGrantsEnabled=true
-    echo "client $CLIENT_ID: direct access grants enabled"
-fi
-
 # ── Operator account ──────────────────────────────────────────────────────────
 USER_ID=$(kc get users -r "$REALM" -q username="$APP_USERNAME" -q exact=true --fields id --format csv --noquotes)
 if [ -z "$USER_ID" ]; then
