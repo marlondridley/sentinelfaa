@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src import config
-from src.models import NASEvent
+from src.models import NASEvent, is_surface_movement
 
 # Numeric rank used to pick the "worst" status
 _STATUS_RANK: dict[str, int] = {
@@ -28,7 +28,7 @@ def _worst(a: str, b: str) -> str:
     return a if _STATUS_RANK.get(a, 0) >= _STATUS_RANK.get(b, 0) else b
 
 
-def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
+def compute_feed_health(events: list[NASEvent], now: datetime | None = None) -> dict[str, Any]:
     """
     Derive an operational health snapshot from a batch of NASEvents.
 
@@ -40,7 +40,9 @@ def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
       smes_counts      — {airport: int}
       total_events     — int
     """
-    now = datetime.now(timezone.utc)
+    # `now` is injectable so a caller holding a point-in-time snapshot (an
+    # investigation) gets the same answer however long after it asks.
+    now = now or datetime.now(timezone.utc)
 
     # NASEvent.received_time_utc is always tz-aware UTC (enforced by
     # models.NASEvent.ensure_utc_awareness), including when it comes back
@@ -95,7 +97,7 @@ def compute_feed_health(events: list[NASEvent]) -> dict[str, Any]:
     # SMES surface movement event count per airport
     smes_counts: dict[str, int] = {}
     for event in events:
-        if event.service_name == "SMES":
+        if is_surface_movement(event):
             smes_counts[event.airport_code] = smes_counts.get(event.airport_code, 0) + 1
 
     return {

@@ -44,16 +44,6 @@ _CREATE_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Loc
 )
 
 
-async def create_asyncpg_pool() -> asyncpg.Pool:
-    """Create an asyncpg connection pool compatible with PgBouncer transaction pooling."""
-    return await asyncpg.create_pool(
-        dsn=settings.DATABASE_URL,
-        statement_cache_size=0,  # Critical for PgBouncer compatibility
-        min_size=5,
-        max_size=20,
-    )
-
-
 async def get_db_pool() -> asyncpg.Pool:
     """Return the calling event loop's pool, creating it on first use."""
     loop = asyncio.get_running_loop()
@@ -74,8 +64,12 @@ async def get_db_pool() -> asyncpg.Pool:
                 max_size=20,
                 statement_cache_size=0,  # Required for PgBouncer transaction pooling
             )
-            await init_schema(pool)
-            await run_migrations(pool)
+            # Deployed services run with RUN_MIGRATIONS_ON_CONNECT=false: the
+            # schema is owned and migrated by `python -m src.storage.migrate`,
+            # and the application role has no DDL rights to run this with.
+            if settings.RUN_MIGRATIONS_ON_CONNECT:
+                await init_schema(pool)
+                await run_migrations(pool)
             _POOLS[loop] = pool
     return pool
 

@@ -1,17 +1,66 @@
+# LiteLLM proxy: the only way the application reaches a model.
+#
+# The application only ever names the aliases below (model_name), through
+# the proxy's OpenAI-compatible route; src/config.proxy_model() refuses any
+# direct provider route. Swapping providers happens here, not in app code.
+#
+# Current routing is a low-cost TEST configuration: DeepSeek primary, Gemini
+# fallback. Neither is an authorized boundary for FAA operational data --
+# before real feed data is sent, primary-model must move to an approved
+# endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
+# OpenAI Government, or on-prem inference).
 model_list:
+  # Low-cost primary for testing. If DeepSeek rejects its key, LiteLLM
+  # surfaces that as a 400 and does NOT fall back to gemini-backup (it treats
+  # 400s as client errors), so a bad DEEPSEEK_API_KEY breaks primary-model
+  # outright; the Gemini deployments below only cover provider outages,
+  # timeouts and rate limits.
   - model_name: primary-model
     litellm_params:
       model: deepseek/deepseek-chat
       api_key: "os.environ/DEEPSEEK_API_KEY"
       api_base: "https://api.deepseek.com"
-    fallbacks: ["gemini-backup"]
+
+  # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
+  # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
+  #
+  # One deployment per free-tier key under the same alias: the router spreads
+  # requests across them and, when one key returns 429 (the free tier allows
+  # 20 requests/day/model per project), cools it down and uses the next.
+  - model_name: gemini-backup
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: "os.environ/GEMINI_API_KEY"
 
   - model_name: gemini-backup
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.8-flash
+      api_key: "os.environ/GEMINI_API_KEY_2"
+
+  # Third key (GEMINI_API_KEY_3 in .env): uncomment once it is set. An entry
+  # with an empty key fails every call routed to it.
+  # - model_name: gemini-backup
+  #   litellm_params:
+  #     model: gemini/gemini-3.8-flash
+  #     api_key: "os.environ/GEMINI_API_KEY_3"
+
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
 
-  - model_name: gemini-2.5-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: "os.environ/GEMINI_API_KEY"
+# Fallbacks belong here. They used to sit inside the primary-model entry,
+# where the proxy does not read them, so a DeepSeek failure had no fallback.
+router_settings:
+  fallbacks:
+    - primary-model: ["gemini-backup"]
+  # One retry: a second key gets a chance, without multiplying calls against
+  # a quota that is already gone. A failing key is benched for a minute.
+  num_retries: 1
+  allowed_fails: 1
+  cooldown_time: 60
+  timeout: 60
+
+litellm_settings:
+  request_timeout: 60
+  drop_params: true

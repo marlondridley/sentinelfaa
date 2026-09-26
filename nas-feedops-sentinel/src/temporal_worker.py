@@ -10,6 +10,7 @@ from temporalio.worker import Worker
 
 from src.config import settings
 from src.logging_config import configure_logging, get_correlation_id, get_logger, new_correlation_id
+from src.metrics import start_metrics_server
 from src.temporal_activities import ingest_folder_activity, process_events_activity
 from src.temporal_workflows import IngestFolderWorkflow, SentinelPipelineWorkflow
 
@@ -62,6 +63,10 @@ async def start_ingest_workflow(
 
 async def run_worker(interrupt_event: asyncio.Event) -> None:
     configure_logging()
+    # The worker runs the API-started pipelines, so the Critic, investigation
+    # and HITL metrics are set here; without its own endpoint Prometheus never
+    # saw them.
+    start_metrics_server(port=settings.METRICS_PORT)
     new_correlation_id()
     client = await connect_client()
     worker = Worker(

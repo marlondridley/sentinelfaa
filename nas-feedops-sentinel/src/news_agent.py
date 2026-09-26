@@ -4,11 +4,8 @@ News Agent — standard CrewAI agent factory & breaking-news operational ticker 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
-from crewai import Agent
 
 from src import config, storage
-from src.llm_config import get_llm
 
 Severity = str
 
@@ -21,21 +18,6 @@ ANCHOR_LATENCY        = "latency-section"
 ANCHOR_HITL           = "hitl-queue"
 ANCHOR_TOP            = "page-top"
 ANCHOR_WATCH_OFFICER  = "watch-officer"
-
-
-def get_news_agent(llm: Any = None) -> Agent:
-    """Factory function producing a standardized CrewAI Agent instance for the News / Briefing role."""
-    return Agent(
-        role="News Briefing Specialist",
-        goal="Synthesize raw aviation operational state and telemetry feeds into concise breaking-news briefings.",
-        backstory=(
-            "You are a Broadcast Operations Officer for PCT TRACON. You convert complex technical telemetry, "
-            "feed outages, and sensor degraded states into real-time operational ticker headlines for watch personnel."
-        ),
-        verbose=True,
-        allow_delegation=False,
-        llm=llm or get_llm(),
-    )
 
 
 async def _hitl_items() -> list[dict]:

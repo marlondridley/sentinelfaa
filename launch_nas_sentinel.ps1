@@ -27,6 +27,27 @@ Write-Host "Starting NAS FeedOps Sentinel Launch Sequence..." -ForegroundColor C
 # container's environment -- doing it twice was redundant and only risked the
 # two copies drifting out of sync.
 
+# 0. .env is the source of truth for the stacks it configures.
+# docker compose lets a variable already in this process's environment
+# override the same key in --env-file. A stale Windows user variable did
+# exactly that: DEEPSEEK_API_KEY held an old placeholder, so the proxy kept
+# getting it even after .env had the real key. For this process only (nothing
+# persistent is changed), remove any variable an env file also defines.
+function Clear-ShadowingEnv([string]$envFile) {
+    if (-not (Test-Path $envFile)) { return }
+    foreach ($line in Get-Content $envFile) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') {
+            $name = $Matches[1]
+            if (Test-Path "Env:\$name") {
+                Write-Host "  [!] Ignoring $name from the environment; using $envFile" -ForegroundColor Yellow
+                Remove-Item "Env:\$name"
+            }
+        }
+    }
+}
+Clear-ShadowingEnv (Join-Path $scriptDir "instraclustr\.env")
+Clear-ShadowingEnv (Join-Path $scriptDir "nas-feedops-sentinel\.env")
+
 # 1. Network Setup
 $networkName = "nas-network"
 $existingNetwork = docker network ls --filter "name=$networkName" --format "{{.Name}}"
@@ -108,6 +129,19 @@ foreach ($svc in $infraServices) {
     }
 }
 
+# 3b. Bootstrap jobs must have succeeded: Vault seeding + AppRoles, LiteLLM's
+#     database, and the application's scoped LiteLLM key. A failure here would
+#     otherwise surface later as application services that cannot start.
+foreach ($job in @("vault-unseal", "litellm-db-init", "litellm-bootstrap")) {
+    $code = docker inspect $job --format '{{.State.ExitCode}}' 2>$null
+    $state = docker inspect $job --format '{{.State.Status}}' 2>$null
+    if ($state -ne "exited" -or $code -ne "0") {
+        Write-Host "CRITICAL ERROR: bootstrap job $job did not complete (state=$state exit=$code). See: docker logs $job" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [+] $job completed." -ForegroundColor Green
+}
+
 # 4. Build and Launch Application Stack
 $appDir = Join-Path $scriptDir "nas-feedops-sentinel"
 $appEnv = Join-Path $appDir ".env"
@@ -160,13 +194,14 @@ if ($WithLiveFeed) {
 }
 
 Write-Host ""
-Write-Host "Launch sequence complete!" -ForegroundColor Green
-Write-Host "  - Streamlit Dashboard : http://localhost:8501" -ForegroundColor Cyan
-Write-Host "  - LiteLLM Admin UI   : http://localhost:4000/ui" -ForegroundColor Cyan
-Write-Host "  - Prometheus Metrics : http://localhost:9090" -ForegroundColor Cyan
-Write-Host "  - Grafana Dashboard  : http://localhost:3000" -ForegroundColor Cyan
-Write-Host "  - Temporal UI        : http://localhost:8088" -ForegroundColor Cyan
-Write-Host "  - API (FastAPI)      : http://localhost:8000/health" -ForegroundColor Cyan
+Write-Host "Launch sequence complete!  (HTTPS via the edge proxy; self-signed cert for localhost)" -ForegroundColor Green
+Write-Host "  - Dashboard          : https://localhost:8443" -ForegroundColor Cyan
+Write-Host "  - API                : https://localhost:8444/health" -ForegroundColor Cyan
+Write-Host "  - Grafana            : https://localhost:8445" -ForegroundColor Cyan
+Write-Host "  - Temporal UI        : https://localhost:8446" -ForegroundColor Cyan
+Write-Host "  - Prometheus (alerts): https://localhost:8447/alerts" -ForegroundColor Cyan
+Write-Host "  - Keycloak admin     : http://localhost:8081/admin" -ForegroundColor DarkGray
+Write-Host "  - LiteLLM admin UI   : http://localhost:4000/ui" -ForegroundColor DarkGray
 Write-Host ""
 if ($feedStarted) {
     Write-Host "  Live SWIM feed running in its own window." -ForegroundColor Green

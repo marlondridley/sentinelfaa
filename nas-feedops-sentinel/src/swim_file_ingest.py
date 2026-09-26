@@ -33,6 +33,7 @@ limit over the life of a long-running deployment.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -45,11 +46,11 @@ from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 from src import config, storage
 from src.async_bridge import run_async
-from src.models import NASEvent
-from dataclasses import dataclass
+from src.models import NASEvent, content_key, stable_id
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)
@@ -241,6 +242,12 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
 
     records, recognised = _extract_records(headers, body, path)
     if records:
+        # The message's own identity on the SWIM stream. Every record from one
+        # message shares it; the scan loop adds each record's position.
+        if headers.get("globalID") or headers.get("msgSeqID"):
+            key = f"{headers.get('mex', '')}:{headers.get('globalID', '')}:{headers.get('msgSeqID', '')}"
+            for record in records:
+                record["_source_key"] = key
         return records
 
     # No records. Whether that is fine depends entirely on WHY.
@@ -426,8 +433,14 @@ def _extract_records(
     if "TowerDepartureEventMessage" in root_name or "departureAirport" in payload:
         return _extract_tdes(headers, payload), True
 
+    if "TDLSCSPMessage" in root_name:
+        return _extract_tdls_dcl(headers, payload), True
+
     if "asdexMsg" in root_name or "adsbReport" in payload:
         return _extract_smes(headers, payload), True
+
+    if "SafetyLogicHoldBar" in root_name:
+        return _extract_smes_holdbar(headers, payload), True
 
     return [], False
 
@@ -581,7 +594,110 @@ def _extract_tdes(headers: dict[str, str], payload: dict) -> list[dict]:
     }]
 
 
+def _parse_tdls_time(value: Any) -> str | None:
+    """
+    TDLS "time" is MMDDYYYYHHMMSS in UTC with no separators, e.g.
+    "08272026204225" -> "2026-08-27T20:42:25Z" (cross-checked against the
+    capture's own JMS timestamp header, 2026-08-27T20:42:25.503Z). Anything
+    that does not parse returns None so the caller falls back to the header
+    time rather than inventing one.
+    """
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.strptime(text, "%m%d%Y%H%M%S")
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _extract_tdls_dcl(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns4:TDLSCSPMessage -> one departure-clearance event.
+
+    A TDLS CPDLC departure clearance (DCL) sent to a flight at a PCT airport.
+    Shape (confirmed against tests/fixtures/swim_kit/tdls_sample, a real
+    captured message):
+
+        { "airportID": "KBWI", "aircraftID": "SWA1085", "aircraftType": "B737",
+          "beaconCode": 2172, "computerID": "03P", "time": "08272026204225",
+          "dataHeader": "...", "dataBody": "<free-text clearance>",
+          "enhancedData": { "destinationAirport": "KMCI", ... } }
+
+    It maps onto the departure model already used for TowerDepartureEvent:
+    the aircraft is on the surface awaiting departure. dataBody is NOT
+    stored -- it is free text carrying the full route and the aircraft's
+    registration, none of which NASEvent models or any rule needs, and
+    keeping it would widen what can leak into a prompt.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "RD")
+    enhanced = payload.get("enhancedData") or {}
+
+    airport = _pct_primary_from(
+        payload.get("airportID"),
+        headers.get("airport"),
+        enhanced.get("destinationAirport"),
+    )
+    if airport is None:
+        return []
+
+    beacon = payload.get("beaconCode")
+
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"TDLS_{msg_type}",
+        "event_time_utc": _parse_tdls_time(payload.get("time")) or header_ts,
+        "aircraft_id": payload.get("aircraftID"),
+        "beacon_code": str(beacon) if beacon not in (None, "") else None,
+        "flight_phase": "DEPARTURE",
+        "surface_event_type": "DEPARTURE_CLEARANCE_DCL",
+        "feed_status": "operational",
+    }]
+
+
 # ── SMES -- ASDE-X surface movement ───────────────────────────────────────────
+
+def _extract_smes_holdbar(headers: dict[str, str], payload: dict) -> list[dict]:
+    """
+    ns2:SafetyLogicHoldBar -> one airport-level surface-safety status event.
+
+    Shape (confirmed against tests/fixtures/swim_kit/holdbar_sample, a real
+    captured message):
+
+        { "airport": "KIAD", "control": 1,
+          "status": "0000...0007c000" }
+
+    ASDE-X Safety Logic hold-bar state for the airport. It names no aircraft,
+    vehicle or track, so it is not a movement event. `status` is a bitmask
+    whose bit-to-hold-bar mapping is defined in the non-public SMES ICD; it is
+    kept verbatim in status_code and deliberately not decoded or alerted on.
+    What the message does establish, and why it is ingested rather than
+    dropped, is that the airport's SMES feed is alive.
+    """
+    tracon, service_name, header_ts = _common_fields(headers)
+    msg_type = headers.get("msgType", "SH")
+
+    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    if airport is None:
+        return []
+
+    status = payload.get("status")
+    control = payload.get("control")
+    return [{
+        "airport_code": airport,
+        "tracon": tracon,
+        "service_name": service_name,
+        "message_type": f"SMES_{msg_type}",
+        "event_time_utc": header_ts,
+        "surface_event_type": "SAFETY_LOGIC_HOLD_BAR",
+        "status_code": (
+            f"control={control};status={status}" if status not in (None, "") else None
+        ),
+        "feed_status": "operational",
+    }]
+
 
 # Report arrays in an asdexMsg that this extractor has been verified against.
 # The ASDE-X schema defines others (positionReport among them), but none has
@@ -788,7 +904,9 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
 
 # Record normaliser 
 
-def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str | None]:
+def _normalise_record(
+    raw: dict, source_file: str, index: int | None = None, data_origin: str = "live",
+) -> tuple[NASEvent | None, str | None]:
     """
     Coerce a raw dict into a NASEvent.
     Injects received_time_utc = now so every live-ingested event has a receipt stamp.
@@ -796,6 +914,17 @@ def _normalise_record(raw: dict, source_file: str) -> tuple[NASEvent | None, str
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     raw = dict(raw)
+
+    # Stable identity: the same message ingested twice is the same event.
+    # Key = the SWIM message identity (mex:globalID:msgSeqID) or, lacking one,
+    # the file name; plus the record's position in the message. Without a
+    # position (a caller normalising one record), the record's content.
+    source_key = raw.pop("_source_key", None) or Path(source_file).name
+    # Set by whoever scans, never taken from the file's own content.
+    raw["data_origin"] = data_origin
+    if not raw.get("event_id"):
+        raw["event_id"] = stable_id(
+            "swim", source_key, index if index is not None else content_key(raw))
 
     # Coerce ISO timestamp strings; strip timezone info to keep all datetimes naive UTC
     for ts_field in ("event_time_utc", "received_time_utc"):
@@ -893,6 +1022,7 @@ def scan_swim_folder(
     max_files: int = 500,
     processed_dir: Path | None = None,
     failed_dir: Path | None = None,
+    data_origin: str = "live",
 ) -> tuple[list[NASEvent], IngestStats]:
     """
     Scan source_dir for new STDDS message files, parse them, and return
@@ -919,6 +1049,7 @@ def scan_swim_folder(
 
     stats = IngestStats()
     all_events: list[NASEvent] = []
+    _release_stale_claims(source_dir)
 
     # Dotfiles are skipped: the kit writes extensionless files, so "" is in
     # SCAN_EXTENSIONS, and a dotfile such as the folder's .gitkeep has no
@@ -939,7 +1070,16 @@ def scan_swim_folder(
     stats.files_skipped = len(all_candidates) - len(unprocessed)
 
     # Cap files per scan so a backlog doesn't pin the pipeline for minutes.
-    candidate_files = sorted(unprocessed, key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    def _mtime(p: Path) -> float:
+        # Another scanner may claim (rename away) a file between the listing
+        # above and this stat; that raised FileNotFoundError and killed the
+        # whole pass. A vanished file sorts last and is skipped at claim time.
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidate_files = sorted(unprocessed, key=_mtime, reverse=True)[:max_files]
     
     # Account for files deferred due to the max_files backlog cap
     excess_backlog = len(unprocessed) - len(candidate_files)
@@ -966,11 +1106,16 @@ def scan_swim_folder(
             )
             break
 
+        work = _claim(path)
+        if work is None:
+            stats.files_skipped += 1
+            continue
+
         _log.info("swim_ingest_processing_file", extra={"file_name": path.name})
-        raw_records, parse_error = _parse_file(path)
+        raw_records, parse_error = _parse_file(work)
 
         if parse_error and not raw_records:
-            _move_to_failed(path, parse_error, failed_dir)
+            _move_to_failed(work, parse_error, failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -982,12 +1127,12 @@ def scan_swim_folder(
 
         events: list[NASEvent] = []
         errors: list[str] = []
-        for raw in raw_records:
+        for record_index, raw in enumerate(raw_records):
             # One malformed record fails its own file, never the scan: an
             # exception escaping here used to abort scan_swim_folder(), and in
             # watch mode that crash-looped the whole nas-sentinel container.
             try:
-                event, err = _normalise_record(raw, str(path))
+                event, err = _normalise_record(raw, str(path), index=record_index, data_origin=data_origin)
             except Exception as exc:  # noqa: BLE001
                 event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
             if event:
@@ -998,7 +1143,7 @@ def scan_swim_folder(
                 errors.append(err or "Unknown normalisation error")
 
         if not events and errors:
-            _move_to_failed(path, "; ".join(errors), failed_dir)
+            _move_to_failed(work, "; ".join(errors), failed_dir)
             _append_log_entry({
                 "file": path.name,
                 "status": "failed",
@@ -1013,7 +1158,7 @@ def scan_swim_folder(
         if dest.exists():
             dest = processed_dir / f"{path.stem}_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%H%M%S%f')}{path.suffix}"
         try:
-            shutil.move(str(path), str(dest))
+            shutil.move(str(work), str(dest))
         except OSError as exc:
             # The file parsed fine; only the archival move failed. That is the
             # normal case on a read-only ingest mount (a :ro volume, or a
@@ -1027,6 +1172,13 @@ def scan_swim_folder(
             # The file stays where it is. The ingest_log entry written below
             # is what stops it being reprocessed on the next scan, so
             # leaving it in place is safe rather than a duplicate-ingest risk.
+            # Put a claimed file back where it was, so the next scan sees it
+            # and skips it by name instead of it sitting in .inflight/.
+            if work != path:
+                try:
+                    os.rename(work, path)
+                except OSError:
+                    pass
             _log.warning(
                 "swim_ingest_archive_move_failed",
                 extra={
@@ -1138,7 +1290,15 @@ def watch_swim_folder(
         finally:
             scan_lock.release()
 
-    observer = Observer()
+    # Native file events do not cross a Docker Desktop bind mount from a
+    # Windows or macOS host into a Linux container: the kit writes on the
+    # host, no inotify event fires, and a new message waited for the next
+    # reconcile pass (up to reconcile_interval, 5 minutes). Polling the
+    # folder works everywhere; SWIM_WATCH_POLLING turns it on.
+    observer = (
+        PollingObserver(timeout=config.SWIM_WATCH_POLL_SECONDS)
+        if config.SWIM_WATCH_POLLING else Observer()
+    )
     observer.schedule(_NewFileHandler(trigger), str(source_dir), recursive=False)
     observer.start()
     _log.info(
@@ -1178,6 +1338,65 @@ def watch_swim_folder(
 def read_ingest_log(limit: int = 100) -> list[dict]:
     """Return the most recent ingest log entries (newest first)."""
     return run_async(storage.get_recent_ingest_log(limit))
+
+
+# ── Single consumer per file ──────────────────────────────────────────────────
+#
+# More than one process can scan the same folder: the live watcher and a
+# Temporal ingest run, or two watchers after a misconfiguration. Before this,
+# both could parse the same file, race to move it, and ingest it twice.
+#
+# A scanner now claims a file before touching it: an atomic rename into the
+# folder's hidden .inflight/ subdirectory, keeping its name. A rename can only
+# succeed once, so every other scanner finds the file gone and skips it -- this
+# works across processes and containers sharing a mount, with no lock server.
+# A claim left behind by a scanner that died is released after CLAIM_TIMEOUT.
+
+INFLIGHT_DIR = ".inflight"
+CLAIM_TIMEOUT_SECONDS = 600
+
+
+def _claim(path: Path) -> Path | None:
+    """
+    Atomically take ownership of `path`; returns the path to read from, or None
+    if the file is not ours this pass.
+
+    A folder this process cannot write (a read-only mount) cannot be consumed
+    destructively by anyone, so its files are read in place, exactly as before
+    claims existed; the ingest_log and stable event ids stop re-ingestion.
+    """
+    if not os.access(path.parent, os.W_OK):
+        return path
+    inflight = path.parent / INFLIGHT_DIR
+    claimed = inflight / path.name
+    try:
+        inflight.mkdir(exist_ok=True)
+        os.rename(path, claimed)
+    except FileNotFoundError:
+        return None              # another scanner claimed it first
+    except OSError:
+        return None              # e.g. the writer on a Windows host still holds it; next pass
+    os.utime(claimed)            # claim time, for stale-claim release
+    return claimed
+
+
+def _release_stale_claims(source_dir: Path) -> int:
+    """Return files claimed by a scanner that died back to the folder."""
+    inflight = source_dir / INFLIGHT_DIR
+    if not inflight.is_dir():
+        return 0
+    released = 0
+    cutoff = time.time() - CLAIM_TIMEOUT_SECONDS
+    for f in inflight.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff and not (source_dir / f.name).exists():
+                os.rename(f, source_dir / f.name)
+                released += 1
+        except OSError:
+            continue
+    if released:
+        _log.warning("swim_ingest_stale_claims_released", extra={"count": released, "source_dir": str(source_dir)})
+    return released
 
 
 def _move_to_failed(path: Path, reason: str, failed_dir: Path | None = None) -> None:

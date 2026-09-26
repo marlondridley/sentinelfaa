@@ -347,3 +347,306 @@ def test_smes_unverified_report_type_is_refused_not_partly_ingested(tmp_path: Pa
     assert records == []
     assert error is not None
     assert "positionReport" in error
+
+
+# ── The ten-message live capture (2026-08-27, KBWI/KDCA/KIAD) ──────────────────
+#
+# Every file the Jumpstart Kit wrote during one real subscription session,
+# copied verbatim. Before the TDLS and SafetyLogicHoldBar extractors existed,
+# five of these ten landed in data/failed/: a 50% quarantine rate on real FAA
+# data. The corpus test below is the standing proof that it is now 10-for-10.
+
+CAPTURE = FIXTURES / "capture_2026-08-27"
+_TDLS_FILE = CAPTURE / "1787863348274"
+_HOLDBAR_FILE = CAPTURE / "1787863349572"
+
+
+def test_real_capture_ingests_ten_for_ten(tmp_path: Path):
+    """
+    Every captured file parses without error, and every record becomes a
+    NASEvent that passes validation. A recognised feed may legitimately yield
+    no records: both TAIS messages here (1787863346003, 1787863350167) carry
+    only flight plans to KFTY/KCHO/KRIC and tracks with no flight plan, so
+    nothing is attributable to KDCA/KIAD/KBWI/KADW. The bar is therefore "no
+    file errors", with the other eight files all producing events.
+    """
+    from src.validators import validate_event
+
+    files = sorted(p for p in CAPTURE.iterdir() if p.is_file())
+    assert len(files) == 10
+
+    files_with_events = 0
+    for path in files:
+        records, error = _parse_file(path)
+        assert error is None, f"{path.name}: {error}"
+        files_with_events += bool(records)
+        for raw in records:
+            event, err = _normalise_record(raw, str(path))
+            assert event is not None, f"{path.name}: {err}"
+            result = validate_event(event)
+            assert result.passed, f"{path.name}: {result.errors}"
+
+    assert files_with_events == 8
+
+
+def test_real_capture_scan_quarantines_nothing(tmp_path: Path, monkeypatch):
+    """The scanner itself, not just the parser: all ten files end up in processed/, none in failed/."""
+    import shutil
+
+    from src import swim_file_ingest
+
+    src_dir, processed, failed = tmp_path / "in", tmp_path / "processed", tmp_path / "failed"
+    src_dir.mkdir()
+    for path in CAPTURE.iterdir():
+        shutil.copy(path, src_dir / path.name)
+
+    # Isolate from the ingest_log table: nothing has been seen before, and
+    # log writes go nowhere.
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+
+    events, stats = swim_file_ingest.scan_swim_folder(
+        src_dir, processed_dir=processed, failed_dir=failed
+    )
+
+    assert stats.files_failed == 0
+    assert list(failed.iterdir()) == []
+    assert len(list(processed.iterdir())) == 10
+    assert events
+
+
+def test_real_tdls_dcl_message_yields_a_departure_clearance_event():
+    """ns4:TDLSCSPMessage (CPDLC departure clearance) -> one TOWER_DEPARTURE event."""
+    records, error = _parse_file(_TDLS_FILE)
+    assert error is None
+    assert len(records) == 1
+
+    rec = records[0]
+    assert rec["airport_code"] == "KBWI"
+    assert rec["service_name"] == "TOWER_DEPARTURE"
+    assert rec["aircraft_id"] == "SWA1085"
+    assert rec["beacon_code"] == "2172"
+    assert rec["flight_phase"] == "DEPARTURE"
+    assert rec["surface_event_type"] == "DEPARTURE_CLEARANCE_DCL"
+    # "time": "08272026204225" is MMDDYYYYHHMMSS; it must agree with the
+    # message's own JMS timestamp header (2026-08-27T20:42:25.503Z).
+    assert rec["event_time_utc"] == "2026-08-27T20:42:25Z"
+    # The free-text clearance (full route, registration) is deliberately not kept.
+    assert not any("KBWI*.TERPZ8" in str(v) for v in rec.values())
+
+
+def test_tdls_unparseable_time_falls_back_to_the_header_timestamp(tmp_path: Path):
+    path = _kit_file(tmp_path, "1787863348999", "TDES", "RD", {
+        "ns4:TDLSCSPMessage": {"airportID": "KDCA", "aircraftID": "AAL1", "time": "garbage"},
+    })
+    path.write_text(
+        "Property name = timestamp; value = 2026-08-27T20:42:25.503Z\n" + path.read_text(),
+        encoding="utf-8",
+    )
+    records, error = _parse_file(path)
+    assert error is None
+    assert records[0]["event_time_utc"] == "2026-08-27T20:42:25.503Z"
+
+
+def test_real_holdbar_message_is_a_valid_facility_status_event():
+    """
+    ns2:SafetyLogicHoldBar names no aircraft, vehicle or track. It is ingested
+    as an airport-level SMES status event, exempt from the moving-entity rule,
+    with its undecoded bitmask preserved.
+    """
+    from src.validators import validate_event
+
+    records, error = _parse_file(_HOLDBAR_FILE)
+    assert error is None
+    assert len(records) == 1
+
+    rec = records[0]
+    assert rec["airport_code"] == "KIAD"
+    assert rec["service_name"] == "SMES"
+    assert rec["surface_event_type"] == "SAFETY_LOGIC_HOLD_BAR"
+    assert rec["status_code"].startswith("control=1;status=0000")
+
+    event, err = _normalise_record(rec, str(_HOLDBAR_FILE))
+    assert event is not None, err
+    assert validate_event(event).passed
+
+
+def test_smes_movement_event_without_an_entity_still_fails_validation():
+    """The hold-bar exemption must not weaken Rule 8 for real movement events."""
+    from datetime import datetime
+
+    from src.models import NASEvent
+    from src.validators import validate_event
+
+    now = datetime(2026, 8, 27, 20, 42)
+    event = NASEvent(
+        airport_code="KIAD", tracon="PCT", service_name="SMES", message_type="SMES_AD",
+        event_time_utc=now, received_time_utc=now, latency_ms=0.0,
+        surface_event_type="ADSB_REPORT",
+    )
+    assert not validate_event(event).passed
+
+
+def test_holdbar_status_does_not_count_toward_a_surface_spike():
+    """A burst of equipment-status messages is not a traffic spike."""
+    from datetime import datetime, timezone
+
+    from src import config
+    from src.alert_engine import check_alerts
+    from src.models import NASEvent
+
+    now = datetime.now(timezone.utc)
+    burst = [
+        NASEvent(
+            airport_code="KIAD", tracon="PCT", service_name="SMES", message_type="SMES_SH",
+            event_time_utc=now, received_time_utc=now, latency_ms=0.0,
+            surface_event_type="SAFETY_LOGIC_HOLD_BAR", feed_status="operational",
+        )
+        for _ in range(config.SURFACE_SPIKE_COUNT * 2)
+    ]
+    assert not [a for a in check_alerts(burst) if a.alert_type == "ALERT_SURFACE_EVENT_SPIKE"]
+
+
+def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monkeypatch):
+    """
+    With SWIM_WATCH_POLLING (on in compose), a file the kit writes is picked up
+    in seconds, not at the next 5-minute reconcile. Native file events do not
+    cross a Windows/macOS host bind mount, which is how the live watcher was
+    waiting up to five minutes for every message.
+    """
+    import shutil
+    import threading
+    import time
+
+    from src import swim_file_ingest
+
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.5)
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+    monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "processed")
+    monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "failed")
+
+    watched = tmp_path / "log"
+    watched.mkdir()
+    got: list[int] = []
+    worker = threading.Thread(
+        target=swim_file_ingest.watch_swim_folder,
+        kwargs={"source_dir": watched, "reconcile_interval": 3600, "debounce_seconds": 0.2,
+                "on_events": lambda events, stats: got.append(len(events))},
+        daemon=True,
+    )
+    worker.start()
+    try:
+        time.sleep(1.5)  # past the startup scan of an empty folder
+        shutil.copy(CAPTURE / "1787863348274", watched / "1787863348274")
+        deadline = time.monotonic() + 10
+        while not got and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert got == [1], "the new TDLS message should be ingested within seconds"
+    finally:
+        swim_file_ingest.request_shutdown()
+        worker.join(timeout=10)
+        swim_file_ingest._shutdown_requested.clear()
+
+
+# ── One consumer per file ─────────────────────────────────────────────────────
+
+def _isolate_ingest_log(monkeypatch):
+    from src import swim_file_ingest
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entry", lambda entry: None)
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_two_scanners_on_one_folder_ingest_each_file_exactly_once(tmp_path: Path, monkeypatch):
+    """The live watcher and a Temporal ingest run scanning the same folder at once."""
+    import shutil
+    import threading
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    for f in CAPTURE.iterdir():
+        shutil.copy(f, folder / f.name)
+
+    results = {}
+
+    def scan(name):
+        events, stats = swim_file_ingest.scan_swim_folder(
+            folder, processed_dir=tmp_path / f"processed_{name}", failed_dir=tmp_path / f"failed_{name}")
+        results[name] = (stats.files_processed, {e.event_id for e in events})
+
+    threads = [threading.Thread(target=scan, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    (processed_a, ids_a), (processed_b, ids_b) = results["a"], results["b"]
+    assert processed_a + processed_b == 10, "every file processed once, by exactly one scanner"
+    assert not (ids_a & ids_b), "no event ingested by both"
+    assert not list(folder.glob("*")) or all(p.is_dir() for p in folder.iterdir())
+
+
+def test_a_claimed_file_is_invisible_to_another_scanner(tmp_path: Path, monkeypatch):
+    import shutil
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    assert swim_file_ingest._claim(folder / "1787863348274") is not None
+    assert swim_file_ingest._claim(folder / "1787863348274") is None      # already taken
+    _, stats = swim_file_ingest.scan_swim_folder(
+        folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    assert stats.files_processed == 0
+
+
+def test_a_claim_abandoned_by_a_dead_scanner_is_released_and_processed(tmp_path: Path, monkeypatch):
+    import os
+    import shutil
+    import time
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    (folder / swim_file_ingest.INFLIGHT_DIR).mkdir(parents=True)
+    stale = folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274"
+    shutil.copy(CAPTURE / "1787863348274", stale)
+    old = time.time() - swim_file_ingest.CLAIM_TIMEOUT_SECONDS - 5
+    os.utime(stale, (old, old))
+
+    events, stats = swim_file_ingest.scan_swim_folder(
+        folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    assert stats.files_processed == 1 and len(events) == 1
+    assert (tmp_path / "p" / "1787863348274").exists()
+
+
+def test_a_read_only_folder_is_still_ingested_in_place(tmp_path: Path, monkeypatch):
+    """No claim is possible on a read-only mount; files are read in place, as before."""
+    import os
+    import shutil
+    import stat
+
+    from src import swim_file_ingest
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        events, stats = swim_file_ingest.scan_swim_folder(
+            folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f")
+    finally:
+        folder.chmod(stat.S_IRWXU)
+    assert stats.files_processed == 1 and len(events) == 1
+    assert (folder / "1787863348274").exists(), "left in place on a read-only mount"

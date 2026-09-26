@@ -1,248 +1,234 @@
-# NAS FeedOps Sentinel — full observability & worker stack
+# NAS FeedOps Sentinel -- application stack.
+#
+# Runs on the external nas-network created by launch_nas_sentinel.ps1,
+# alongside the infrastructure stack in ../instraclustr (Postgres, PgBouncer,
+# Vault, LiteLLM). The `edge` nginx proxy is the only way in: HTTPS on
+# 127.0.0.1:8443-8447 (docker/edge/nginx.conf). Service ports are not
+# published; Keycloak's admin console alone stays on http://localhost:8081.
+#
+# Vault: services authenticate with their own AppRole (credentials written by
+# ../instraclustr/vault-unseal-and-seed.bash, one directory per role, mounted
+# read-only). No service receives a Vault token.
+#
+# Database identities:
+#   migrate      -- one-shot, runs as the schema owner (Vault postgres/credentials):
+#                   schema, migrations, the application role and its grants.
+#   all others   -- the application role (Vault postgres/app): DML only, and
+#                   SELECT/INSERT only on the audit log and investigations.
+#
+# Operational notes that used to live here as long comments are in
+# docs/operations.md.
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: nas-feedops-sentinel:latest
+
+# Settings every application process shares.
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATA_DIR: /app/data
+  SWIM_RAW_FOLDER: ${SWIM_RAW_FOLDER:-/app/data/raw}
+  # The kit writes on the host; file events do not cross the bind mount.
+  SWIM_WATCH_POLLING: ${SWIM_WATCH_POLLING:-true}
+  # Database: the application role through PgBouncer. DATABASE_URL is empty
+  # on purpose, so it is rebuilt from these settings rather than inherited
+  # from .env with the owner's credentials in it.
+  POSTGRES_HOST: nas-pgbouncer
+  POSTGRES_PORT: "6432"
+  POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
+  POSTGRES_USER: ${APP_DB_USER:-sentinel_app}
+  POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+  DATABASE_URL: ""
+  RUN_MIGRATIONS_ON_CONNECT: "false"
+  VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+  VAULT_APPROLE_DIR: /run/vault-approle
+  VAULT_POSTGRES_SECRET_PATH: postgres/app
+  # Models: proxy aliases only (instraclustr/litellm-config.yaml).
+  LLM_BASE_URL: ${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+  LLM_MODEL: ${LLM_MODEL:-primary-model}
+  CRITIC_MODEL: ${CRITIC_MODEL:-primary-model}
+  CRITIC_ENABLED: ${CRITIC_ENABLED:-1}
+  MAX_CRITIC_PER_PASS: ${MAX_CRITIC_PER_PASS:-5}
+  INVESTIGATIONS_ENABLED: ${INVESTIGATIONS_ENABLED:-1}
+  MAX_LLM_INVESTIGATIONS_PER_PASS: ${MAX_LLM_INVESTIGATIONS_PER_PASS:-3}
+  TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+  TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+  TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+
+x-after-migrate: &after-migrate
+  migrate:
+    condition: service_completed_successfully
+
 services:
-  # 1. Temporal Worker Service (Long-polling background worker)
-  temporal-worker:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: nas-feedops-sentinel:latest
-    container_name: nas-temporal-worker
-    command: ["python", "-m", "src.temporal_worker"]
-    stop_grace_period: 30s # Ensures clean signal handling to drain in-flight activities
-    restart: unless-stopped
+  # 0. Schema owner job: runs to completion before anything else starts.
+  migrate:
+    <<: *app-image
+    container_name: nas-migrate
+    command: ["python", "-m", "src.storage.migrate"]
+    restart: "no"
     environment:
-      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
-      - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
-      - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
-      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
-      - POSTGRES_PORT=6432
-      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
-      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DATA_DIR=${DATA_DIR:-/app/data}
-      - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
-      # Real Temporal server (see the temporal/temporal-postgresql services below).
-      # Previously unset here, so this silently fell back to config.py's
-      # localhost:7233 default -- which pointed at nothing inside this
-      # container and made temporal-worker crash-loop on every connect
-      # attempt (main()'s bare try/finally logs 'temporal_worker_stopped' and
-      # re-raises on any failure, and restart: unless-stopped then respawned
-      # it immediately). temporal:7233 is the new service's name on nas-network.
-      - TEMPORAL_HOST=${TEMPORAL_HOST:-temporal:7233}
-      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
-      - TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+      <<: *app-env
+      # Direct to Postgres as the schema owner, not through the pooler.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VAULT_POSTGRES_SECRET_PATH: postgres/credentials
+      APP_DB_USER: ${APP_DB_USER:-sentinel_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
     volumes:
-      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
-      # Two volume entries at the same target (/app/data) is ambiguous: whichever
-      # one "won" at container CREATION time sticks for that container's whole
-      # life, and a later `restart` never re-evaluates it -- only a recreate
-      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
-      # service ended up reading an empty, disconnected sentinel-data volume
-      # instead of the real host ./data/raw/swim_live directory, crash-looping
-      # on FileNotFoundError even though the host directory was fine all along.
-      - ./data:/app/data
-    depends_on:
-      - temporal
+      - ../instraclustr/vault-init-data/approle/sentinel-migrate:/run/vault-approle:ro
     healthcheck:
-      # Overrides the image's baked-in HEALTHCHECK (docker/Dockerfile), which
-      # probes port 9108 -- that's src/metrics.py's server, only ever started
-      # by src/main.py. This service runs src.temporal_worker instead, which
-      # never binds 9108, so the inherited check would report "unhealthy"
-      # forever regardless of whether the worker is actually fine. A pure
-      # background worker has no HTTP surface to honestly probe, so disable
-      # it rather than ship a check that's always wrong.
       disable: true
 
-  # 2. Metrics API Service
-  api:
+  # End-to-end proof, on demand only:  docker compose --profile proof run --rm proof
+  # Runs scripts/e2e_proof.py in the test image against the disposable
+  # sentinel_test database (created if missing), with the live model.
+  proof:
+    profiles: ["proof"]
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: nas-feedops-sentinel:latest
+      target: test
+    image: nas-feedops-sentinel:test
+    command: ["python", "scripts/e2e_proof.py"]
+    environment:
+      <<: *app-env
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: sentinel_test
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VAULT_POSTGRES_SECRET_PATH: postgres/credentials
+      RUN_MIGRATIONS_ON_CONNECT: "true"
+      MAX_CRITIC_PER_PASS: "1"
+      MAX_LLM_INVESTIGATIONS_PER_PASS: "1"
+    volumes:
+      - ../instraclustr/vault-init-data/approle/sentinel-migrate:/run/vault-approle:ro
+    healthcheck:
+      disable: true
+
+  # 1. Temporal worker: runs ingest/pipeline workflows started through the API.
+  temporal-worker:
+    <<: *app-image
+    container_name: nas-temporal-worker
+    command: ["python", "-m", "src.temporal_worker"]
+    stop_grace_period: 30s
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - ./data:/app/data
+      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+    depends_on:
+      <<: *after-migrate
+      temporal:
+        condition: service_started
+    healthcheck:
+      # No HTTP surface; the image's metrics-port check does not apply.
+      disable: true
+
+  # 2. HTTP API (FastAPI): /health, /v1/ready, /v1/ingest.
+  api:
+    <<: *app-image
     container_name: nas-api
-    # Previously ran "python -m src.metrics" -- a second copy of the exact
-    # same Prometheus metrics server sentinel already runs in-process.
-    # Nothing scraped it (monitoring/prometheus.yml only targets
-    # sentinel:9108), so it was a pure duplicate. This is what src/api.py
-    # (FastAPI: /health, /v1/ingest, the workflow-trigger endpoints) was
-    # actually built to run behind, and nothing was running it -- so the
-    # Temporal stack below had no caller. Fixes both at once.
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
     environment:
-      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
-      - POSTGRES_PORT=6432
-      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
-      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      # Same fix as temporal-worker: without this, src/config.py's
-      # TEMPORAL_HOST default (localhost:7233) points at nothing inside this
-      # container, and every /v1/ingest call would fail with
-      # temporal_unavailable even though the temporal service is healthy.
-      - TEMPORAL_HOST=${TEMPORAL_HOST:-temporal:7233}
-      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
-      - TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
-      - API_KEY=${API_KEY:-}
-      - API_KEYS=${API_KEYS:-}
-    ports:
-      - "8000:8000"
+      <<: *app-env
+      API_KEY: ${API_KEY:?API_KEY is required -- /v1/ingest refuses every call without one}
+      API_KEYS: ${API_KEYS:-}
     volumes:
-      - sentinel-data:/app/data
+      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
     depends_on:
-      - temporal
+      <<: *after-migrate
+      temporal:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # 3. Legacy/CLI Replay Runner (Optional standalone mode)
+  # 3. Live SWIM folder watcher: the Jumpstart kit writes, this ingests.
   sentinel:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: nas-feedops-sentinel:latest
+    <<: *app-image
     container_name: nas-sentinel
     restart: unless-stopped
     command: ["python", "-m", "src.main", "--mode", "replay", "--watch"]
-    environment:
-      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
-      - CRITIC_MODEL=${CRITIC_MODEL:-gemini-2.5-flash}
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://nas-litellm:4000/v1}
-      - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
-      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
-      - POSTGRES_PORT=6432
-      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
-      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DATA_DIR=${DATA_DIR:-/app/data}
-      - SWIM_RAW_FOLDER=${SWIM_RAW_FOLDER:-/app/data/raw}
+    environment: *app-env
     volumes:
-      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
-      # Two volume entries at the same target (/app/data) is ambiguous: whichever
-      # one "won" at container CREATION time sticks for that container's whole
-      # life, and a later `restart` never re-evaluates it -- only a recreate
-      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
-      # service ended up reading an empty, disconnected sentinel-data volume
-      # instead of the real host ./data/raw/swim_live directory, crash-looping
-      # on FileNotFoundError even though the host directory was fine all along.
       - ./data:/app/data
+      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+    depends_on: *after-migrate
 
-  # 4. Streamlit Dashboard
+  # 4. Operator dashboard (Streamlit).
   dashboard:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: nas-feedops-sentinel:latest
+    <<: *app-image
     container_name: nas-dashboard
     restart: unless-stopped
     command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
     environment:
-      - CRITIC_ENABLED=${CRITIC_ENABLED:-1}
-      - POSTGRES_HOST=${POSTGRES_HOST:-nas-pgbouncer}
-      - POSTGRES_PORT=6432
-      - POSTGRES_USER=${POSTGRES_USER:-sentinel_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      - DATABASE_URL=${DATABASE_URL}
-      - POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
-      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
-      - VAULT_TOKEN=${VAULT_TOKEN:?VAULT_TOKEN is required}
-      # The container user's home is /app, so Streamlit's per-user folder
-      # (~/.streamlit, where it writes machine_id_v4) is the same directory
-      # the secrets are mounted into read-only below -- every new browser
-      # session raised "Unable to write file: /app/.streamlit/machine_id_v4".
-      # A separate writable home fixes that without loosening the :ro mount;
-      # secrets.toml is still read from /app/.streamlit (the working dir).
-      - HOME=/tmp/streamlit-home
-    ports:
-      - "8501:8501"
+      <<: *app-env
+      # Streamlit writes machine_id under $HOME; /app/.streamlit is mounted read-only.
+      HOME: /tmp/streamlit-home
+      GRAFANA_PUBLIC_URL: https://localhost:8445
+      PROMETHEUS_PUBLIC_URL: https://localhost:8447
     volumes:
-      # Bind mount only -- do NOT also list sentinel-data:/app/data here.
-      # Two volume entries at the same target (/app/data) is ambiguous: whichever
-      # one "won" at container CREATION time sticks for that container's whole
-      # life, and a later `restart` never re-evaluates it -- only a recreate
-      # (`up --force-recreate` or `down`+`up`) does. That's exactly how this
-      # service ended up reading an empty, disconnected sentinel-data volume
-      # instead of the real host ./data/raw/swim_live directory, crash-looping
-      # on FileNotFoundError even though the host directory was fine all along.
       - ./data:/app/data
-      # Keycloak OIDC config for the dashboard's login screen (src/auth.py's
-      # OIDC path via dashboard/lib/page_setup.py). Mounted read-only so the
-      # client secret never gets baked into the image layer. Does not exist
-      # until you copy .streamlit/secrets.toml.example -> .streamlit/secrets.toml
-      # and fill it in -- until then this mount is simply absent and the
-      # dashboard falls back to the self-declared operator-ID box.
+      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+      # Keycloak client settings (secrets.toml) and theme; read-only, never baked in.
       - ./.streamlit:/app/.streamlit:ro
     depends_on:
-      - api
+      <<: *after-migrate
+      api:
+        condition: service_started
     healthcheck:
-      # Overrides the image's baked-in HEALTHCHECK (port 9108 -- see the
-      # temporal-worker comment above for why that's wrong here too).
-      # Streamlit serves its own liveness endpoint on the app's own port.
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8501/_stcore/health\")' || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 15s
       retries: 5
 
-  # 5. Monitoring Stack
+  # 5. Monitoring.
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
     container_name: nas-prometheus
     restart: unless-stopped
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=15d"
-    ports:
-      - "9090:9090"
     depends_on:
       - api
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana@sha256:3fd54ae1214669f8355f065ec9f6445d5279a3d77095ab048ca045685272429b
     container_name: nas-grafana
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER is required}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
       - GF_USERS_ALLOW_SIGN_UP=false
-      # Open the dashboards without a login prompt, read-only. Anonymous
-      # users get the Viewer role: they can look, not edit or administer --
-      # changes still need the admin account above (Sign in, bottom-left).
-      # The port below is bound to 127.0.0.1 for the same reason: anonymous
-      # access is for this machine, not for anyone on the local network.
+      # Anonymous read-only viewing, loopback only (port below).
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/nas-sentinel.json
+      - GF_SERVER_ROOT_URL=https://localhost:8445/
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
-    ports:
-      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
 
-  # Keycloak's own database. start-dev kept everything in an embedded H2
-  # database that Keycloak does not support in production -- and a realm
-  # living only there, created by hand, is how the dashboard's realm went
-  # missing. Separate from the application Postgres on purpose: identity
-  # data has its own lifecycle and blast radius. Not published to the host.
+  # 6. Identity: Keycloak on its own Postgres. Realm (clients, roles, the
+  # ID-token role mapper) is code in keycloak/; import is skip-if-exists, so
+  # scripts/keycloak-rbac.sh brings an existing realm up to date.
   keycloak-postgres:
     image: postgres:16
     container_name: nas-keycloak-postgres
@@ -259,13 +245,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # Production mode (`start`, not `start-dev`) on Postgres, with the realm
-  # defined as code in keycloak/realm-nas-sentinel.json and imported at
-  # startup. Import is skip-if-exists: it creates the realm on a fresh
-  # database and never overwrites a live one, so later edits to that file
-  # need applying through the admin console or API (or a fresh database).
-  # Operator logins are not in the file -- people are not configuration --
-  # and are created with scripts/Setup-Keycloak.ps1.
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
     container_name: nas-keycloak
@@ -275,96 +254,33 @@ services:
       keycloak-postgres:
         condition: service_healthy
     ports:
-      # Loopback only: the login page is for browsers on this machine.
       - "127.0.0.1:8081:8080"
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required -- run scripts/Setup-Keycloak.ps1}
-      # Creates the initial admin only on first start against an empty
-      # database; ignored afterwards.
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
-      # Substituted into the realm file's ${KC_DASHBOARD_CLIENT_SECRET}
-      # placeholder, so the secret is never committed. Must equal
-      # client_secret in .streamlit/secrets.toml; Setup-Keycloak.ps1 copies
-      # it from there and refuses to proceed if the two differ.
+      # Substituted into the realm file; must equal client_secret in .streamlit/secrets.toml.
       KC_DASHBOARD_CLIENT_SECRET: ${KEYCLOAK_DASHBOARD_CLIENT_SECRET:?KEYCLOAK_DASHBOARD_CLIENT_SECRET is required -- run scripts/Setup-Keycloak.ps1}
-      # Keycloak builds its URLs from the host a request arrives on. The
-      # dashboard container fetches discovery from keycloak:8080, so without
-      # this the login redirect sent the BROWSER to keycloak:8080, which only
-      # resolves inside Docker. KC_HOSTNAME fixes the browser-facing URLs
-      # (issuer, login page) at localhost:8081, the host-mapped port above;
-      # BACKCHANNEL_DYNAMIC keeps server-to-server URLs (token, keys) on
-      # whatever host the caller used, so the dashboard still reaches
-      # keycloak:8080 from inside the network.
+      # Browser-facing URLs on the host port; server-to-server calls keep the
+      # host they used (keycloak:8080 from the dashboard container).
       KC_HOSTNAME: http://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
-      # Plain HTTP is acceptable only because every listener is loopback or
-      # internal to nas-network. Exposing this beyond one machine requires
-      # TLS (KC_HTTPS_CERTIFICATE_FILE / _KEY_FILE, or a TLS proxy) first.
+      # Plain HTTP only because every listener is loopback or internal.
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./keycloak/realm-nas-sentinel.json:/opt/keycloak/data/import/realm-nas-sentinel.json:ro
     healthcheck:
-      # The image ships no curl/wget; bash's /dev/tcp reaches the management
-      # port's readiness endpoint, which only reports UP once the database
-      # is connected and startup (including the realm import) has finished.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
       interval: 15s
       timeout: 5s
       start_period: 60s
       retries: 10
-    networks:
-      - default
 
-  # 6. FAA SWIM SCDS Jumpstart Kit -- NOT containerized, deliberately.
-  #
-  # The kit ships a prebuilt fat jar (jumpstart/lib/jumpstart-jar-with-
-  # dependencies.jar) and its own launchers (jumpstart/bin/run, run.bat), so
-  # containerizing it added a Maven/JDK-25 build step that bought nothing --
-  # and that build was the only thing failing in this compose project,
-  # aborting the whole bake and blocking services unrelated to it.
-  #
-  # It now runs natively on the host, per jumpstart/README.md:
-  #
-  #   cd jumpstart
-  #   mkdir ..\data\raw\swim_live\log
-  #   cd ..\data\raw\swim_live
-  #   ..\..\..\jumpstart\bin\run.bat ^
-  #       -DproviderUrl=%SWIM_PROVIDER_URL% -Dqueue=%SWIM_QUEUE% ^
-  #       -DconnectionFactory=%SWIM_CONNECTION_FACTORY% ^
-  #       -Dusername=%SWIM_USERNAME% -Dpassword=%SWIM_PASSWORD% ^
-  #       -Dvpn=%SWIM_VPN% ^
-  #       -Doutput=com.harris.cinnato.outputs.MessageFileOutput ^
-  #       -Djson=true -Dheaders=true
-  #
-  # MessageFileOutput hardcodes its output to <cwd>/log/, which is why the
-  # kit is launched from data/raw/swim_live/. -Djson=true -Dheaders=true is
-  # not optional: src/swim_file_ingest.py:_parse_jms_message_file() parses
-  # exactly that shape (JMS property header lines, then one JSON object).
-  # SWIM_RAW_FOLDER points the sentinel watcher at that same directory.
-  #
-  # Requires a Java 25 runtime on the host -- the shipped jar is compiled to
-  # bytecode major 69. `java -version` must report 25 or newer.
-  #
-  # Known limitations of the stock MessageFileOutput, accepted here:
-  #   - files are named by epoch millisecond with no extension, so two
-  #     messages landing in the same millisecond overwrite each other;
-  #   - writes are not atomic (FileOutputStream straight to the final name),
-  #     mitigated but not eliminated by the watcher's 2 s debounce.
-  # jumpstart/src/.../outputs/IngestFolderFileOutput.java fixes both and takes
-  # a configurable -DoutputDir, but using it means rebuilding the jar
-  # (JDK 25 + `mvn -B -DskipTests clean package` in jumpstart/). Left dormant
-  # in the kit's source tree rather than deleted, for if that trade becomes
-  # worth making.
-
-  # 7. Temporal Server -- workflow orchestration backend for temporal-worker.
-  # Dedicated Postgres instance below, kept separate from the pgbouncer'd
-  # sentinel_db pool so Temporal's own schema/load never touches production
-  # alert data or its finite connection pool.
+  # 7. Temporal: orchestration for API-started workflows, on its own Postgres.
   temporal-postgresql:
     image: postgres:16
     container_name: nas-temporal-postgresql
@@ -394,12 +310,10 @@ services:
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       - POSTGRES_SEEDS=temporal-postgresql
     ports:
-      # Lets you point the temporal/tctl CLI or SDKs at localhost:7233 from
-      # the host if you ever need to inspect workflows outside the container.
-      - "7233:7233"
+      # Loopback only. Temporal has no authentication configured: anyone who
+      # can reach this port can start workflows, bypassing the API's auth.
+      - "127.0.0.1:7233:7233"
 
-  # Optional web UI for inspecting workflow runs/history at localhost:8088.
-  # Not required for temporal-worker to function -- safe to remove if unused.
   temporal-ui:
     image: temporalio/ui:2.34.0
     container_name: nas-temporal-ui
@@ -408,12 +322,51 @@ services:
       - temporal
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:8088
+      - TEMPORAL_CORS_ORIGINS=https://localhost:8446
+    # Reached only through the edge proxy (https://localhost:8446). It is
+    # unauthenticated and can terminate workflows.
+
+  # 8. Edge TLS termination: the only published entry point.
+  edge-certs:
+    <<: *app-image
+    container_name: nas-edge-certs
+    command: ["python", "-m", "src.devcert", "/tls"]
+    restart: "no"
+    user: "0"
+    volumes:
+      - ./tls:/tls
+    healthcheck:
+      disable: true
+
+  edge:
+    image: nginx:1.27-alpine
+    container_name: nas-edge
+    restart: unless-stopped
+    depends_on:
+      edge-certs:
+        condition: service_completed_successfully
+      dashboard:
+        condition: service_started
+      api:
+        condition: service_started
+    volumes:
+      - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./tls:/etc/nginx/tls:ro
     ports:
-      - "8088:8080"
+      - "127.0.0.1:8443:8443"   # dashboard
+      - "127.0.0.1:8444:8444"   # API (/health, /v1/*)
+      - "127.0.0.1:8445:8445"   # Grafana
+      - "127.0.0.1:8446:8446"   # Temporal UI
+      - "127.0.0.1:8447:8447"   # Prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8444/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # The FAA SWIM Jumpstart kit is not containerized; see docs/operations.md.
 
 volumes:
-  sentinel-data:
   prometheus-data:
   grafana-data:
   temporal-postgres-data:

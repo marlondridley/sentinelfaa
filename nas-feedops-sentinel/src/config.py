@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from src.vault_config import VaultSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 DATA_DIR: Path = BASE_DIR / "data"
@@ -55,6 +55,35 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 # whenever DATABASE_URL is empty.
 
 
+def proxy_model(value: str, *, setting: str = "model") -> str:
+    """
+    Normalize a model setting to the LiteLLM proxy's OpenAI-compatible route.
+
+    Model settings name a proxy alias -- a model_name in
+    instraclustr/litellm-config.yaml such as "primary-model" -- and the client
+    always reaches it as "openai/<alias>" against LITELLM_PROXY_URL.
+
+    A bare alias ("gemini-2.5-flash") gets the prefix. Before this, that exact
+    value (the compose default for CRITIC_MODEL) made litellm pick Google
+    Vertex from the name and call it directly, bypassing the proxy -- and its
+    provider allowlist, keys and logging -- and failing on missing google.auth.
+    Any other provider prefix ("gemini/...", "anthropic/...") is refused for the
+    same reason: it would route around the gateway.
+    """
+    text = (value or "").strip()
+    if not text:
+        return text
+    if text.startswith("openai/"):
+        return text
+    if "/" in text:
+        raise ValueError(
+            f"{setting}={text!r} names a provider route. Model settings must be a "
+            "LiteLLM proxy alias (e.g. 'primary-model'); every call goes through "
+            "the proxy, never directly to a provider."
+        )
+    return f"openai/{text}"
+
+
 class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
@@ -82,6 +111,10 @@ class Settings(BaseSettings):
     # ── Paths ────────────────────────────────────────────────────────────────
     INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
+    # Poll the SWIM folder instead of relying on native file events, which do
+    # not reach a container through a Windows/macOS host bind mount.
+    SWIM_WATCH_POLLING: bool = False
+    SWIM_WATCH_POLL_SECONDS: float = 2.0
 
     # ── Database / PgBouncer ────────────────────────────────────────────────
     POSTGRES_HOST: str = "localhost"
@@ -216,9 +249,35 @@ class Settings(BaseSettings):
     WATCH_OFFICER_MODEL: str = ""
 
     MAX_CRITIC_PER_PASS: int = 5
+    LLM_TIMEOUT_SECONDS: float = 90.0
+
+    # ── Investigations (src/investigation/) ─────────────────────────────────
+    # Every staged action gets an investigation. The first
+    # MAX_LLM_INVESTIGATIONS_PER_PASS in a pipeline pass run the four
+    # specialists with the model (4 calls each); the rest run the same flow
+    # deterministically, so a burst of CRITICAL alerts cannot become an
+    # unbounded burst of LLM calls, and no staged action goes uninvestigated.
+    # Escalation-integrity reconciler (src/reconcile.py), run by the live
+    # watcher: unstaged CRITICAL alerts younger than the window are staged
+    # PENDING; older ones are recorded EXPIRED.
+    RECONCILE_INTERVAL_SECONDS: float = 60.0
+    RECONCILE_STAGE_WINDOW_MINUTES: int = 60
+
+    INVESTIGATIONS_ENABLED: bool = True
+    MAX_LLM_INVESTIGATIONS_PER_PASS: int = 3
+    INVESTIGATION_WINDOW_MINUTES: int = 60
+    INVESTIGATION_MODEL: str = ""
 
     # ── LiteLLM Proxy ────────────────────────────────────────────────────────
-    LITELLM_PROXY_URL: str = "http://localhost:4000/v1"
+    # Every model call goes through this gateway; nothing talks to a provider
+    # directly. Accepts LLM_BASE_URL as well: docker-compose.yml and .env set
+    # that name, and when only LITELLM_PROXY_URL was read, every container
+    # silently fell back to localhost:4000 -- nothing listening -- so the
+    # Critic and Watch Officer never reached a model and degraded quietly.
+    LITELLM_PROXY_URL: str = Field(
+        default="http://localhost:4000/v1",
+        validation_alias=AliasChoices("LITELLM_PROXY_URL", "LLM_BASE_URL"),
+    )
 
     # ── Temporal ─────────────────────────────────────────────────────────────
     TEMPORAL_HOST: str = "localhost:7233"
@@ -249,6 +308,22 @@ class Settings(BaseSettings):
     # with the key". Set as a JSON object string in the environment/.env.
     API_KEY: str | None = None
     API_KEYS: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # With no API key configured, /v1/ingest refuses every call (503) unless
+    # this is false. It used to fail open -- and in practice the API was only
+    # protected because it silently accepted the LiteLLM proxy key instead.
+    API_AUTH_REQUIRED: bool = True
+    API_DOCS_ENABLED: bool = False
+
+    # Self-declared (typed-callsign) operators may approve/override/reject only
+    # when this is true: a single-user lab with no identity provider. Off, a
+    # decision needs a verified Keycloak sign-in holding the right realm role.
+    ALLOW_UNVERIFIED_DECISIONS: bool = False
+
+    # Run schema bootstrap + migrations whenever a process opens its pool.
+    # True for tests and local runs. The compose services set it false and run
+    # `python -m src.storage.migrate` once, as the schema owner, so the
+    # application role never needs DDL rights.
+    RUN_MIGRATIONS_ON_CONNECT: bool = True
     CORS_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:8501",
@@ -321,7 +396,7 @@ class Settings(BaseSettings):
             return _json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
-    @field_validator("CRITIC_ENABLED", mode="before")
+    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", mode="before")
     @classmethod
     def _parse_bool(cls, value: Any) -> bool:
         if isinstance(value, str):
@@ -354,6 +429,12 @@ class Settings(BaseSettings):
 
         if not self.WATCH_OFFICER_MODEL:
             self.WATCH_OFFICER_MODEL = self.LLM_MODEL
+
+        if not self.INVESTIGATION_MODEL:
+            self.INVESTIGATION_MODEL = self.LLM_MODEL
+
+        for name in ("LLM_MODEL", "CRITIC_MODEL", "PLANNER_MODEL", "WATCH_OFFICER_MODEL", "INVESTIGATION_MODEL"):
+            setattr(self, name, proxy_model(getattr(self, name), setting=name))
 
         if self.CRITIC_ENABLED and not self.CRITIC_MODEL and not self.LLM_MODEL:
             raise ValueError(

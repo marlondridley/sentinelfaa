@@ -179,3 +179,67 @@ class TestWatchOfficer:
         signals = _detect_signals(ctx)
         brief = _deterministic_brief(ctx, signals)
         assert "KIAD" in brief.affected_airports or brief.posture == "ACTION"
+
+
+# ── LLM narrative path ───────────────────────────────────────────────────────
+#
+# Until the CrewAI removal this path could never run: get_watch_officer_agent()
+# referenced an unimported `settings`, raised NameError, and every brief fell
+# back to the deterministic one without anyone noticing.
+
+class _Client:
+    def __init__(self, output=None, exc=None):
+        self.output, self.exc, self.calls = output, exc, []
+
+    async def acall_with_tool(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.exc:
+            raise self.exc
+        return self.output
+
+
+_NARRATIVE = {
+    "headline": "KDCA ISMC link degraded; data picture incomplete.",
+    "what_changed": ["ISMC reported degraded"], "why_it_matters": ["Feed trust reduced"],
+    "recommended_human_review": ["Verify ISMC against the facility"],
+    "confidence": 0.7, "limitations": ["Single feed"],
+}
+
+
+async def test_llm_brief_uses_model_narrative_but_deterministic_posture(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    client = _Client(output=_NARRATIVE)
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: client)
+
+    context = await build_watch_officer_context()
+    brief = await wo.agenerate_watch_officer_brief(context, use_llm=True)
+
+    assert brief.llm_used is True
+    assert brief.headline == _NARRATIVE["headline"]
+    # Posture and trust are never the model's to set.
+    expected = _deterministic_brief(context, _detect_signals(context))
+    assert (brief.posture, brief.trust_assessment) == (expected.posture, expected.trust_assessment)
+    assert client.calls and client.calls[0]["tool"]["name"] == "submit_watch_officer_brief"
+
+
+async def test_llm_failure_falls_back_to_the_deterministic_brief(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(exc=RuntimeError("down")))
+
+    brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert brief.llm_used is False
+    assert any("Deterministic" in item for item in brief.limitations)
+
+
+async def test_malformed_llm_output_falls_back(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(output={"confidence": 9}))
+
+    brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert brief.llm_used is False

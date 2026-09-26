@@ -1,0 +1,63 @@
+# Alert rules for NAS FeedOps Sentinel. Each rule names the failure it
+# watches for; the annotations say what to check first.
+groups:
+  - name: nas-sentinel-integrity
+    rules:
+      - alert: CriticalAlertsUnstaged
+        # The headline invariant. The reconciler repairs this every minute, so
+        # a value that stays above zero means staging itself is failing.
+        expr: max(nas_critical_alerts_unstaged{job="nas-sentinel"}) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value }} CRITICAL alert(s) have no staged action"
+          description: "Check nas-sentinel logs for reconcile_failed / staging errors. docs/operations.md."
+
+      - alert: HumanReviewQueueStale
+        expr: max(nas_hitl_oldest_pending_age_seconds{job="nas-sentinel"}) > 3600
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "A staged action has waited over an hour for human review"
+          description: "Oldest PENDING action is {{ $value | humanizeDuration }} old."
+
+  - name: nas-sentinel-feeds
+    rules:
+      - alert: AirportFeedDegraded
+        # 1=STALE 2=DEGRADED 3=UNAVAILABLE 4=DISCONNECTED (src/metrics.py)
+        expr: max by (airport) (nas_airport_overall_status) >= 2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Feed at {{ $labels.airport }} degraded or worse for 10 minutes"
+
+      - alert: NoEventsIngested
+        expr: sum(increase(nas_events_ingested_total[30m])) == 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "No SWIM events ingested in 30 minutes"
+          description: "Is the Jumpstart kit running? Check data/raw/swim_live/log and data/failed/."
+
+  - name: nas-sentinel-ai
+    rules:
+      - alert: LLMErrorRateHigh
+        # Every AI path degrades to rules, which is safe but silent; this makes
+        # "the model is down" visible (the state the stack ran in for weeks).
+        expr: |
+          sum(rate(nas_llm_calls_total{outcome=~"error|guardrail_rejected"}[15m]))
+            / clamp_min(sum(rate(nas_llm_calls_total[15m])), 1e-9) > 0.5
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Over half of model calls are failing; AI output is falling back to rules"
+          description: "Check nas-litellm logs: provider keys, quota (429), model availability."
+
+  - name: nas-sentinel-platform
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} is not answering Prometheus"

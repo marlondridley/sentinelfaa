@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from pydantic import SecretStr
 
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+from pydantic_settings import PydanticBaseSettingsSource
 
 from src.logging_config import get_logger
 
@@ -24,6 +23,31 @@ class VaultConfigError(RuntimeError):
     """Raised when a strictly required secret could not be loaded from Vault."""
 
 
+def _authenticated_client(vault_url: str, token: str | None, approle_dir: str | None):
+    """
+    A Vault client authenticated as this service.
+
+    AppRole first: VAULT_APPROLE_DIR holds role_id and secret_id files written
+    by the infrastructure bootstrap (instraclustr/vault-unseal-and-seed.bash),
+    and the login returns a short-lived token limited to this service's policy
+    -- the application can read its own database identity and proxy key and
+    nothing else. VAULT_TOKEN is the fallback for local runs; deployed
+    services no longer receive one (they used to get the root token).
+    """
+    if approle_dir:
+        from pathlib import Path
+
+        base = Path(approle_dir)
+        client = hvac.Client(url=vault_url)
+        client.auth.approle.login(
+            role_id=(base / "role_id").read_text(encoding="utf-8").strip(),
+            secret_id=(base / "secret_id").read_text(encoding="utf-8").strip(),
+        )
+        _log.info("vault_approle_login", extra={"approle_dir": approle_dir})
+        return client
+    return hvac.Client(url=vault_url, token=token)
+
+
 class VaultSettingsSource(PydanticBaseSettingsSource):
     """Custom Pydantic source interceptor to pull secrets from HashiCorp Vault."""
 
@@ -40,13 +64,15 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
 
         vault_url = os.getenv("VAULT_ADDR")
         vault_token = os.getenv("VAULT_TOKEN")
+        approle_dir = os.getenv("VAULT_APPROLE_DIR")
 
-        if not vault_url or not vault_token:
+        if not vault_url or not (vault_token or approle_dir):
             _log.warning(
                 "vault_disabled_missing_config",
                 extra={
                     "vault_addr_set": bool(vault_url),
                     "vault_token_set": bool(vault_token),
+                    "vault_approle_dir_set": bool(approle_dir),
                 },
             )
             return {}
@@ -54,47 +80,39 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
         secrets_dict: dict[str, Any] = {}
 
         try:
-            client = hvac.Client(url=vault_url, token=vault_token)
+            client = _authenticated_client(vault_url, vault_token, approle_dir)
 
             # 1. Fetch PostgreSQL Credentials
             try:
-                pg_resp = client.secrets.kv.v2.read_secret_version(path="postgres/credentials")
+                # Which database identity this process gets. Application services
+                # read postgres/app (DML only); the migrate job reads
+                # postgres/credentials (the schema owner).
+                pg_path = os.getenv("VAULT_POSTGRES_SECRET_PATH", "postgres/credentials")
+                pg_resp = client.secrets.kv.v2.read_secret_version(path=pg_path)
                 pg_data = pg_resp.get("data", {}).get("data", {})
                 if pg_data:
                     secrets_dict["POSTGRES_USER"] = pg_data.get("username")
                     secrets_dict["POSTGRES_PASSWORD"] = pg_data.get("password")
-                    secrets_dict["POSTGRES_DB"] = pg_data.get("database")
+                    # Credentials come from Vault; which database to use is
+                    # deployment configuration. An explicit POSTGRES_DB wins, so
+                    # a job aimed at a disposable database (tests, the e2e
+                    # proof) is not silently redirected to production by the
+                    # secret's default -- which is exactly what happened before
+                    # the proof's disposable-database guard caught it.
+                    if not os.getenv("POSTGRES_DB"):
+                        secrets_dict["POSTGRES_DB"] = pg_data.get("database")
                 else:
                     _log.warning(
                         "vault_secret_empty",
-                        extra={"path": "postgres/credentials"},
+                        extra={"path": pg_path},
                     )
             except Exception as exc:
                 _log.warning(
                     "vault_secret_fetch_failed",
-                    extra={"path": "postgres/credentials", "error": str(exc)},
+                    extra={"path": os.getenv("VAULT_POSTGRES_SECRET_PATH", "postgres/credentials"), "error": str(exc)},
                 )
 
-            # 2. Fetch Global LLM Provider Keys
-            try:
-                llm_resp = client.secrets.kv.v2.read_secret_version(path="litellm")
-                llm_data = llm_resp.get("data", {}).get("data", {})
-                if llm_data:
-                    secrets_dict["DEEPSEEK_API_KEY"] = llm_data.get("DEEPSEEK_API_KEY")
-                    secrets_dict["GEMINI_API_KEY"] = llm_data.get("GEMINI_API_KEY")
-                    secrets_dict["LITELLM_MASTER_KEY"] = llm_data.get("LITELLM_MASTER_KEY")
-                else:
-                    _log.warning(
-                        "vault_secret_empty",
-                        extra={"path": "litellm"},
-                    )
-            except Exception as exc:
-                _log.warning(
-                    "vault_secret_fetch_failed",
-                    extra={"path": "litellm", "error": str(exc)},
-                )
-
-            # 3. Fetch Sentinel Application Proxy Key
+            # 2. Fetch the application's LiteLLM proxy key (a scoped virtual key)
             try:
                 sentinel_resp = client.secrets.kv.v2.read_secret_version(path="sentinel/config")
                 sentinel_data = sentinel_resp.get("data", {}).get("data", {})
@@ -133,45 +151,3 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
             )
 
         return secrets_dict
-
-
-class Settings(BaseSettings):
-    # --- General App Settings (Pulled from .env) ---
-    log_level: str
-    critic_enabled: int
-    critic_model: str
-    swim_raw_folder: str
-
-    # --- Vault Connection (Pulled from .env) ---
-    vault_addr: str
-    vault_token: str
-
-    # --- Secure Credentials (Pulled dynamically from Vault) ---
-    db_host: str
-    db_port: int
-    db_name: str
-    db_user: str
-    db_password: str
-    litellm_api_key: str  # The proxy key needed to talk to your models
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (
-            init_settings,
-            VaultSettingsSource(settings_cls), # Injects Vault secrets here
-            env_settings,                      # Grabs .env variables here
-            dotenv_settings,
-        )
-
-# Instantiate this once. The rest of your app will import this specific object.
-
-
-if __name__ == "__main__":
-    settings = Settings()

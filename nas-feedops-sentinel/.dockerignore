@@ -1,0 +1,22 @@
+# Build context allowlist-by-exclusion. The Dockerfile COPYs only src/,
+# prompts/, dashboard/ (and tests/, scripts/ for the test stage), but without
+# this file the whole directory -- including .env and .streamlit/secrets.toml
+# -- is sent to the daemon on every build and one careless `COPY . .` away
+# from being baked into an image layer.
+.env
+.env.*
+!.env.example
+.streamlit/
+.venv/
+.local/
+data/
+jumpstart/
+jumpstart-latest.zip
+diagnostics.txt
+.coverage
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+**/*.pyc
+keycloak/
+monitoring/
