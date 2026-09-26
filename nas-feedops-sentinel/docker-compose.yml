@@ -191,8 +191,6 @@ services:
       HOME: /tmp/streamlit-home
       GRAFANA_PUBLIC_URL: https://localhost:8445
       PROMETHEUS_PUBLIC_URL: https://localhost:8447
-      # The authority that signed Keycloak's certificate (src/devcert.py).
-      KEYCLOAK_CA_FILE: /run/tls/edge-ca.crt
     volumes:
       - ./data:/app/data
       - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro

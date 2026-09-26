@@ -15,8 +15,9 @@ Identity has two tiers, and the difference is recorded rather than
 smoothed over:
 
   * Keycloak configured (.streamlit/secrets.toml has [auth.keycloak]) --
-    the operator must sign in on the dashboard's own login screen before
-    any page renders. See lib/login.py and src/keycloak_auth.py.
+    the operator signs in on the realm's own page (OIDC) before any page
+    renders, and Streamlit keeps the session. See lib/login.py and
+    src/keycloak_auth.py.
   * Keycloak not configured -- the dashboard falls back to a
     self-declared callsign typed into the sidebar, and every action that
     operator takes is stamped `[self-declared]` in action_audit_log.
@@ -27,6 +28,7 @@ though it had.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import streamlit as st
@@ -51,18 +53,12 @@ PROMETHEUS_URL = os.getenv("PROMETHEUS_PUBLIC_URL", "http://localhost:9090")
 
 def require_oidc_auth() -> None:
     """
-    Backwards-compatible shim.
-
-    The gate now lives in bootstrap_page() so that the resolved Principal
-    can be returned to the caller in one step. Kept as a name because
-    external notes and the secrets.toml.example template still refer to
-    it; calling it on its own remains a valid way to gate a page.
+    The sign-in gate. With Keycloak configured, a signed-out visitor gets the
+    sign-in screen and nothing else: render_login() ends in st.stop(), so no
+    page content -- and no sidebar identity widgets -- render below it.
     """
-    settings = _login.keycloak_settings()
-    if settings is None:
-        return
-    if _login.current_principal() is None:
-        _login.render_login(settings)
+    if _login.oidc_configured() and _login.current_principal() is None:
+        _login.render_login()
 
 
 def _self_declared_identity() -> Principal:
@@ -142,14 +138,12 @@ def render_operator_identity_sidebar() -> Principal:
     decision, regardless of which page the operator happened to be on when
     they made it.
     """
-    settings = _login.keycloak_settings()
-
     with st.sidebar:
         st.markdown("### Watch Officer Session")
 
         signed_in = _login.current_principal()
-        if settings is not None and signed_in is not None:
-            _login.render_session_sidebar(settings)
+        if signed_in is not None:
+            _login.render_session_sidebar(signed_in)
             # The verified identity is fixed by the token; only the station
             # the operator is sitting at can change mid-shift.
             role = st.selectbox(
@@ -162,12 +156,7 @@ def render_operator_identity_sidebar() -> Principal:
                 ),
             )
             st.session_state["operator_role"] = role
-            principal = Principal(
-                principal_id=signed_in.principal_id,
-                role=role,
-                source=signed_in.source,
-                roles=signed_in.roles,
-            )
+            principal = dataclasses.replace(signed_in, role=role)
             # Authority comes from the token's realm roles; the station above
             # is only a label.
             st.caption(
@@ -206,13 +195,7 @@ def bootstrap_page(page_title: str, page_icon: str = "✈") -> Principal:
     # (hidden sidebar, narrower canvas) and wins by source order.
     theme.inject_theme()
 
-    settings = _login.keycloak_settings()
-    if settings is not None and _login.current_principal() is None:
-        # render_login() ends in st.stop(), so nothing below this line runs
-        # for a signed-out user -- including the sidebar, which would
-        # otherwise leak the operator identity widgets onto the login screen.
-        _login.render_login(settings)
-
+    require_oidc_auth()
     _provenance_banner()
     return render_operator_identity_sidebar()
 

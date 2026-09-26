@@ -49,6 +49,7 @@ DECIDED = ("APPROVED", "REJECTED", "OVERRIDDEN")
 AGENT_STEPS = ("feed_diagnostician", "correlation_analyst", "red_team_critic", "watch_officer")
 PARALLEL = ("feed_diagnostician", "correlation_analyst")
 RESPONDED = ("ok", "repaired", "incomplete", "invalid_output")
+# "[keycloak-password]": decisions recorded while the dashboard used the password grant (to 2026-09-26).
 VERIFIED_ACTOR_SUFFIXES = ("[oidc]", "[keycloak-password]", "[api_key]")
 _VERIFY_STEP_REJECTION = "verification step without valid evidence"
 

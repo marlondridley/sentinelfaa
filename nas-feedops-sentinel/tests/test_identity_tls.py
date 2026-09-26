@@ -2,11 +2,11 @@
 The identity service is HTTPS only.
 
 Keycloak terminates TLS with a certificate from the local authority
-(src/devcert.py); the dashboard verifies it against that authority and
-refuses any identity URL that is not HTTPS, because the in-app sign-in sends
-the operator's password. These tests cover the certificate, a real TLS
-handshake on loopback verified the way the client verifies Keycloak, the
-refusals, and the realm file fitting Keycloak's columns (it did not, so a
+(src/devcert.py); the dashboard's OIDC client verifies it against that
+authority, and identity URLs must be HTTPS because the realm's sign-in
+carries the operator's password. These tests cover the certificate, a real
+TLS handshake on loopback verified the way the OIDC client verifies
+Keycloak, and the realm file fitting Keycloak's columns (it did not, so a
 fresh Keycloak could not import it).
 """
 from __future__ import annotations
@@ -24,7 +24,6 @@ import yaml
 from cryptography import x509
 
 from src import devcert
-from src import keycloak_auth as ka
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -131,47 +130,23 @@ def keycloak_like_server(tmp_path: Path):
     server.server_close()
 
 
-def test_the_client_verifies_keycloak_against_the_local_authority(keycloak_like_server):
+# Streamlit's OIDC client is Authlib over httpx, and secrets.toml's
+# [auth.keycloak.client_kwargs] verify reaches httpx unchanged: this is how the
+# dashboard's discovery, token and signing-key requests trust Keycloak.
+
+def test_the_oidc_client_verifies_keycloak_against_the_local_authority(keycloak_like_server):
     url, ca_file = keycloak_like_server
-    assert ka._get_json(url, 5.0, str(ca_file)) == {"issuer": "https://localhost/realms/x"}
+    assert httpx.get(url, verify=str(ca_file), timeout=5.0).json() == {"issuer": "https://localhost/realms/x"}
 
 
-def test_the_client_refuses_keycloak_under_any_other_authority(keycloak_like_server, tmp_path: Path):
+def test_the_oidc_client_refuses_keycloak_under_any_other_authority(keycloak_like_server, tmp_path: Path):
     url, _ = keycloak_like_server
     other = tmp_path / "other"
     devcert.ensure_certificate(other)
     with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
-        ka._get_json(url, 5.0, str(other / devcert.CA_CERT))
+        httpx.get(url, verify=str(other / devcert.CA_CERT), timeout=5.0)
     with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
-        ka._get_json(url, 5.0)                                  # system trust store: not the local authority
-
-
-def test_a_plain_http_identity_url_is_refused_before_anything_is_sent():
-    settings = ka.KeycloakSettings(client_id="c", client_secret="s",
-                                   metadata_url="http://keycloak:8080/realms/x/.well-known/openid-configuration")
-    outcome = ka.password_login(settings, "sentinel", "a-password")
-    assert (outcome.ok, outcome.error_code) == (False, "identity_endpoint_not_https")
-    assert "https://keycloak:8443" in outcome.remediation
-
-
-def test_a_discovery_document_advertising_an_http_token_endpoint_is_refused(monkeypatch):
-    monkeypatch.setattr(ka, "_get_json", lambda url, timeout_s, ca_file=None: {
-        "issuer": "https://localhost:8081/realms/x", "jwks_uri": "https://keycloak:8443/certs",
-        "token_endpoint": "http://keycloak:8080/realms/x/protocol/openid-connect/token",
-    })
-    settings = ka.KeycloakSettings(client_id="c", client_secret="s",
-                                   metadata_url="https://keycloak:8443/realms/x/.well-known/openid-configuration")
-    with pytest.raises(ka.InsecureIdentityEndpoint, match="token_endpoint"):
-        ka.fetch_metadata(settings)
-
-
-def test_sign_out_goes_to_the_backchannel_host_not_the_browser_facing_one():
-    """Keycloak advertises logout on https://localhost:8081, which is not Keycloak inside the dashboard container."""
-    assert ka.backchannel_url(
-        "https://localhost:8081/realms/nas-sentinel/protocol/openid-connect/logout",
-        "https://keycloak:8443/realms/nas-sentinel/protocol/openid-connect/token",
-    ) == "https://keycloak:8443/realms/nas-sentinel/protocol/openid-connect/logout"
-    assert ka.backchannel_url(None, "https://keycloak:8443/t") is None
+        httpx.get(url, timeout=5.0)                             # system trust store: not the local authority
 
 
 def test_the_realm_file_fits_keycloaks_columns():

@@ -1,173 +1,130 @@
 """
-Tests for the dashboard's in-app sign-in against Keycloak.
+What Sentinel decides once Keycloak has signed an operator in, and the
+configuration the OIDC flow depends on agreeing wherever it is written.
 
-These cover the parts of src/keycloak_auth.py that decide whether an
-operator gets in, and what the audit trail then says about them. They do
-not touch the network: every test here exercises either pure claim
-validation or a guard that must refuse before a request is ever made.
-
-The claim tests matter more than they look. The dashboard obtains its
-token over a connection it opened itself, which makes it tempting to skip
-verification entirely -- and skipping it would mean anything answering on
-Keycloak's port could mint an operator identity that lands in action_audit_log
-next to a real one. These assertions are what pin an accepted token to
-this realm and this client.
+Streamlit and Authlib run the protocol and validate the ID token
+(src/keycloak_auth.py). These pin what stays Sentinel's: which realm roles
+count, how long a sign-in lasts, that identity URLs are HTTPS -- and that the
+Keycloak client, secrets.toml.example, the reconcile script and
+docker-compose.yml agree on the redirect, origin, PKCE, no password grant and
+the certificate authority. They once disagreed: the client and the secrets
+still named http://localhost:8501 after the dashboard moved behind the HTTPS
+edge proxy, and nothing noticed.
 """
 from __future__ import annotations
 
-import dataclasses
-import time
+import json
+import re
+import tomllib
+from pathlib import Path
+
+import pytest
+import yaml
 
 from src import keycloak_auth as ka
-from src.auth import Principal, PrincipalSource, format_actor
+from src.auth import PrincipalSource, format_actor
 
-ISSUER = "https://localhost:8081/realms/nas-sentinel"
-CLIENT_ID = "nas-feedops-sentinel"
+APP = Path(__file__).resolve().parent.parent
+REALM = json.loads((APP / "keycloak" / "realm-nas-sentinel.json").read_text(encoding="utf-8"))
+CLIENT = next(c for c in REALM["clients"] if c["clientId"] == "nas-feedops-sentinel")
+AUTH = tomllib.loads((APP / ".streamlit" / "secrets.toml.example").read_text(encoding="utf-8"))["auth"]
+DASHBOARD = AUTH["redirect_uri"].removesuffix("/oauth2callback")
+SIGNED_IN_AT = 1_000_000
 
 
 def _claims(**overrides) -> dict:
-    base = {
-        "iss": ISSUER,
-        "aud": CLIENT_ID,
-        "azp": CLIENT_ID,
-        "exp": time.time() + 300,
-        "preferred_username": "sentinel",
-    }
+    base = {"sub": "3f2a", "preferred_username": "jsmith", "email": "jsmith@example.test",
+            "auth_time": SIGNED_IN_AT,
+            "realm_access": {"roles": ["watch_officer", "offline_access", "uma_authorization"]}}
     base.update(overrides)
     return base
 
 
-# ── Claim validation ──────────────────────────────────────────────────────────
+# ── The operator ──────────────────────────────────────────────────────────────
 
-def test_well_formed_token_is_accepted():
-    assert ka._check_claims(_claims(), issuer=ISSUER, client_id=CLIENT_ID) == ""
-
-
-def test_token_from_a_different_realm_is_rejected():
-    """A token signed by the same Keycloak but issued by another realm (master,
-    say) must not authenticate an operator here."""
-    other = _claims(iss="https://localhost:8081/realms/master")
-    assert "issuer" in ka._check_claims(other, issuer=ISSUER, client_id=CLIENT_ID)
+def test_a_signed_in_operator_is_a_verified_oidc_principal_with_only_this_applications_roles():
+    principal = ka.principal_from_claims(_claims(), role="Watch Officer")
+    assert (principal.principal_id, principal.source, principal.verified) == ("jsmith", PrincipalSource.OIDC, True)
+    assert principal.roles == frozenset({"watch_officer"}), "realm roles this application does not define are dropped"
+    assert format_actor(principal).endswith("[oidc]")
 
 
-def test_token_issued_for_a_different_client_is_rejected():
-    other = _claims(aud="account", azp="some-other-client")
-    assert "client" in ka._check_claims(other, issuer=ISSUER, client_id=CLIENT_ID)
+@pytest.mark.parametrize("claims, expected", [
+    (_claims(), "jsmith"),
+    (_claims(preferred_username=None), "jsmith@example.test"),
+    (_claims(preferred_username=None, email=None), "3f2a"),
+])
+def test_the_operator_is_named_by_username_then_email_then_subject(claims, expected):
+    assert ka.principal_from_claims(claims, role="Watch Officer").principal_id == expected
 
 
-def test_azp_alone_satisfies_the_audience_check():
-    """Keycloak access tokens routinely carry aud=["account"]; azp is what
-    actually identifies the requesting client, so a token that names this
-    client only in azp is legitimate and must not be refused."""
-    claims = _claims(aud=["account"])
-    assert ka._check_claims(claims, issuer=ISSUER, client_id=CLIENT_ID) == ""
+def test_claims_without_any_identifier_are_refused():
+    with pytest.raises(ValueError, match="identifier"):
+        ka.principal_from_claims(_claims(preferred_username=None, email=None, sub=None), role="Watch Officer")
 
 
-def test_expired_token_is_rejected():
-    assert "expired" in ka._check_claims(
-        _claims(exp=time.time() - 3600), issuer=ISSUER, client_id=CLIENT_ID
-    )
+def test_a_malformed_realm_access_grants_no_roles():
+    assert ka.roles_from_claims({"realm_access": ["watch_officer"]}) == frozenset()
 
 
-def test_expiry_inside_the_clock_skew_tolerance_is_accepted():
-    """The dashboard container and Keycloak keep their own clocks; a token that
-    expired a heartbeat ago is drift, not an attack."""
-    assert ka._check_claims(
-        _claims(exp=time.time() - 10), issuer=ISSUER, client_id=CLIENT_ID
-    ) == ""
+# ── How long a sign-in lasts ──────────────────────────────────────────────────
+
+def test_a_sign_in_lasts_the_realms_maximum_session_from_authentication():
+    ends = SIGNED_IN_AT + ka.SESSION_MAX_SECONDS
+    assert ka.session_expires_at(_claims()) == ends
+    assert not ka.session_expired(_claims(), now=ends - 1)
+    assert ka.session_expired(_claims(), now=ends)
 
 
-def test_token_without_an_expiry_is_rejected_not_treated_as_eternal():
-    claims = _claims()
-    del claims["exp"]
-    assert ka._check_claims(claims, issuer=ISSUER, client_id=CLIENT_ID) != ""
+def test_without_auth_time_the_token_issue_time_starts_the_session():
+    assert ka.session_expires_at(_claims(auth_time=None, iat=SIGNED_IN_AT)) == SIGNED_IN_AT + ka.SESSION_MAX_SECONDS
 
 
-def test_not_yet_valid_token_is_rejected():
-    result = ka._check_claims(
-        _claims(nbf=time.time() + 3600), issuer=ISSUER, client_id=CLIENT_ID
-    )
-    assert "not yet valid" in result
+@pytest.mark.parametrize("start", [None, "not-a-time"])
+def test_a_sign_in_whose_start_is_unknown_has_expired(start):
+    assert ka.session_expired(_claims(auth_time=start))
 
 
-# ── Error guidance ────────────────────────────────────────────────────────────
-# Every branch below corresponds to a failure that actually happened while
-# standing this deployment up. "Authentication error" with no further detail
-# is what the redirect flow produced for all of them.
-
-def test_bad_password_explains_the_lockout_possibility():
-    _code, message, remediation = ka._classify("invalid_grant", "Invalid user credentials")
-    assert message == "Incorrect username or password."
-    assert "brute-force" in remediation
+def test_the_session_bound_is_the_realms_maximum_sso_session():
+    """Streamlit's identity cookie lasts 30 days; a sign-in here lasts what the realm allows."""
+    assert ka.SESSION_MAX_SECONDS == REALM["ssoSessionMaxLifespan"]
 
 
-def test_incomplete_account_is_diagnosed_and_points_at_the_repair_script():
-    _code, message, remediation = ka._classify("invalid_grant", "Account is not fully set up")
-    assert "incomplete" in message.lower()
-    assert "Setup-Keycloak.ps1" in remediation
+def test_an_http_identity_url_is_refused():
+    with pytest.raises(ka.InsecureIdentityEndpoint, match="server_metadata_url"):
+        ka.require_https("http://keycloak:8080/realms/x/.well-known/openid-configuration", "server_metadata_url")
+    assert ka.require_https(DASHBOARD, "redirect_uri") == DASHBOARD
 
 
-def test_client_without_direct_grants_names_the_console_setting():
-    _code, message, remediation = ka._classify(
-        "unauthorized_client", "Client not allowed for direct access grants"
-    )
-    assert "in-app sign-in" in message
-    assert "Direct access grants" in remediation
+# ── One configuration, written in four places ─────────────────────────────────
+
+def test_the_keycloak_client_signs_in_only_by_the_code_flow_with_pkce():
+    assert CLIENT["standardFlowEnabled"] and not CLIENT["publicClient"]
+    assert not CLIENT["directAccessGrantsEnabled"], "the password must never pass through the dashboard"
+    assert not CLIENT["implicitFlowEnabled"]
+    assert CLIENT["attributes"]["pkce.code.challenge.method"] == "S256"
 
 
-def test_stale_client_secret_is_diagnosed():
-    _code, message, _fix = ka._classify("invalid_client", "")
-    assert "client credentials" in message.lower()
+def test_the_client_redirect_origin_and_logout_are_the_dashboard_the_browser_loads():
+    assert DASHBOARD == "https://localhost:8443", "the edge proxy's dashboard port (docker/edge/nginx.conf)"
+    assert CLIENT["redirectUris"] == [AUTH["redirect_uri"]]
+    assert CLIENT["webOrigins"] == [DASHBOARD]
+    # After the realm's logout, Streamlit has Keycloak return the browser to redirect_uri.
+    assert CLIENT["attributes"]["post.logout.redirect.uris"] == AUTH["redirect_uri"]
 
 
-def test_unrecognised_error_still_produces_actionable_text():
-    _code, message, remediation = ka._classify("", "")
-    assert message and remediation
+def test_the_reconcile_script_brings_a_live_realm_to_the_same_client():
+    script = (APP / "scripts" / "keycloak-rbac.sh").read_text(encoding="utf-8")
+    assert re.search(r'DASHBOARD_URL="\$\{DASHBOARD_URL:-([^}]+)\}"', script).group(1) == DASHBOARD
+    for setting in ("standardFlowEnabled=true", "directAccessGrantsEnabled=false",
+                    '"pkce.code.challenge.method"=S256'):
+        assert setting in script
 
 
-# ── Guards that must refuse before any network call ───────────────────────────
-
-def _unreachable_settings() -> ka.KeycloakSettings:
-    # Deliberately unroutable: if either test below ever reaches the network,
-    # it fails slowly instead of passing quietly.
-    return ka.KeycloakSettings(
-        client_id=CLIENT_ID,
-        client_secret="not-used",
-        metadata_url="https://127.0.0.1:1/realms/x/.well-known/openid-configuration",
-    )
-
-
-def test_empty_username_is_refused_without_contacting_keycloak():
-    outcome = ka.password_login(_unreachable_settings(), "", "somepassword")
-    assert outcome.ok is False
-    assert outcome.error_code == "missing_credentials"
-
-
-def test_empty_password_is_refused_without_contacting_keycloak():
-    outcome = ka.password_login(_unreachable_settings(), "sentinel", "")
-    assert outcome.ok is False
-    assert outcome.error_code == "missing_credentials"
-
-
-def test_auth_outcome_has_no_field_that_could_carry_a_password_back():
-    """Structural guarantee, not a behavioural one: there is nowhere for the
-    credential to be returned to the UI even by accident."""
-    names = {f.name for f in dataclasses.fields(ka.AuthOutcome)}
-    assert "password" not in names
-    assert not any("password" in n for n in names)
-
-
-# ── What the audit trail says afterwards ──────────────────────────────────────
-
-def test_password_grant_is_verified_but_distinguishable_from_the_redirect_flow():
-    pw = Principal("sentinel", "Watch Officer", PrincipalSource.PASSWORD_GRANT)
-    oidc = Principal("sentinel", "Watch Officer", PrincipalSource.OIDC)
-    self_declared = Principal("sentinel", "Watch Officer", PrincipalSource.SELF_DECLARED)
-
-    assert pw.verified is True
-    assert self_declared.verified is False
-    # The whole point of the separate enum value: an auditor can tell which
-    # flow authenticated the operator who approved an escalation.
-    assert format_actor(pw) != format_actor(oidc)
-    assert format_actor(pw).endswith("[keycloak-password]")
-    assert format_actor(oidc).endswith("[oidc]")
+def test_keycloak_is_reached_over_https_and_verified_against_the_mounted_authority():
+    ka.require_https(AUTH["keycloak"]["server_metadata_url"], "server_metadata_url")
+    verify = AUTH["keycloak"]["client_kwargs"]["verify"]
+    assert "ca_file" not in AUTH["keycloak"], "one CA setting: the one Streamlit's client reads"
+    compose = yaml.safe_load((APP / "docker-compose.yml").read_text(encoding="utf-8"))
+    targets = [v.split(":")[1] for v in compose["services"]["dashboard"]["volumes"] if isinstance(v, str)]
+    assert str(Path(verify).parent.as_posix()) in targets, (verify, targets)
