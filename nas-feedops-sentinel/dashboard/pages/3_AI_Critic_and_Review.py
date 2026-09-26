@@ -8,13 +8,20 @@ that into an attributed approve / monitor / override / reject workflow.
 The one invariant on this page: nothing an AI produces executes anything.
 The Critic's verdict is advisory, the staged action sits PENDING until a
 human decides, and every transition is written to `action_audit_log` with
-the actor string resolved by bootstrap_page(). This rewrite changed the
-presentation of that workflow and nothing about its semantics -- the gate
-calls, their arguments, and their ordering are unchanged.
+the actor string resolved by bootstrap_page().
+
+The queue is a triage table, one row per review (one review per condition:
+src/execution_gate.py), filtered by facility, AI suggestion, alert type and
+confidence. A review's full detail -- investigation, evaluation, ticket, the
+readings it covers -- opens in a drawer, where it is approved, overridden,
+monitored or rejected one at a time. Reject and Continue monitoring can also
+be applied to selected rows at once; each review still gets its own audit
+row, decided by the same gate call.
 """
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -147,6 +154,7 @@ else:
         "TRANSIENT": "neutral",
         "UNKNOWN": "neutral",
     }
+    _latest_verdicts = st.expander(f"Latest Critic verdicts ({min(10, _cri_total)})", expanded=False)
     for cr in _critic_rows_all[:10]:
         alert_row = _alert_id_to_row.get(cr.get("alert_id"), {})
         conf = cr.get("confidence")
@@ -159,7 +167,7 @@ else:
         service = alert_row.get("service_name", "—")
         _ptone = _PATTERN_TONE.get(pattern, "neutral")
 
-        with st.container(border=True):
+        with _latest_verdicts, st.container(border=True):
             st.markdown(
                 '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
                 '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
@@ -195,13 +203,149 @@ else:
 
 # ── Human review queue (HITL execution gate) ──────────────────────────────────
 _pending_actions = run(get_pending_staged_actions())
+_by_id = {a.action_id: a for a in _pending_actions}
 
 theme.section(
     "Human review queue",
-    "Staged actions that cannot execute until a named operator decides.",
+    "One review per condition; nothing executes until a named operator decides.",
     tone="bad" if _pending_actions else "ok",
-    right=f"{len(_pending_actions)} pending",
+    right=f"{len(_pending_actions)} review(s) · {sum(a.occurrences for a in _pending_actions):,} reading(s)",
 )
+
+_alert_by_id = {a.get("alert_id"): a for a in alerts_raw}
+# Newest verdict per alert: the storage call returns newest first.
+_verdict = {}
+for _v in run(storage.get_critic_verdicts_for_alerts([a.alert_id for a in _pending_actions if a.alert_id])):
+    _verdict.setdefault(_v["alert_id"], _v)
+_tickets = {a.action_id: run(get_ticket_by_action_id(a.action_id)) for a in _pending_actions}
+
+
+def _suggests(action) -> str:
+    v = _verdict.get(action.alert_id) or {}
+    if v.get("confidence") is None:
+        return "No AI review"
+    return "Escalate" if v.get("escalate") else "Don't escalate"
+
+
+def _waited(since: datetime | None) -> str:
+    if since is None:
+        return "—"
+    minutes = int((datetime.now(timezone.utc) - since).total_seconds() // 60)
+    return f"{minutes // 1440} d {minutes % 1440 // 60} h" if minutes >= 1440 else (
+        f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min")
+
+
+def _review_detail(action) -> None:
+    """Everything behind one review: summary, readings, investigation, evaluation, ticket, decision."""
+    ticket = _tickets.get(action.action_id)
+    verdict = _verdict.get(action.alert_id) or {}
+    origin = (_alert_by_id.get(action.alert_id) or {}).get("data_origin", "unknown")
+    conf = verdict.get("confidence")
+    st.markdown(
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">'
+        + theme.status_chip(ticket.posture if ticket else "ACTION")
+        + '<span style="font-size:15px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+        + theme._esc(ticket.title if ticket else f"{action.alert_type} at {action.airport_code or '—'}") + "</span>"
+        + ('<span class="chip" style="color:' + theme.ORANGE5 + ";border-color:" + theme.TONES["warn"][1]
+           + ';padding:2px 8px;font-size:10.5px;">' + theme._esc(origin.upper()) + " DATA</span>"
+           if origin != "live" else "")
+        + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:' + theme.GRAY1 + ';">AI suggests '
+        + theme._esc(_suggests(action).lower()) + (f" · {conf:.0%}" if conf is not None else "") + "</span></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"**AI summary:** {verdict.get('bluf') or '_No AI summary yet._'}")
+    covered = run(storage.get_covered_alert_ids(action.action_id))
+    first, last = action.first_seen_at or action.created_at, action.last_seen_at or action.created_at
+    st.markdown(
+        f"**{action.occurrences:,} reading(s)** of this condition, {format_ts(first)[:16].replace('T', ' ')}"
+        f" to {format_ts(last)[:16].replace('T', ' ')} UTC."
+    )
+    known = [_alert_by_id[a] for a in covered if a in _alert_by_id]
+    if known:
+        with st.expander(f"The readings ({len(covered):,})"):
+            st.dataframe(pd.DataFrame([{
+                "Triggered (UTC)": format_ts(r.get("triggered_at"))[:19].replace("T", " "),
+                "Description": r.get("description", ""),
+            } for r in known[-200:]]), hide_index=True, use_container_width=True, height=220)
+
+    render_investigation(load_investigation(action.action_id))
+    agent_eval.render_evaluation(agent_eval.load_for_action(action.action_id))
+    if ticket:
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            theme.evidence_list("What changed", ticket.what_changed or [], limit=4)
+            theme.evidence_list("Recommended review", ticket.recommended_review or [], limit=4)
+        with pc2:
+            theme.evidence_list("Why it matters", ticket.why_it_matters or [], limit=4)
+            theme.evidence_list("Evidence", ticket.evidence or [], limit=4)
+        if ticket.critic_rationale:
+            with st.expander("AI Critic rationale"):
+                st.markdown(ticket.critic_rationale)
+
+    st.markdown(
+        f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.BLUE5};'
+        f'background:{theme.TONES["info"][2]};border-radius:3px;padding:7px 10px;margin:10px 0;'
+        f'font-size:11.5px;color:{theme.GRAY3};">This decision will be signed and attributed in the '
+        f'audit log as <b class="mono" style="color:{theme.BLUE5};">{theme._esc(format_actor(_principal))}</b></div>',
+        unsafe_allow_html=True,
+    )
+    note = st.text_input("Decision note (recorded in the audit trail)", key=f"note_{action.action_id}",
+                         placeholder="e.g. verified against STARS console; contacting KDCA tower")
+    _sev_options = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    with st.expander("Edit & override before sign-off"):
+        edited_recommendation = st.text_area(
+            "Recommended action (editable)", value=action.recommended_action, key=f"override_text_{action.action_id}",
+            help="The AI's original recommendation is preserved unchanged in the audit trail; "
+                 "this is what you're replacing it with.")
+        edited_severity = st.selectbox(
+            "Severity (editable)", _sev_options, key=f"override_sev_{action.action_id}",
+            index=_sev_options.index(action.severity if action.severity in _sev_options else "CRITICAL"))
+        if st.button("Override & sign off", key=f"override_{action.action_id}", use_container_width=True,
+                     disabled=not _allowed(Decision.OVERRIDE), help=_why_not(Decision.OVERRIDE)):
+            _decide(action.action_id, Decision.OVERRIDE, note,
+                    overridden_recommendation=edited_recommendation, overridden_severity=edited_severity)
+    b1, b2, b3, _sp = st.columns([1.5, 1.5, 1.2, 2])
+    if b1.button("Approve escalation", key=f"approve_{action.action_id}", type="primary", use_container_width=True,
+                 disabled=not _allowed(Decision.APPROVE), help=_why_not(Decision.APPROVE)):
+        _decide(action.action_id, Decision.APPROVE, note)
+    if b2.button("Continue monitoring", key=f"monitor_{action.action_id}", use_container_width=True,
+                 disabled=not _allowed(Decision.MONITOR),
+                 help=_why_not(Decision.MONITOR) or "Keep the staged action PENDING; mark the ticket MONITORING"):
+        _decide(action.action_id, Decision.MONITOR, note)
+    if b3.button("Reject", key=f"reject_{action.action_id}", use_container_width=True,
+                 disabled=not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
+        _decide(action.action_id, Decision.REJECT, note)
+
+
+@st.dialog("Review", width="large")
+def _open_review(action_id: str) -> None:
+    _review_detail(_by_id[action_id])
+
+
+@st.dialog("Confirm decision")
+def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
+    chosen = [_by_id[a] for a in action_ids if a in _by_id]
+    verb = {Decision.REJECT: "Reject", Decision.MONITOR: "Continue monitoring"}[decision]
+    st.markdown(f"**{verb}** {len(chosen)} review(s), covering {sum(a.occurrences for a in chosen):,} reading(s):")
+    st.markdown("\n".join(f"- {a.airport_code or '—'} · {a.alert_type} · {a.occurrences:,} reading(s)"
+                          for a in chosen[:12]) + ("\n- …" if len(chosen) > 12 else ""))
+    note = st.text_input("Decision note (recorded on each review's audit row)", key="bulk_note",
+                         placeholder="e.g. RVR 0 ft = sensor not reporting (fixed 2026-09-26)")
+    st.caption(f"Signed as {format_actor(_principal)}; one audit entry per review.")
+    if st.button(f"{verb} {len(chosen)} review(s)", type="primary", use_container_width=True,
+                 disabled=not note.strip()):
+        refused = []
+        for a in chosen:
+            try:
+                run(decide_staged_action(a.action_id, decision, _principal, note.strip()))
+            except AuthorizationError as exc:
+                refused.append(str(exc))
+        if refused:
+            st.error(refused[0])
+            return
+        st.toast(f"{verb.upper()} recorded for {len(chosen)} review(s) by {format_actor(_principal)}")
+        st.rerun()
+
 
 if not _pending_actions:
     st.markdown(
@@ -214,150 +358,63 @@ if not _pending_actions:
         unsafe_allow_html=True,
     )
 else:
-    _alert_origin = {a.get("alert_id"): a.get("data_origin", "unknown") for a in alerts_raw}
-    for _action in _pending_actions:
-        _ticket = run(get_ticket_by_action_id(_action.action_id))
-        _origin = _alert_origin.get(_action.alert_id, "unknown")
-        with st.container(border=True):
-            title = (
-                _ticket.title if _ticket
-                else f"{_action.alert_type} at {_action.airport_code or '—'}"
-            )
-            conf_str = (
-                f"{_action.critic_confidence:.0%}"
-                if _action.critic_confidence is not None else "—"
-            )
-            posture = _ticket.posture if _ticket else "ACTION"
+    _rows = pd.DataFrame([{
+        "action_id": a.action_id,
+        "Last reading (UTC)": a.last_seen_at or a.created_at,
+        "Facility": a.airport_code or "—",
+        "Alert": (a.alert_type or "—").removeprefix("ALERT_"),
+        "Readings": a.occurrences,
+        "AI suggests": _suggests(a),
+        "Confidence": round(100 * c) if (c := (_verdict.get(a.alert_id) or {}).get("confidence")) is not None else None,
+        "AI summary": (_verdict.get(a.alert_id) or {}).get("bluf") or "No AI summary yet",
+        "Waiting": _waited(a.first_seen_at or a.created_at),
+        "Ticket": _tickets[a.action_id].status if _tickets.get(a.action_id) else "—",
+    } for a in _pending_actions]).sort_values("Last reading (UTC)", ascending=False)
 
-            st.markdown(
-                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;'
-                'margin-bottom:8px;">'
-                + theme.status_chip(posture)
-                + '<span style="font-size:15px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
-                + theme._esc(title) + "</span>"
-                # Provenance: anything not from the live feed is labelled on its face.
-                + (
-                    '<span class="chip" style="color:' + theme.ORANGE5
-                    + ";border-color:" + theme.TONES["warn"][1]
-                    + ';padding:2px 8px;font-size:10.5px;">'
-                    + theme._esc(_origin.upper()) + " DATA</span>"
-                    if _origin != "live" else ""
-                )
-                + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
-                + theme.GRAY1 + ';">AI confidence ' + theme._esc(conf_str) + "</span>"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+    def _counted(column: str):
+        return lambda value: f"{value} ({int((_rows[column] == value).sum())})"
 
-            if _ticket and _ticket.summary:
-                st.markdown(f"**Summary:** {_ticket.summary}")
-            else:
-                st.markdown(f"**Recommended action:** {_action.recommended_action}")
+    f1, f2, f3, f4 = st.columns([1.1, 1.6, 1.5, 0.9])
+    facilities = f1.pills("Facility", sorted(_rows["Facility"].unique()), selection_mode="multi",
+                          format_func=_counted("Facility"), key="q_facility")
+    suggests = f2.pills("AI suggests", [s for s in ("Escalate", "Don't escalate", "No AI review")
+                                        if s in set(_rows["AI suggests"])],
+                        selection_mode="multi", format_func=_counted("AI suggests"), key="q_suggests")
+    alerts = f3.pills("Alert", sorted(_rows["Alert"].unique()), selection_mode="multi",
+                      format_func=_counted("Alert"), key="q_alert")
+    confident = f4.toggle("AI ≥ 80%", key="q_confident", help="Only reviews the AI rated at 80% confidence or more")
+    _keep = pd.Series(True, index=_rows.index)
+    for column, chosen in (("Facility", facilities), ("AI suggests", suggests), ("Alert", alerts)):
+        if chosen:
+            _keep &= _rows[column].isin(chosen)
+    if confident:
+        _keep &= _rows["Confidence"].fillna(0) >= 80
+    _view = _rows[_keep].reset_index(drop=True)
 
-            render_investigation(load_investigation(_action.action_id))
-            # Layer 2: how this investigation was evaluated, and its gates.
-            agent_eval.render_evaluation(agent_eval.load_for_action(_action.action_id))
+    _picked = st.dataframe(
+        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True, key="q_table",
+        on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
+        column_config={
+            "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
+            "Readings": st.column_config.NumberColumn(format="%d"),
+            "Confidence": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d%%"),
+            "AI summary": st.column_config.TextColumn(width="large"),
+        },
+    )
+    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows]
 
-            if _ticket:
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    theme.evidence_list("What changed", _ticket.what_changed or [], limit=4)
-                    theme.evidence_list("Recommended review", _ticket.recommended_review or [], limit=4)
-                with pc2:
-                    theme.evidence_list("Why it matters", _ticket.why_it_matters or [], limit=4)
-                    theme.evidence_list("Evidence", _ticket.evidence or [], limit=4)
-
-                if _ticket.critic_rationale:
-                    with st.expander("AI Critic rationale"):
-                        st.markdown(_ticket.critic_rationale)
-
-                st.markdown(
-                    f'<div class="mono" style="font-size:10.5px;color:{theme.GRAY1};'
-                    f'margin-top:8px;">'
-                    f"ticket {theme._esc(_ticket.ticket_id[:18])} · "
-                    f"action {theme._esc(_action.action_id[:18])} · "
-                    f"brief {theme._esc((_ticket.brief_id or '')[:18])} · "
-                    f"status {theme._esc(_ticket.status)} · "
-                    f"drafted {_ticket.generated_at.strftime('%H:%M:%S')} UTC</div>",
-                    unsafe_allow_html=True,
-                )
-
-            # Set in the sidebar identity block (bootstrap_page(), which every page
-            # calls), so every decision recorded here carries the same actor string
-            # -- including whether the identity was Keycloak-verified or
-            # self-declared -- as the sidebar banner the operator actually saw when
-            # they started this session, regardless of which page they were on.
-            _active_actor = format_actor(_principal)
-            st.markdown(
-                f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid '
-                f'{theme.BLUE5};background:{theme.TONES["info"][2]};border-radius:3px;'
-                f'padding:7px 10px;margin:10px 0;font-size:11.5px;color:{theme.GRAY3};">'
-                f"This decision will be signed and attributed in the audit log as "
-                f'<b class="mono" style="color:{theme.BLUE5};">{theme._esc(_active_actor)}</b>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
-
-            note_key = f"note_{_action.action_id}"
-            ap_key = f"approve_{_action.action_id}"
-            mo_key = f"monitor_{_action.action_id}"
-            rj_key = f"reject_{_action.action_id}"
-
-            note = st.text_input(
-                "Decision note (recorded in the audit trail)",
-                key=note_key,
-                placeholder="e.g. verified against STARS console; contacting KDCA tower",
-            )
-
-            # Override: the operator edits the AI's recommendation text and/or
-            # severity before signing off, instead of accepting it verbatim (Approve)
-            # or discarding it (Reject). Still purely advisory/record-keeping --
-            # override_staged_action() never triggers any automated execution any
-            # more than approve/reject do; it only changes what gets written to the
-            # audit trail as the human-authorized recommendation.
-            _sev_options = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
-            with st.expander("Edit & override before sign-off"):
-                override_text_key = f"override_text_{_action.action_id}"
-                override_sev_key = f"override_sev_{_action.action_id}"
-                ov_key = f"override_{_action.action_id}"
-
-                edited_recommendation = st.text_area(
-                    "Recommended action (editable)",
-                    value=_action.recommended_action,
-                    key=override_text_key,
-                    help="The AI's original recommendation is preserved unchanged in the "
-                         "audit trail; this is what you're replacing it with.",
-                )
-                _sev_default = _action.severity if _action.severity in _sev_options else "CRITICAL"
-                edited_severity = st.selectbox(
-                    "Severity (editable)",
-                    _sev_options,
-                    index=_sev_options.index(_sev_default),
-                    key=override_sev_key,
-                )
-
-                if st.button("Override & sign off", key=ov_key, use_container_width=True,
-                             disabled=not _allowed(Decision.OVERRIDE),
-                             help=_why_not(Decision.OVERRIDE)):
-                    _decide(_action.action_id, Decision.OVERRIDE, note,
-                            overridden_recommendation=edited_recommendation,
-                            overridden_severity=edited_severity)
-
-            b1, b2, b3, _sp = st.columns([1.5, 1.5, 1.2, 2])
-
-            if b1.button("Approve escalation", key=ap_key, type="primary", use_container_width=True,
-                         disabled=not _allowed(Decision.APPROVE), help=_why_not(Decision.APPROVE)):
-                _decide(_action.action_id, Decision.APPROVE, note)
-
-            if b2.button("Continue monitoring", key=mo_key, use_container_width=True,
-                         disabled=not _allowed(Decision.MONITOR),
-                         help=_why_not(Decision.MONITOR)
-                         or "Keep the staged action PENDING; mark the ticket MONITORING"):
-                _decide(_action.action_id, Decision.MONITOR, note)
-
-            if b3.button("Reject", key=rj_key, use_container_width=True,
-                         disabled=not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
-                _decide(_action.action_id, Decision.REJECT, note)
+    a1, a2, a3, a4 = st.columns([1.2, 1.5, 2.1, 2.4])
+    if a1.button("Open review", type="primary", use_container_width=True, disabled=len(_chosen) != 1,
+                 help="Select one row: its investigation, evaluation, readings and decision"):
+        _open_review(_chosen[0])
+    if a2.button(f"Reject selected ({len(_chosen)})", use_container_width=True,
+                 disabled=not _chosen or not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
+        _confirm_bulk(Decision.REJECT, _chosen)
+    if a3.button(f"Continue monitoring selected ({len(_chosen)})", use_container_width=True,
+                 disabled=not _chosen or not _allowed(Decision.MONITOR), help=_why_not(Decision.MONITOR)):
+        _confirm_bulk(Decision.MONITOR, _chosen)
+    a4.caption("Select rows to reject or monitor several reviews at once. "
+               "Approving an escalation is one review at a time, from its detail.")
 
 # ── Decision audit trail ──────────────────────────────────────────────────────
 theme.section(
