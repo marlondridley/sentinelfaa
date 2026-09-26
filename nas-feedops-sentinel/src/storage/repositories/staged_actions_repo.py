@@ -117,6 +117,15 @@ class StagedActionsRepository:
         )
         return [_row_to_staged_action(r) for r in rows]
 
+    async def get_by_ids(self, action_ids: list[str]) -> list[StagedAction]:
+        if not action_ids:
+            return []
+        rows = await self._pool.fetch(
+            f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions WHERE action_id = ANY($1::text[])",
+            list(action_ids),
+        )
+        return [_row_to_staged_action(r) for r in rows]
+
     async def get_recent(self, limit: int = 25) -> list[StagedAction]:
         rows = await self._pool.fetch(
             f"SELECT {_STAGED_ACTION_COLUMNS} FROM staged_actions ORDER BY created_at DESC LIMIT $1",

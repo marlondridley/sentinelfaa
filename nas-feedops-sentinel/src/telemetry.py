@@ -16,8 +16,12 @@ one definition:
 
   metrics  gen_ai.client.operation.duration   s; retries and the repair included
            gen_ai.client.token.usage          {token}; gen_ai.token.type input|output
-           sentinel.gen_ai.client.cost        USD, where the gateway reports it
-           sentinel.governance.decisions      model-use policy decisions
+           and the Agent Governance Toolkit's own instruments (agent-sre):
+           agent.tasks.total, agent.task.duration   per agent invocation
+           agent.llm.latency                        per model call
+           agent.tool_calls.total, agent.tool.latency  per governed tool call
+           agent.policy.violations                  refused model and tool calls
+           agent.sre.cost.total_usd                 gateway-reported spend
 
   logs     every model-use policy decision, through the Microsoft Agent
            Governance Toolkit's own GovernanceAuditLogger and OTelLogsBackend
@@ -55,6 +59,7 @@ from opentelemetry._logs import get_logger_provider, set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
@@ -66,6 +71,9 @@ from opentelemetry.semconv.attributes import error_attributes
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from agent_os.otel_audit_backend import ATTR_ACTION, ATTR_AGENT_ID, ATTR_DECISION, ATTR_REASON
+    from agent_sre.integrations.otel.metrics import MetricsExporter
+    from agent_sre.tracing import conventions as sre
+    from agent_sre.tracing.metrics import create_agent_metrics
 
 SERVICE_NAME = "nas-feedops-sentinel"
 INSTRUMENTATION = "sentinel"
@@ -118,6 +126,7 @@ _SUBJECT_BAGGAGE = "sentinel.subject"
 
 # Bucket boundaries the GenAI conventions recommend for these two histograms.
 _DURATION_BUCKETS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92)
+_MS_BUCKETS = (5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 40000, 80000, 160000)
 _TOKEN_BUCKETS = (1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864)
 
 # The served model's family -> gen_ai.provider.name. Behind the gateway the
@@ -202,7 +211,12 @@ def setup() -> None:
                 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 
                 readers.append(PeriodicExportingMetricReader(OTLPMetricExporter()))
-            metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=readers))
+            metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=readers, views=[
+                # AGT's latency instruments are in milliseconds with OTel's
+                # default buckets, which stop at 10 s; model calls run longer.
+                View(instrument_name=name, aggregation=ExplicitBucketHistogramAggregation(_MS_BUCKETS))
+                for name in ("agent.llm.latency", "agent.task.duration", "agent.tool.latency")
+            ]))
 
         if not isinstance(get_logger_provider(), LoggerProvider):
             logger_provider = LoggerProvider(resource=resource)
@@ -224,14 +238,9 @@ def setup() -> None:
                 description="Number of input and output tokens used.",
                 explicit_bucket_boundaries_advisory=_TOKEN_BUCKETS,
             ),
-            cost=meter.create_counter(
-                "sentinel.gen_ai.client.cost", unit="USD",
-                description="Model spend as reported by the gateway. Calls with an unknown cost add nothing.",
-            ),
-            decisions=meter.create_counter(
-                "sentinel.governance.decisions", unit="{decision}",
-                description="Model-use policy decisions (src/governance.py), by role and decision.",
-            ),
+            # AGT computes and names the agent metrics (agent-sre); OTel carries them.
+            agt=create_agent_metrics(metrics.get_meter("agent_sre.tracing")),
+            agt_exporter=MetricsExporter(service_name=SERVICE_NAME),
         )
 
 
@@ -273,7 +282,7 @@ def current_subject() -> str | None:
 # ── Metrics, from a chat span's attributes ───────────────────────────────────
 
 def record_call_metrics(attributes: dict[str, Any], duration_s: float) -> None:
-    """The standard GenAI client metrics, from the same attributes the chat span carries."""
+    """One model call's metrics, from the same attributes its chat span carries."""
     setup()
     labels = {k: attributes[k] for k in (OPERATION, PROVIDER, REQUEST_MODEL, RESPONSE_MODEL, ERROR_TYPE, AGENT_NAME)
               if attributes.get(k) is not None}
@@ -281,13 +290,40 @@ def record_call_metrics(attributes: dict[str, Any], duration_s: float) -> None:
     for key, kind in ((INPUT_TOKENS, "input"), (OUTPUT_TOKENS, "output")):
         if attributes.get(key) is not None:
             _instruments["tokens"].record(attributes[key], {**labels, TOKEN_TYPE: kind})
+    role = str(attributes.get(AGENT_NAME) or "unregistered")
+    _instruments["agt"].llm_latency.record(duration_s * 1000, {
+        sre.AGENT_TASK_NAME: role, sre.AGENT_MODEL_PROVIDER: str(attributes.get(PROVIDER) or OTHER_PROVIDER),
+        OUTCOME: str(attributes.get(OUTCOME)),
+    })
     if attributes.get(COST_USD):
-        _instruments["cost"].add(attributes[COST_USD], labels)
+        _instruments["agt_exporter"].record_cost(agent_id=role, cost_usd=float(attributes[COST_USD]))
 
 
-def record_policy_decision(role: str, decision: str, rule: str | None) -> None:
+def record_agent_task(agent: str, duration_s: float, outcome: str) -> None:
+    """One agent invocation (an invoke_agent span): AGT's task counter and duration."""
     setup()
-    _instruments["decisions"].add(1, {AGT_AGENT_ID: role, AGT_DECISION: decision, AGT_RULE: rule or "(default)"})
+    _instruments["agt"].tasks_total.add(1, {sre.AGENT_TASK_NAME: agent, OUTCOME: outcome})
+    _instruments["agt"].task_duration.record(duration_s * 1000, {sre.AGENT_TASK_NAME: agent})
+
+
+def record_tool_call(tool: str, agent: str | None, duration_s: float, decision: str) -> None:
+    """One governed tool call (an execute_tool span): AGT's tool counter and latency."""
+    setup()
+    labels = {sre.AGENT_TOOL_NAME: tool, sre.AGENT_TASK_NAME: agent or "unregistered",
+              sre.AGENT_POLICY_DECISION: decision}
+    _instruments["agt"].tool_calls_total.add(1, labels)
+    _instruments["agt"].tool_latency.record(duration_s * 1000, labels)
+
+
+def record_policy_decision(role: str, decision: str, rule: str | None, *, allowed: bool, action: str) -> None:
+    """A refused model or tool call counts on AGT's agent.policy.violations."""
+    if allowed:
+        return
+    setup()
+    _instruments["agt"].policy_violations.add(1, {
+        AGT_AGENT_ID: role, sre.AGENT_POLICY_NAME: rule or "(default)", sre.AGENT_POLICY_DECISION: decision,
+        AGT_ACTION: action,
+    })
 
 
 def span_attributes(attributes: dict[str, Any]) -> dict[str, Any]:

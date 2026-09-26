@@ -87,6 +87,17 @@ class AnalysisRepository:
         )
         return [dict(r) for r in rows]
 
+    async def get_critic_verdicts_for_alerts(self, alert_ids: list[str]) -> list[dict]:
+        """The Critic's result for each of these alerts, newest first."""
+        if not alert_ids:
+            return []
+        rows = await self._pool.fetch(
+            """SELECT alert_id, confidence, escalate, pattern, evaluated_at
+               FROM critic_results WHERE alert_id = ANY($1::text[]) ORDER BY evaluated_at DESC""",
+            list(alert_ids),
+        )
+        return [dict(r) for r in rows]
+
     async def get_recent_critic_results(self, limit: int = 50) -> list[dict]:
         # NOTE: column list mirrors the full critic_results schema, including the citations
         # JSONB blob (dropping it here requires confirming the dashboard doesn't render it).

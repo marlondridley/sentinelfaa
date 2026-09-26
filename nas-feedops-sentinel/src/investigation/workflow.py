@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -64,6 +65,7 @@ def view_for(inv: Investigation, *, kinds: frozenset[str] | None, findings: bool
 
 async def _run(spec, view: Investigation, use_llm: bool) -> tuple[Any, StepRecord]:
     started = _now()
+    clock = time.perf_counter()
     with telemetry.tracer().start_as_current_span(
         f"{telemetry.INVOKE_AGENT} {spec.name}",
         attributes={telemetry.OPERATION: telemetry.INVOKE_AGENT, telemetry.AGENT_NAME: spec.name},
@@ -72,6 +74,8 @@ async def _run(spec, view: Investigation, use_llm: bool) -> tuple[Any, StepRecor
         fallback = result.provenance.fallback_reason
         span.set_attributes(telemetry.span_attributes(
             {telemetry.AGENT_METHOD: result.provenance.method, telemetry.AGENT_FALLBACK: fallback}))
+    telemetry.record_agent_task(spec.name, time.perf_counter() - clock,
+                                "fallback" if fallback else result.provenance.method)
     return result, StepRecord(
         step=spec.name, agent=spec.name, started_at=started, finished_at=_now(),
         outcome="fallback" if fallback else "ok",

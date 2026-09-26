@@ -59,14 +59,22 @@ class InvestigationsRepository:
         )
         return [_to_record(r) for r in rows]
 
-    async def get_complete_since(self, since: datetime) -> list[Investigation]:
-        """COMPLETE investigations opened since `since`, each verified against its hash."""
+    async def get_since(self, since: datetime) -> list[Investigation]:
+        """Investigations opened since `since`, COMPLETE and FAILED, each verified against its hash."""
         rows = await self._pool.fetch(
             """SELECT record_json, record_sha256 FROM investigations
-               WHERE status = 'COMPLETE' AND opened_at >= $1 ORDER BY opened_at""",
+               WHERE opened_at >= $1 ORDER BY opened_at""",
             since,
         )
         return [_to_record(r) for r in rows]
+
+    async def get_latest(self) -> Investigation | None:
+        """The most recently opened COMPLETE investigation, verified."""
+        row = await self._pool.fetchrow(
+            """SELECT record_json, record_sha256 FROM investigations
+               WHERE status = 'COMPLETE' ORDER BY opened_at DESC LIMIT 1"""
+        )
+        return _to_record(row) if row else None
 
 
 class IntegrityError(RuntimeError):
