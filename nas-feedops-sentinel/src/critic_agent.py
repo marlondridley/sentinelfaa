@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from src import agent_tools, telemetry
 from src.config import settings
 from src.context_router import ContextRouter
 from src.execution_gate import _strict_bool
@@ -71,6 +72,10 @@ class CriticAgent:
 
     async def critique(self, alert: AlertEvent) -> CriticResult:
         """Evaluate an alert asynchronously using context retrieved from async storage."""
+        with agent_tools.acting_as("critic"):
+            return await self._critique(alert)
+
+    async def _critique(self, alert: AlertEvent) -> CriticResult:
         if not self._llm:
             LLM_CALLS.labels(agent="critic", outcome="disabled").inc()
             reason = (
@@ -82,7 +87,7 @@ class CriticAgent:
 
         start = time.perf_counter()
         try:
-            context = await _router.build_alert_context(alert.airport_code)
+            context = await agent_tools.invoke("read_alert_context", _router.build_alert_context, alert.airport_code)
             raw = await self._call_llm(alert, context)
 
             # The critic's output reaches critic_results and the staged action a
@@ -144,9 +149,18 @@ class CriticAgent:
 
     async def _call_llm(self, alert: AlertEvent, context: dict[str, Any]) -> dict[str, Any]:
         """Return the model's structured output, unmodified. Raises on any LLM failure."""
-        return await self._llm.acall_with_tool(
-            system_prompt=self._prompt,
-            tool=self._tool,
-            user_message=_format_user_message(alert, context),
-            max_tokens=1000,
-        )
+        # One invoke_agent span per assessment, about this alert (src/telemetry.py).
+        with telemetry.tracer().start_as_current_span(
+            f"{telemetry.INVOKE_AGENT} critic",
+            attributes=telemetry.span_attributes({
+                telemetry.OPERATION: telemetry.INVOKE_AGENT, telemetry.AGENT_NAME: "critic",
+                telemetry.ALERT_ID: alert.alert_id,
+            }),
+        ), telemetry.subject(alert.alert_id):
+            return await self._llm.acall_with_tool(
+                system_prompt=self._prompt,
+                tool=self._tool,
+                user_message=_format_user_message(alert, context),
+                max_tokens=1000,
+                role="critic",
+            )

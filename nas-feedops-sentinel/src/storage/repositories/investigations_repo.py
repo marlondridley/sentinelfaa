@@ -11,6 +11,7 @@ action; a FAILED attempt is also kept, for audit, and does not block a retry.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 
 import asyncpg
 
@@ -55,6 +56,15 @@ class InvestigationsRepository:
             """SELECT record_json, record_sha256 FROM investigations
                ORDER BY opened_at DESC LIMIT $1""",
             limit,
+        )
+        return [_to_record(r) for r in rows]
+
+    async def get_complete_since(self, since: datetime) -> list[Investigation]:
+        """COMPLETE investigations opened since `since`, each verified against its hash."""
+        rows = await self._pool.fetch(
+            """SELECT record_json, record_sha256 FROM investigations
+               WHERE status = 'COMPLETE' AND opened_at >= $1 ORDER BY opened_at""",
+            since,
         )
         return [_to_record(r) for r in rows]
 

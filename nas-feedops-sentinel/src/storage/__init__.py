@@ -28,6 +28,8 @@ not deprecated -- they're the stable public surface other modules already depend
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.models import (
     AlertEvent,
     CriticResult,
@@ -42,6 +44,7 @@ from src.storage.repositories.analysis_repo import AnalysisRepository
 from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
+from src.storage.repositories.model_calls_repo import ModelCallsRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
 from src.storage.test_support import override_db_path, reset_db
@@ -64,6 +67,10 @@ __all__ = [
     "get_events_for_critic",
     "get_alerts_for_critic",
     "get_recent_critic_results",
+    "get_critic_verdicts_since",
+    "record_model_call",
+    "get_model_calls_since",
+    "get_investigations_since",
     "save_planner_result",
     "get_recent_planner_results",
     "save_critic_result",
@@ -205,6 +212,31 @@ async def record_ingest_log_entry(entry: dict) -> None:
 async def get_recent_ingest_log(limit: int = 100) -> list[dict]:
     repo = IngestLogRepository(await get_db_pool())
     return await repo.get_recent(limit)
+
+
+# ── Model behaviour (model_calls) and what readiness reads ─────────────────────
+
+async def record_model_call(row: dict) -> None:
+    repo = ModelCallsRepository(await get_db_pool())
+    await repo.insert(row)
+
+
+async def get_model_calls_since(since: datetime) -> list[dict]:
+    repo = ModelCallsRepository(await get_db_pool())
+    return await repo.get_since(since)
+
+
+async def get_critic_verdicts_since(since: datetime) -> list[dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_critic_verdicts_since(since)
+
+
+async def get_investigations_since(since: datetime) -> list:
+    """COMPLETE investigations since `since`, each verified against its SHA-256."""
+    from src.storage.repositories.investigations_repo import InvestigationsRepository
+
+    repo = InvestigationsRepository(await get_db_pool())
+    return await repo.get_complete_since(since)
 
 
 # ── Agent analysis (critic_results / planner_results) ─────────────────────────

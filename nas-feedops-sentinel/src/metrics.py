@@ -73,6 +73,12 @@ LLM_CALLS = Counter(
 )
 
 
+# Model calls and model-use policy decisions are measured with OpenTelemetry
+# (src/telemetry.py): gen_ai.client.operation.duration, gen_ai.client.token.usage,
+# sentinel.gen_ai.client.cost and sentinel.governance.decisions, served on this
+# same /metrics endpoint by OpenTelemetry's Prometheus reader.
+
+
 # ── Gate metrics ──────────────────────────────────────────────────────────────
 
 GATE_DECISIONS = Counter(

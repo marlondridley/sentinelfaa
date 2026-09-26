@@ -125,7 +125,8 @@ async def reset_db() -> None:
         await conn.execute("""
             TRUNCATE TABLE nas_events, alert_events, critic_results, planner_results,
                            staged_actions, action_audit_log, watch_officer_briefs,
-                           operational_tickets, ingest_log, investigations
+                           operational_tickets, ingest_log, investigations,
+                           model_calls
                            RESTART IDENTITY CASCADE;
         """)
 

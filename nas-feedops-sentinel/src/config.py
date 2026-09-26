@@ -251,6 +251,17 @@ class Settings(BaseSettings):
     MAX_CRITIC_PER_PASS: int = 5
     LLM_TIMEOUT_SECONDS: float = 90.0
 
+    # ── Model governance and readiness ──────────────────────────────────────
+    # MODEL_POLICY_PATH: the model-use policy (Microsoft Agent Governance
+    # Toolkit) consulted before every model call -- src/governance.py.
+    # MODEL_SLO_PATH: the objectives `python -m src.readiness` measures model
+    # behavior against -- src/readiness.py.
+    MODEL_POLICY_PATH: Path = BASE_DIR / "policies" / "model-use.yaml"
+    # TOOL_POLICY_PATH: which tools each advisory agent may invoke (the agent
+    # layer's tool boundary; src/agent_tools.py). Refused when unloadable.
+    TOOL_POLICY_PATH: Path = BASE_DIR / "policies" / "tool-use.yaml"
+    MODEL_SLO_PATH: Path = BASE_DIR / "policies" / "model-slos.yaml"
+
     # ── Investigations (src/investigation/) ─────────────────────────────────
     # Every staged action gets an investigation. The first
     # MAX_LLM_INVESTIGATIONS_PER_PASS in a pipeline pass run the four
