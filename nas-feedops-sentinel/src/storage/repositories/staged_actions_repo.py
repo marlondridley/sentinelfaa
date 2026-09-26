@@ -138,30 +138,60 @@ class StagedActionsRepository:
             raise ValueError(f"new_status must be APPROVED or REJECTED, got {new_status}")
 
         async with UnitOfWork(self._pool) as uow:
-            row = await uow.conn.fetchrow(
-                "SELECT * FROM staged_actions WHERE action_id = $1 FOR UPDATE", action_id
+            action, _ = await self.decide_in(uow.conn, action_id, new_status, actor, note)
+            return action
+
+    async def decide_in(
+        self,
+        conn: asyncpg.Connection,
+        action_id: str,
+        new_status: str,
+        actor: str,
+        note: str,
+        *,
+        overridden_recommendation: str | None = None,
+        overridden_severity: str | None = None,
+    ) -> tuple[StagedAction | None, bool]:
+        """
+        Record a decision inside the caller's transaction.
+
+        Returns the action as it now stands and whether this call changed it --
+        False when it does not exist or was already decided.
+        """
+        if new_status not in ("APPROVED", "REJECTED", "OVERRIDDEN"):
+            raise ValueError(f"new_status must be APPROVED, REJECTED or OVERRIDDEN, got {new_status}")
+
+        row = await conn.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1 FOR UPDATE", action_id)
+        if row is None:
+            return None, False
+
+        current_status = row["status"]
+        if current_status in ("APPROVED", "REJECTED", "OVERRIDDEN", "EXPIRED"):
+            return _row_to_staged_action(row), False
+
+        now = datetime.now(timezone.utc)
+        if new_status == "OVERRIDDEN":
+            await conn.execute(
+                """UPDATE staged_actions
+                   SET status = 'OVERRIDDEN', decided_at = $1, decided_by = $2, decision_note = $3,
+                       overridden_recommendation = $4, overridden_severity = $5
+                   WHERE action_id = $6""",
+                now, actor, note, overridden_recommendation, overridden_severity, action_id,
             )
-            if row is None:
-                return None
-
-            current_status = row["status"]
-            if current_status in ("APPROVED", "REJECTED", "OVERRIDDEN", "EXPIRED"):
-                return _row_to_staged_action(row)
-
-            now = datetime.now(timezone.utc)
-            await uow.conn.execute(
+        else:
+            await conn.execute(
                 """UPDATE staged_actions
                    SET status = $1, decided_at = $2, decided_by = $3, decision_note = $4
                    WHERE action_id = $5""",
                 new_status, now, actor, note, action_id,
             )
-            await self._audit.write(
-                uow.conn, action_id, previous_status=current_status, new_status=new_status,
-                actor=actor, note=note,
-            )
+        await self._audit.write(
+            conn, action_id, previous_status=current_status, new_status=new_status,
+            actor=actor, note=note,
+        )
 
-            updated = await uow.conn.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1", action_id)
-            return _row_to_staged_action(updated) if updated else None
+        updated = await conn.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1", action_id)
+        return (_row_to_staged_action(updated) if updated else None), True
 
     async def approve(self, action_id: str, actor: str = "dashboard_operator", note: str = "") -> StagedAction | None:
         return await self._decide(action_id, "APPROVED", actor, note)
@@ -190,31 +220,12 @@ class StagedActionsRepository:
         execution (broker reconnects, feed cutoffs, etc.).
         """
         async with UnitOfWork(self._pool) as uow:
-            row = await uow.conn.fetchrow(
-                "SELECT * FROM staged_actions WHERE action_id = $1 FOR UPDATE", action_id
+            action, _ = await self.decide_in(
+                uow.conn, action_id, "OVERRIDDEN", actor, note,
+                overridden_recommendation=overridden_recommendation,
+                overridden_severity=overridden_severity,
             )
-            if row is None:
-                return None
-
-            current_status = row["status"]
-            if current_status in ("APPROVED", "REJECTED", "OVERRIDDEN", "EXPIRED"):
-                return _row_to_staged_action(row)
-
-            now = datetime.now(timezone.utc)
-            await uow.conn.execute(
-                """UPDATE staged_actions
-                   SET status = 'OVERRIDDEN', decided_at = $1, decided_by = $2, decision_note = $3,
-                       overridden_recommendation = $4, overridden_severity = $5
-                   WHERE action_id = $6""",
-                now, actor, note, overridden_recommendation, overridden_severity, action_id,
-            )
-            await self._audit.write(
-                uow.conn, action_id, previous_status=current_status, new_status="OVERRIDDEN",
-                actor=actor, note=note,
-            )
-
-            updated = await uow.conn.fetchrow("SELECT * FROM staged_actions WHERE action_id = $1", action_id)
-            return _row_to_staged_action(updated) if updated else None
+            return action
 
     async def get_audit_log(self, action_id: str | None = None, limit: int = 50) -> list[dict]:
         return await self._audit.get_log(action_id, limit)

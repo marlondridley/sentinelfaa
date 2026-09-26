@@ -1,0 +1,22 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = SMES
+Property name = msgType; value = AT
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = SMES/all/false/AT/KBWI/PCT
+Property name = globalID; value = 100779631
+Property name = msgSeqID; value = 10087183
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KBWI
+Property name = pubNode; value = NEMS_ZTL
+Property name = tracon; value = PCT
+Property name = timeline; value = 1790379089750 1790379089845 1790379089892
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-09-25T23:31:29.750Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:asdexMsg":{"positionReport":[{"flightInfo":{"wake":"F","fix":"BWI","runway":"unassigned","tgtType":"aircraft","acType":"B738"},"seqNum":160,"targetExtent":{"estimate":40},"plotCount":2,"flightId":{"aircraftId":"ZQR5087","mode3ACode":3175},"stid":714004,"time":"2026-09-25T23:31:30.000Z","position":{"altitude":2031.25,"latitude":39.05144,"x":9547,"y":-14177,"flightLevel":20.25,"longitude":-76.5581},"track":676,"movement":{"vx":-45,"vy":68,"heading":326.8377685546875,"ax":0,"ay":0,"speed":159},"full":true,"status":{"vertRate":0,"rt":0,"df":0,"di":0,"tse":0,"ls":0,"nic":5,"lv":0,"ua":0,"mon":1,"ud":"up","uncorrBaroAlt":76,"sim":0,"si":0,"sil":3,"s1":0,"ss":0,"aa":0,"op":0,"st":0,"mrh":"barometric","su":0,"NACp":6,"src":"modec","af":"unfiltered","gm":0,"ms":0,"twyID":0,"spi":0,"ap":0,"tc":0,"quality":0,"aq":0,"as":0,"tf":0,"at":0,"nc":0,"av":"unknown","x":0,"gbs":0,"a9s":1,"m3c":0,"da":0,"vs":"barometric"}},{"enhancedData":{"eramGufi":"IZ265234fY"},"seqNum":161,"targetExtent":{"startRange":1323,"endAzimuth":103.524169921875,"endRange":1335},"stid":714030,"time":"2026-09-25T23:31:30.000Z","position":{"latitude":39.17649,"longitude":-76.65348},"track":1479,"full":false}],"xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:smes:surfacemovementevent","airport":"KBWI"}}

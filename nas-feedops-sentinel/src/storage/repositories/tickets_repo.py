@@ -204,37 +204,41 @@ class TicketsRepository:
         return _row_to_ticket(row) if row else None
 
     async def _transition(self, ticket_id: str, new_status: str, actor: str, note: str) -> OperationalTicket | None:
+        async with UnitOfWork(self._pool) as uow:
+            return await self.transition_in(uow.conn, ticket_id, new_status, actor, note)
+
+    async def transition_in(
+        self, conn: asyncpg.Connection, ticket_id: str, new_status: str, actor: str, note: str,
+    ) -> OperationalTicket | None:
+        """Move a ticket inside the caller's transaction."""
         if new_status not in ("APPROVED_FOR_ESCALATION", "REJECTED", "MONITORING", "OVERRIDDEN"):
             raise ValueError(f"new_status {new_status} not permitted")
 
-        async with UnitOfWork(self._pool) as uow:
-            row = await uow.conn.fetchrow(
-                "SELECT * FROM operational_tickets WHERE ticket_id = $1 FOR UPDATE", ticket_id
-            )
-            if row is None:
-                return None
+        row = await conn.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1 FOR UPDATE", ticket_id)
+        if row is None:
+            return None
 
-            current = row["status"]
-            if current in ("APPROVED_FOR_ESCALATION", "REJECTED", "OVERRIDDEN"):
-                return _row_to_ticket(row)
+        current = row["status"]
+        if current in ("APPROVED_FOR_ESCALATION", "REJECTED", "OVERRIDDEN"):
+            return _row_to_ticket(row)
 
-            now = datetime.now(timezone.utc)
-            await uow.conn.execute(
-                """UPDATE operational_tickets
-                   SET status = $1, decided_at = $2, decided_by = $3, decision_note = $4
-                   WHERE ticket_id = $5""",
-                new_status, now, actor, note, ticket_id,
-            )
-            await self._audit.write(
-                uow.conn,
-                action_id=f"ticket:{ticket_id}",
-                previous_status=current,
-                new_status=new_status,
-                actor=actor,
-                note=note,
-            )
-            updated = await uow.conn.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
-            return _row_to_ticket(updated) if updated else None
+        now = datetime.now(timezone.utc)
+        await conn.execute(
+            """UPDATE operational_tickets
+               SET status = $1, decided_at = $2, decided_by = $3, decision_note = $4
+               WHERE ticket_id = $5""",
+            new_status, now, actor, note, ticket_id,
+        )
+        await self._audit.write(
+            conn,
+            action_id=f"ticket:{ticket_id}",
+            previous_status=current,
+            new_status=new_status,
+            actor=actor,
+            note=note,
+        )
+        updated = await conn.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
+        return _row_to_ticket(updated) if updated else None
 
     async def approve(self, ticket_id: str, actor: str = "dashboard_operator", note: str = "") -> OperationalTicket | None:
         return await self._transition(ticket_id, "APPROVED_FOR_ESCALATION", actor, note)

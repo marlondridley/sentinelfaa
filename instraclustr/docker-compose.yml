@@ -132,8 +132,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_HOST_AUTH_METHOD: md5
-      POSTGRES_INITDB_ARGS: "--auth=md5"
+      # Fresh data directories only; postgres-scram migrates an existing one.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth=scram-sha-256"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
@@ -160,12 +161,14 @@ services:
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
       DEFAULT_POOL_SIZE: 20
-      AUTH_TYPE: md5
+      # Client and server logins both use SCRAM; auth_user looks up the other
+      # roles' SCRAM secrets. Only valid once postgres-scram has re-hashed them.
+      AUTH_TYPE: scram-sha-256
     ports:
       - "127.0.0.1:6432:6432"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-scram:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-sentinel_user}"]
       interval: 10s
@@ -286,13 +289,34 @@ services:
       start_period: 60s
       retries: 10
 
+  # One-shot, before PgBouncer: md5 -> SCRAM-SHA-256 for the shared server,
+  # existing data directory included (postgres-scram.sh). Mounts the data
+  # volume only to rewrite pg_hba.conf.
+  postgres-scram:
+    image: postgres:16
+    container_name: postgres-scram
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APP_DB_USER: ${APP_DB_USER:-sentinel_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-scram.sh:/scripts/postgres-scram.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/postgres-scram.sh"]
+
   # One-shot: LiteLLM's own database and login role (idempotent).
   litellm-db-init:
     image: postgres:16
     container_name: litellm-db-init
     depends_on:
-      postgres:
-        condition: service_healthy
+      # After the switch, so the password it sets is hashed with SCRAM.
+      postgres-scram:
+        condition: service_completed_successfully
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}

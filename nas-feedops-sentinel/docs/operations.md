@@ -119,7 +119,7 @@ docstring for what each step asserts.
   can succeed. A claim left by a crashed scanner is released after 10
   minutes. A read-only folder is read in place.
 * **Provenance.** Every event and alert carries `data_origin`: `live` (the
-  kit's folder), `replay`, `synthetic` (sample button, demo scenario), `api`,
+  kit's folder), `replay`, `synthetic` (test fixtures and the end-to-end proof; no run mode writes it), `api`,
   or `unknown` for rows from before the tag. Alerts inherit it (`mixed` for
   aggregates spanning origins). The dashboard warns on every page when
   non-live data is present, the review queue labels non-live actions, and the

@@ -151,7 +151,13 @@ class ActionAuditEntry(BaseModel):
 # moving-entity validation rule and are excluded from surface-movement counts
 # (feed_health smes_counts, ALERT_SURFACE_EVENT_SPIKE), where a burst of
 # equipment status messages would otherwise read as a traffic spike.
-SMES_FACILITY_STATUS_TYPES = frozenset({"SAFETY_LOGIC_HOLD_BAR"})
+SMES_FACILITY_STATUS_TYPES = frozenset({"SAFETY_LOGIC_HOLD_BAR", "ASDEX_SYSTEM_STATUS"})
+
+# Periodic position updates of a known target. They are movement (so they must
+# name the track) but not surface events: ASDE-X sends one per target per
+# second, and counting them made ALERT_SURFACE_EVENT_SPIKE fire on routine
+# traffic.
+SMES_TRACK_UPDATE_TYPES = frozenset({"ADSB_REPORT", "POSITION_REPORT"})
 
 
 def is_surface_movement(event: "NASEvent") -> bool:
@@ -160,6 +166,11 @@ def is_surface_movement(event: "NASEvent") -> bool:
         event.service_name == "SMES"
         and event.surface_event_type not in SMES_FACILITY_STATUS_TYPES
     )
+
+
+def is_surface_event(event: "NASEvent") -> bool:
+    """True for discrete SMES surface events: movement that is not a periodic position update."""
+    return is_surface_movement(event) and event.surface_event_type not in SMES_TRACK_UPDATE_TYPES
 
 
 
@@ -272,18 +283,6 @@ class GuardrailResult(BaseModel):
     injection_score: float = 0.0           # 0.0 = clean, 1.0 = definite injection
     sanitized_input: str | None = None  # cleaned version of the raw input
     detail: str = ""
-
-
-class GateDecision(BaseModel):
-    """Decision produced by ExecutionGate for a structured plan."""
-
-    allowed: bool
-    risk_tier: str                          # LOW | MEDIUM | HIGH | CRITICAL
-    hitl_required: bool
-    idempotency_key: str
-    risk_factors: list[str] = Field(default_factory=list)
-    ticket_id: str | None = None        # populated when hitl_required=True
-    evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class EvalResult(BaseModel):

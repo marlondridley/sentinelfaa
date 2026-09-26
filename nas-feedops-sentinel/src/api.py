@@ -1,10 +1,13 @@
 """HTTP API with x-correlation-id middleware, CORS, and auth gates. Starts Temporal workflows."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,7 +28,7 @@ from src.logging_config import (
 from src.models import NASEvent
 from temporalio.service import RPCError
 
-from src.temporal_worker import start_ingest_workflow, start_pipeline_workflow
+from src.temporal_worker import get_or_create_client, start_ingest_workflow, start_pipeline_workflow
 
 configure_logging()
 _log = get_logger(__name__)
@@ -211,32 +214,68 @@ async def health_v1() -> dict[str, str]:
     return await health()
 
 
+READINESS_TIMEOUT_SECONDS = 5.0
+
+
+def model_proxy_readiness_url(proxy_url: str) -> str:
+    # LiteLLM's /health needs the master key and calls every configured model;
+    # /health/readiness is unauthenticated and checks only the proxy and its DB.
+    parts = urlsplit(proxy_url)
+    return urlunsplit((parts.scheme, parts.netloc, "/health/readiness", "", ""))
+
+
+async def _check_storage() -> None:
+    await storage.get_recent_events(limit=1)
+
+
+async def _check_temporal() -> None:
+    client = await get_or_create_client()
+    if not await client.service_client.check_health():
+        raise RuntimeError("Temporal WorkflowService reports unavailable")
+
+
+async def _check_model_proxy() -> None:
+    async with httpx.AsyncClient() as http:
+        (await http.get(model_proxy_readiness_url(settings.LITELLM_PROXY_URL))).raise_for_status()
+
+
+_READINESS_CHECKS = {
+    "storage": _check_storage,
+    "temporal": _check_temporal,
+    "model_proxy": _check_model_proxy,
+}
+
+
 @router.get(
     "/ready",
     summary="Readiness check",
     description=(
-        "Readiness probe: confirms the API can actually serve traffic by reading from "
-        "storage. Returns 503 with the failing dependency when a check fails."
+        "Readiness probe: confirms storage, the Temporal server and the model proxy are "
+        "reachable. Returns 503 naming each failing dependency."
     ),
 )
 async def ready() -> JSONResponse:
     """
-    Readiness: probe the dependencies /ingest needs before accepting traffic.
+    Readiness: probe the three dependencies /ingest needs before accepting traffic.
 
-    Checks storage (Postgres via PgBouncer) with a lightweight read. Returns 503 and names the
-    failing dependency so an orchestrator pulls the instance out of rotation without
-    killing the process.
+    Storage (Postgres via PgBouncer), the Temporal server and the model proxy are
+    probed concurrently, each bounded by READINESS_TIMEOUT_SECONDS. Returns 503 and
+    names each failing dependency so an orchestrator can pull the instance out of
+    rotation without killing the process.
     """
+    names = list(_READINESS_CHECKS)
+    outcomes = await asyncio.gather(
+        *(asyncio.wait_for(check(), READINESS_TIMEOUT_SECONDS) for check in _READINESS_CHECKS.values()),
+        return_exceptions=True,
+    )
     checks: dict[str, str] = {}
-    healthy = True
-
-    try:
-        await storage.get_recent_events(limit=1)
-        checks["storage"] = "ok"
-    except Exception as exc:  # noqa: BLE001
-        checks["storage"] = "error"
-        healthy = False
-        _log.warning("readiness_check_failed", extra={"dependency": "storage", "error": str(exc)})
+    for name, outcome in zip(names, outcomes):
+        if isinstance(outcome, BaseException):
+            checks[name] = "error"
+            _log.warning("readiness_check_failed", extra={"dependency": name, "error": repr(outcome)})
+        else:
+            checks[name] = "ok"
+    healthy = all(state == "ok" for state in checks.values())
 
     return JSONResponse(
         status_code=200 if healthy else 503,

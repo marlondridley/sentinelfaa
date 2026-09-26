@@ -10,15 +10,11 @@ from pathlib import Path
 from src import config
 from src.async_bridge import run_async
 from src.agent_evaluator import AgentEvaluator, print_eval_report
-from src.demo_scenario import generate_cascade_failure_scenario
 from src.logging_config import configure_logging, get_logger, new_correlation_id
 from src.metrics import start_metrics_server
 from src.models import NASEvent
 from src.pipeline import run_pipeline
-from src.planner_agent import PlannerAgent
 from src.replay import replay_from_directory
-from src.sample_data import generate_sample_batch
-from src.storage import save_planner_result
 from src.swim_file_ingest import request_shutdown, scan_swim_folder, watch_swim_folder
 
 _log = get_logger(__name__)
@@ -36,17 +32,6 @@ def _run_pipeline(events: list[NASEvent], label: str = "PIPELINE") -> dict:
     run_pipeline(), whose staging does not depend on the LLM succeeding.
     """
     return run_async(run_pipeline(events, label=label, correlation_id=new_correlation_id()))
-
-
-def run_demo() -> None:
-    print("[DEMO] Generating cascade failure scenario ...")
-    _run_pipeline(generate_cascade_failure_scenario(), "DEMO")
-
-    question = "What is the current operational status of PCT TRACON and what should the duty manager do right now?"
-    result = run_async(PlannerAgent().query(question))
-    run_async(save_planner_result(result))
-    print(f"  Confidence : {result.confidence:.0%}" if result.confidence is not None else "  Confidence : N/A")
-    print(f"  Answer     : {result.answer}")
 
 
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
@@ -95,7 +80,10 @@ def _install_shutdown_handler() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m src.main")
-    parser.add_argument("--mode", choices=["sample", "replay", "demo", "eval"], default="demo")
+    # Real data only: replay captured SWIM files or watch the live feed. The
+    # generators that used to be modes here wrote synthetic events into the
+    # operational database; they now exist only as test fixtures.
+    parser.add_argument("--mode", choices=["replay", "eval"], default="replay")
     parser.add_argument("--path", type=str, default=None, help="Custom path for replay or folder scan")
     parser.add_argument(
         "--watch",
@@ -121,13 +109,7 @@ def main() -> None:
     _install_shutdown_handler()
     start_metrics_server()
     
-    if args.mode == "demo":
-        run_demo()
-    elif args.mode == "sample":
-        print("[SAMPLE] Generating sample event batch...")
-        events = generate_sample_batch()
-        _run_pipeline(events, "SAMPLE")
-    elif args.mode == "replay" and args.watch:
+    if args.mode == "replay" and args.watch:
         _start_reconciler()
         target_path = Path(args.path) if args.path else Path(config.SWIM_RAW_FOLDER) if hasattr(config, "SWIM_RAW_FOLDER") else Path("/app/data/raw")
         _log.info(

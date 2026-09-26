@@ -136,8 +136,14 @@ services:
       temporal:
         condition: service_started
     healthcheck:
-      # No HTTP surface; the image's metrics-port check does not apply.
-      disable: true
+      # /health on the metrics port answers 503 once the worker's event loop
+      # has not turned for 60 s (src/metrics.py), and the worker's watchdog
+      # exits the process so `restart: unless-stopped` starts a fresh one.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:9108/health\").read()' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   # 2. HTTP API (FastAPI): /health, /v1/ready, /v1/ingest.
   api:

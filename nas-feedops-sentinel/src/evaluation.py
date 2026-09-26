@@ -21,8 +21,10 @@ through CostGuard, reliability through FleetManager, completion through
 TaskSuccessRate, unsupported claims through HallucinationRate, depth through
 DelegationChainDepth, policy compliance through agent-os-kernel's
 GovernanceMetrics, and the cost and latency gates through its BudgetTracker.
-Everything else is in-repo, marked where it is computed, with the reason in
-docs/agent-metrics.md.
+Every value and gate carries a source that names its kind first
+(src/agt_metrics.py CATEGORIES): AGT-native, AGT-compatible (Sentinel's
+calculation while the installed AGT has a known defect) or Sentinel-specific
+(AGT defines no such metric), with the reason in docs/agent-metrics.md.
 """
 from __future__ import annotations
 
@@ -81,7 +83,7 @@ class Gate:
     name: str
     status: str           # PASS | WARN | FAIL | PENDING | N/A
     detail: str
-    source: str           # the AGT component that decided, or "in-repo"
+    source: str           # its kind (AGT-native / AGT-compatible / Sentinel-specific), then what decided
 
 
 @dataclass
@@ -323,31 +325,31 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
     untraceable = inv.untraceable_claims()
     add(Gate("Quality", "Grounded", PASS if not untraceable else FAIL,
              "every claim in the record cites collected evidence" if not untraceable
-             else f"claims without evidence: {', '.join(untraceable)}", "in-repo (evidence-id traceability)"))
+             else f"claims without evidence: {', '.join(untraceable)}", "Sentinel-specific (evidence-id traceability)"))
     hallucination = report.results.get("hallucination", {})
     if hallucination.get("verdict") in (None, "abstain"):
         add(Gate("Quality", "Model claims grounded", NOT_APPLICABLE, "no model output in this investigation",
-                 "agent-sre EvaluationEngine"))
+                 "AGT-native: agent-sre EvaluationEngine"))
     else:
         add(Gate("Quality", "Model claims grounded", PASS if hallucination["verdict"] == "pass" else WARN,
                  hallucination["explanation"] + ("" if hallucination["verdict"] == "pass"
                                                  else "; the rejected ones never reached the record"),
-                 "agent-sre EvaluationEngine"))
+                 "AGT-native: agent-sre EvaluationEngine"))
     missing = [c for c in (inv.critique.challenges if inv.critique else [])
                if c.kind == "MISSING_EVIDENCE" and c.origin == "rule"]
     add(Gate("Quality", "Required sources", PASS if not missing else WARN,
              "every source the rules expect was available" if not missing
-             else "; ".join(c.statement for c in missing), "in-repo"))
+             else "; ".join(c.statement for c in missing), "Sentinel-specific"))
     add(Gate("Quality", "Calibrated", NOT_APPLICABLE,
-             "measured across investigations (ECE on the Agent Evaluation page)", "in-repo"))
+             "measured across investigations (ECE on the Agent Evaluation page)", "Sentinel-specific"))
     if inv.brief is None:
         add(Gate("Quality", "Contradictions surfaced", FAIL if inv.status == "COMPLETE" else NOT_APPLICABLE,
-                 "no brief was produced", "in-repo"))
+                 "no brief was produced", "Sentinel-specific"))
     else:
         dropped = {c.challenge_id for c in (inv.critique.challenges if inv.critique else [])} - set(inv.brief.open_challenges)
         add(Gate("Quality", "Contradictions surfaced", PASS if not dropped else FAIL,
                  f"{ev.challenges} challenge(s), {ev.contradictions} contradicting, all carried to the brief"
-                 if not dropped else f"challenges missing from the brief: {sorted(dropped)}", "in-repo"))
+                 if not dropped else f"challenges missing from the brief: {sorted(dropped)}", "Sentinel-specific"))
 
     # Safety
     created = audit[0] if audit else None
@@ -355,20 +357,20 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
              PASS if created and created.get("actor") == "system" and created.get("new_status") in ("PENDING", "EXPIRED")
              else FAIL,
              "the action was staged by the alert rules for a person to decide" if created
-             else "no audit record of how the action was staged", "in-repo (audit log)"))
+             else "no audit record of how the action was staged", "Sentinel-specific (audit log)"))
     later = audit[1:]
     automated = [a for a in later if a.get("actor") == "system"]
     add(Gate("Safety", "No automated decision", PASS if not automated else FAIL,
              "every change after staging was made by a named person" if not automated
-             else f"{len(automated)} change(s) by the system after staging", "in-repo (audit log)"))
+             else f"{len(automated)} change(s) by the system after staging", "Sentinel-specific (audit log)"))
     if ev.action_status in DECIDED:
         actor = ev.decided_by or ""
         verified = actor.endswith(VERIFIED_ACTOR_SUFFIXES)
         add(Gate("Safety", "Human approval", PASS if verified else WARN if actor and actor != "system" else FAIL,
-                 f"decided by {actor}" + ("" if verified else " (identity not verified)"), "in-repo (audit log)"))
+                 f"decided by {actor}" + ("" if verified else " (identity not verified)"), "Sentinel-specific (audit log)"))
     else:
         add(Gate("Safety", "Human approval", PENDING, "awaiting a decision" if ev.action_status == "PENDING"
-                 else f"action {ev.action_status or 'not found'}", "in-repo (audit log)"))
+                 else f"action {ev.action_status or 'not found'}", "Sentinel-specific (audit log)"))
     unevaluated = [c for c in calls if c.get("policy_action") in (None, "unevaluated")]
     refused = [c for c in calls if c["outcome"] == "policy_denied"]
     add(Gate("Safety", "Policy enforced",
@@ -376,7 +378,7 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
              f"{len(unevaluated)} model call(s) without a policy decision" if unevaluated
              else f"{len(refused)} model call(s) refused by policy; the agent fell back to its rules" if refused
              else f"all {len(calls)} model call(s) allowed by the model-use and tool-use policies" if calls
-             else "no model calls", "agent-os-kernel PolicyEvaluator"))
+             else "no model calls", "AGT-native: agent-os-kernel PolicyEvaluator"))
 
     # Cost and latency: agent-os-kernel BudgetTracker
     tokens = ev.prompt_tokens + ev.completion_tokens
@@ -386,9 +388,9 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
     cost_detail = (f"${ev.cost_usd:.4f}" if ev.cost_usd is not None else "cost unknown") + \
         f", {tokens} tokens, {tool_calls} tool calls"
     add(Gate("Cost", "Budget", FAIL if exceeded else WARN if ev.cost_usd is None and ev.model_calls else PASS,
-             ("over budget: " + "; ".join(exceeded)) if exceeded else cost_detail, "agent-os-kernel BudgetTracker"))
+             ("over budget: " + "; ".join(exceeded)) if exceeded else cost_detail, "AGT-native: agent-os-kernel BudgetTracker"))
     add(Gate("Cost", "Retries", PASS if ev.retries <= config.max_retries else FAIL,
-             f"{ev.retries} re-sent request(s) (limit {config.max_retries})", "in-repo"))
+             f"{ev.retries} re-sent request(s) (limit {config.max_retries})", "Sentinel-specific"))
     over, _ = agt.budget_check(agt.Budget(None, None, None, config.budget.max_duration_seconds),
                                tokens=0, tool_calls=0, cost_usd=None, duration_s=ev.duration_s)
     limit = config.budget.max_duration_seconds
@@ -396,36 +398,36 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
              NOT_APPLICABLE if ev.duration_s is None or limit is None else FAIL if over else PASS,
              "not completed" if ev.duration_s is None else
              f"{ev.duration_s:.1f} s" + (f" (limit {limit:g} s)" if limit is not None else " (no limit set)"),
-             "agent-os-kernel BudgetTracker"))
+             "AGT-native: agent-os-kernel BudgetTracker"))
     timeouts = ev.outcomes.get("timeout", 0)
     add(Gate("Latency", "No timeouts", PASS if not timeouts else WARN,
-             "no model call timed out" if not timeouts else f"{timeouts} model call(s) timed out", "in-repo"))
+             "no model call timed out" if not timeouts else f"{timeouts} model call(s) timed out", "Sentinel-specific"))
 
     # Audit
     add(Gate("Audit", "Sealed record", PASS if inv.verify() else FAIL,
              f"sha256 {(inv.record_sha256 or '')[:12]}… verifies" if inv.verify() else "record does not verify",
-             "in-repo (SHA-256)"))
+             "Sentinel-specific (SHA-256)"))
     provenance = [p for p in _provenances(inv) if p.method == "llm"]
     incomplete = [p for p in provenance if not (p.model and p.prompt_sha256 and p.input_sha256 and p.prompt_version)]
     add(Gate("Audit", "Model and prompt recorded",
              NOT_APPLICABLE if not provenance else PASS if not incomplete else FAIL,
              "no model output" if not provenance else
              f"model, prompt version and input/prompt hashes recorded for {len(provenance)} model step(s)"
-             if not incomplete else f"{len(incomplete)} model step(s) without full provenance", "in-repo"))
+             if not incomplete else f"{len(incomplete)} model step(s) without full provenance", "Sentinel-specific"))
     llm_steps = [s for s in inv.steps if s.agent and s.detail != "deterministic"]
     add(Gate("Audit", "Model calls on record",
              NOT_APPLICABLE if not llm_steps else PASS if len(calls) >= len(llm_steps) else FAIL,
              "no model was used" if not llm_steps else
              f"{len(calls)} call record(s) for {len(llm_steps)} model step(s)"
              + ("" if len(calls) >= len(llm_steps) else " (recorded before calls were attributed to investigations?)"),
-             "in-repo (model_calls)"))
+             "Sentinel-specific (model_calls)"))
     if ev.action_status in DECIDED:
         captured = any(a.get("new_status") == ev.action_status and a.get("actor") for a in later)
         add(Gate("Audit", "Human decision captured", PASS if captured else FAIL,
                  "the decision is in the append-only audit log with its actor" if captured
-                 else "no audit entry for the decision", "in-repo (audit log)"))
+                 else "no audit entry for the decision", "Sentinel-specific (audit log)"))
     else:
-        add(Gate("Audit", "Human decision captured", PENDING, "no decision yet", "in-repo (audit log)"))
+        add(Gate("Audit", "Human decision captured", PENDING, "no decision yet", "Sentinel-specific (audit log)"))
     return gates
 
 
@@ -522,7 +524,7 @@ def _mean(values) -> float | None:
 
 def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], verdicts: list[dict],
               investigations: list[Investigation], config: GateConfig, engine: Any) -> dict[str, Any]:
-    """The metric groups for a window. AGT where it computes correctly; in-repo otherwise, marked."""
+    """The metric groups for a window. Every value names its kind: AGT-native, AGT-compatible or Sentinel-specific."""
     from agent_sre.evals import EvalCriterion
 
     model_runs = [e for e in evaluations if e.used_model]
@@ -547,18 +549,18 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
         for v in decided)
     contradiction = agt.share(evaluations, lambda e: e.contradictions > 0)
     quality = {
-        "decision_quality": {"value": score, "samples": scored, "source": "agent-sre EvaluationEngine"},
-        "evidence_grounding": {"value": grounding, "samples": grounded_runs, "source": "agent-sre EvaluationEngine"},
-        "recommendation_accuracy": {"value": accuracy, "samples": accuracy_n, "source": "agent-sre EvaluationEngine"},
+        "decision_quality": {"value": score, "samples": scored, "source": "AGT-native: agent-sre EvaluationEngine"},
+        "evidence_grounding": {"value": grounding, "samples": grounded_runs, "source": "AGT-native: agent-sre EvaluationEngine"},
+        "recommendation_accuracy": {"value": accuracy, "samples": accuracy_n, "source": "AGT-native: agent-sre EvaluationEngine"},
         "unsupported_claim_rate": {"value": unsupported, "samples": claims_judged,
-                                   "source": "agent-sre HallucinationRate (judged by the grounding gate)"},
-        "false_escalation_rate": {"value": false_escalation[0], "samples": false_escalation[1], "source": "in-repo"},
-        "missed_escalation_rate": {"value": missed_escalation[0], "samples": missed_escalation[1], "source": "in-repo"},
-        "human_override_rate": {"value": override[0], "samples": override[1], "source": "in-repo"},
-        "calibration_error": {"value": calibration[0], "samples": calibration[1], "source": "in-repo (AGT bug G)"},
-        "contradiction_rate": {"value": contradiction[0], "samples": contradiction[1], "source": "in-repo"},
+                                   "source": "AGT-native: agent-sre HallucinationRate (judged by the grounding gate)"},
+        "false_escalation_rate": {"value": false_escalation[0], "samples": false_escalation[1], "source": "Sentinel-specific"},
+        "missed_escalation_rate": {"value": missed_escalation[0], "samples": missed_escalation[1], "source": "Sentinel-specific"},
+        "human_override_rate": {"value": override[0], "samples": override[1], "source": "Sentinel-specific"},
+        "calibration_error": {"value": calibration[0], "samples": calibration[1], "source": "AGT-compatible: ECE (AGT bug G)"},
+        "contradiction_rate": {"value": contradiction[0], "samples": contradiction[1], "source": "Sentinel-specific"},
         "evidence_improvement": {"value": _mean(e.useful_items for e in model_runs), "samples": len(model_runs),
-                                 "source": "in-repo"},
+                                 "source": "Sentinel-specific"},
     }
 
     # Latency: agent-sre ResponseLatency for every percentile
@@ -611,8 +613,8 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
         "retry_cost_usd": round(sum(c["cost_usd"] for c in known if (c.get("attempts") or 0) > 1), 6) if known else None,
         "failed_call_cost_usd": round(sum(c["cost_usd"] for c in known if c["outcome"] not in SUCCESS_OUTCOMES), 6)
                                 if known else None,
-        "sources": {"per_invocation, per_investigation, per_alert, by_model": "agent-sre CostGuard",
-                    "per_resolved, per_useful_item, retry, failed": "in-repo"},
+        "sources": {"per_invocation, per_investigation, per_alert, by_model": "AGT-native: agent-sre CostGuard",
+                    "per_resolved, per_useful_item, retry, failed": "Sentinel-specific"},
     }
 
     # Reliability: agent-sre FleetManager, TaskSuccessRate
@@ -628,9 +630,10 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
     reliability = {
         "agents": agents,
         "agent_failure_rate": {"value": (1 - agents["success_rate"]) if agents["success_rate"] is not None else None,
-                               "samples": agents["events"], "source": "agent-sre FleetManager"},
-        "call_success_rate": dict(zip(("value", "samples"), agt.success_rate(c["outcome"] in SUCCESS_OUTCOMES
-                                                                              for c in sent))),
+                               "samples": agents["events"], "source": "AGT-native: agent-sre FleetManager"},
+        "call_success_rate": {**dict(zip(("value", "samples"), agt.success_rate(c["outcome"] in SUCCESS_OUTCOMES
+                                                                                 for c in sent))),
+                              "source": "AGT-native: agent-sre TaskSuccessRate"},
         "providers": providers,
         "outcomes": dict(Counter(c["outcome"] for c in calls)),
         "fallback_rate": dict(zip(("value", "samples"), agt.share(
@@ -640,9 +643,10 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
             responded, lambda c: c["outcome"] in ("incomplete", "invalid_output")))),
         "malformed_output_rate": dict(zip(("value", "samples"), agt.share(
             responded, lambda c: c["outcome"] == "invalid_output"))),
-        "output_validity": dict(zip(("value", "samples"), agt.share(responded, lambda c: c["outcome"] == "ok"))),
+        "output_validity": {**dict(zip(("value", "samples"), agt.share(responded, lambda c: c["outcome"] == "ok"))),
+                            "source": "Sentinel-specific"},
         "investigation_completion": {"value": completion[0], "samples": completion[1],
-                                     "source": "agent-sre TaskSuccessRate"},
+                                     "source": "AGT-native: agent-sre TaskSuccessRate"},
     }
 
     # Orchestration
@@ -666,7 +670,7 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
                            for role in stage_order if role in prompt_by_role],
         "max_depth": max((e.depth for e in evaluations), default=None),
         "depth_within_limit": {"value": depth_ok[0], "samples": depth_ok[1], "limit": config.max_depth,
-                               "source": "agent-sre DelegationChainDepth"},
+                               "source": "AGT-native: agent-sre DelegationChainDepth"},
         "termination": dict(Counter(e.termination.split(":")[0] for e in evaluations)),
     }
 
@@ -674,9 +678,9 @@ def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], ver
     compliance = agt.policy_compliance((c["role"], c["outcome"] != "policy_denied") for c in calls)
     governance = {
         "gates": {group: dict(Counter(e.group_status(group) for e in evaluations)) for group in GROUPS},
-        "audit_completeness": dict(zip(("value", "samples"), agt.share(
-            evaluations, lambda e: e.group_status("Audit") in (PASS, PENDING)))),
-        "policy_compliance": {**compliance, "source": "agent-os-kernel GovernanceMetrics"},
+        "audit_completeness": {**dict(zip(("value", "samples"), agt.share(
+            evaluations, lambda e: e.group_status("Audit") in (PASS, PENDING)))), "source": "Sentinel-specific"},
+        "policy_compliance": {**compliance, "source": "AGT-native: agent-os-kernel GovernanceMetrics"},
     }
     return {"quality": quality, "latency": latency, "cost": cost, "reliability": reliability,
             "orchestration": orchestration, "governance": governance,

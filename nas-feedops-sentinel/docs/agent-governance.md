@@ -13,7 +13,9 @@ Everything here is in the repository and runs in CI.
 The short version: **agents advise, rules escalate, people decide.**
 - Every model call and every agent tool call passes an AGT policy first.
 - Every call is carried as OpenTelemetry.
-- Every metric is computed by AGT where AGT computes it correctly.
+- Every metric is AGT-native, AGT-compatible or Sentinel-specific, and says
+  which; none is adopted because an AGT metric has a similar name
+  ([agent-metrics.md](agent-metrics.md)).
 - Nothing an agent says about itself is used to grade it.
 
 ```
@@ -372,9 +374,9 @@ must not depend on an optional collector's retention.
 | Agent metric instruments | AGT agent-sre `create_agent_metrics`, `MetricsExporter` | none | none (`record_slo_from_object` is not used: it exports bug-A values) |
 | Percentiles, cost, reliability, completion, hallucination rate, depth, compliance | AGT agent-sre and agent-os-kernel (boundary 4) | window adapters | fresh objects per window; `collect()` rather than `current_value()` (bugs C, E) |
 | Decision-quality scoring | AGT `EvaluationEngine` | `EvidenceJudge`, "no data" and fail-closed guards | the judge must use independent evidence; bugs H, I, J |
-| Error budget and readiness verdict | none used (AGT `ErrorBudget`, `SLO` are wrong) | `src/readiness.py` | bugs A, B |
-| Calibration | none used (AGT `CalibrationDeltaSLI` is wrong) | ECE in `src/agt_metrics.py` | bug G |
-| Escalation, override, contradiction, handoff, retry-cost metrics | none | `src/evaluation.py` | AGT has no equivalent |
+| Error budget and readiness verdict | none used (AGT `ErrorBudget`, `SLO` are wrong) | `src/readiness.py` (AGT-compatible) | bugs A, B |
+| Calibration | none used (AGT `CalibrationDeltaSLI` is wrong) | ECE in `src/agt_metrics.py` (AGT-compatible) | bug G |
+| Escalation, override, contradiction, handoff, retry-cost metrics | none | `src/evaluation.py` (Sentinel-specific) | AGT defines no such metric |
 | Human approval | Keycloak (identity), Temporal (durable runs) | `src/execution_gate.py`, `src/auth.py` | AGT's `EscalationManager` is in-memory; decisions here must be durable and role-checked |
 | Model gateway | LiteLLM proxy | alias-only settings, scoped key | none |
 | Orchestration | Temporal for API runs | `src/investigation/workflow.py` | a fixed, deterministic order; no model decides the flow |

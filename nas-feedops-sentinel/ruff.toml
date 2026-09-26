@@ -7,4 +7,23 @@ target-version = "py312"
 extend-exclude = ["jumpstart", ".venv", ".local"]
 
 [lint]
-select = ["F", "E9"]
+# DTZ: every datetime in this system is UTC-aware. A naive one is read as local
+# time by asyncpg on a TIMESTAMPTZ column, shifting it by the host's offset.
+# TID251: models are reached only through the LiteLLM proxy, via src/llm_client.py.
+select = ["F", "E9", "DTZ", "TID251"]
+
+[lint.flake8-tidy-imports.banned-api]
+"litellm".msg = "Model calls go through src/llm_client.py, which only talks to the LiteLLM proxy."
+"openai".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"anthropic".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"google.generativeai".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"google.genai".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"mistralai".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"cohere".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+"ollama".msg = "No provider SDKs: every model call goes through the LiteLLM proxy (src/llm_client.py)."
+
+[lint.per-file-ignores]
+# The one place allowed to import litellm.
+"src/llm_client.py" = ["TID251"]
+# Tests build naive datetimes on purpose to check they are normalised, and stub litellm.
+"tests/**" = ["DTZ", "TID251"]

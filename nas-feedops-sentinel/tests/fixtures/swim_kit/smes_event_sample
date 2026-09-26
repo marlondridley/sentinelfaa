@@ -1,0 +1,22 @@
+Property name = blockAtFAA; value = false
+Property name = mex; value = SMES
+Property name = msgType; value = SE
+Property name = sendTo; value = all
+Property name = solace_routing_dest_name; value = SMES/all/false/SE/KIAD/PCT
+Property name = globalID; value = 100748449
+Property name = msgSeqID; value = 222009
+Property name = version; value = 4.0
+Property name = ttl; value = 10000
+Property name = airport; value = KIAD
+Property name = pubNode; value = NEMS_ZTL
+Property name = tracon; value = PCT
+Property name = timeline; value = 1790377751664 1790377751666 1790377751683
+Property name = persistent; value = false
+Property name = timestamp; value = 2026-09-25T23:09:11.666Z
+Property name = JMS_Solace_isXML; value = true
+Property name = JMS_Solace_DeliverToOne; value = false
+Property name = JMS_Solace_DeadMsgQueueEligible; value = false
+Property name = JMS_Solace_ElidingEligible; value = false
+Property name = Solace_JMS_Prop_IS_Reply_Message; value = false
+Property name = JMSXDeliveryCount; value = 1
+{"ns2:SurfaceMovementEventMessage":{"acAddress":710121,"altitude":418.75,"enhancedData":{"departureAirport":"KIAD","eramGufi":"LX283011u5","sfdpsGufi":"us.fdps.2026-09-25T14:37:37Z.000/22/1u5","destinationAirport":"OERK"},"mode3ACode":7056,"runway":"12/30","stid":1629962,"airport":"KIAD","aircraftType":"B77W","xmlns:ns2":"urn:us:gov:dot:faa:atm:terminal:entities:v4-0:smes:surfacemovementevent","callsign":"ZXU339","time":"2026-09-25T23:09:11.665Z","position":{"latitude":38.94216,"longitude":-77.48494},"track":3302,"event":"off","events":{"eventRecord":[{"at":"2026-09-25T22:57:47.675Z","event":"spotout"},{"at":"2026-09-25T23:06:18.675Z","runway":"12/30","event":"runwayin"},{"at":"2026-09-25T23:09:11.665Z","runway":"12/30","event":"runwayout"}]},"status":"airborne"}}

@@ -18,9 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Protocol
 
-import litellm
+# Before the import: otherwise litellm downloads its model-price map from
+# GitHub at import time, an outbound call that is not to the proxy.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import litellm  # noqa: E402
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -33,7 +38,7 @@ from opentelemetry.trace import SpanKind
 from src import telemetry
 from src.agent_tools import ToolCallDenied
 from src.agent_tools import authorize as authorize_tool
-from src.config import settings
+from src.config import proxy_model, settings
 from src.governance import UNREGISTERED_ROLE, evaluate_model_call
 from src.logging_config import get_correlation_id, get_logger
 from src.model_telemetry import ModelCall, classify_outcome
@@ -182,17 +187,16 @@ class LLMClient(Protocol):
 
 
 class LiteLLMClient:
-    """Structured-output client over the LiteLLM proxy."""
+    """
+    Structured-output client over the LiteLLM proxy.
 
-    def __init__(
-        self,
-        model: str | None = None,
-        api_base: str | None = None,
-        api_key: str | None = None,
-    ) -> None:
+    The proxy address and key always come from settings, and every model name is
+    checked as a proxy alias at call time, so no caller can route a request
+    anywhere but the proxy.
+    """
+
+    def __init__(self, model: str | None = None) -> None:
         self._model = model or settings.CRITIC_MODEL
-        self._api_base = api_base or settings.LITELLM_PROXY_URL
-        self._api_key = api_key if api_key is not None else settings.LITELLM_API_KEY
 
     def call_with_tool(
         self,
@@ -237,7 +241,12 @@ class LiteLLMClient:
         the schema repair counted as part of it. `role` names the advisory role calling; a call
         without one is evaluated as unregistered, which the policy refuses.
         """
-        target_model = model or self._model
+        # A proxy alias only, normalized to "openai/<alias>" as the policy
+        # expects it; a provider route is refused before anything else.
+        try:
+            target_model = proxy_model(model or self._model)
+        except ValueError as exc:
+            raise LLMPermanentError(str(exc)) from exc
 
         # Mandatory redaction: every caller of acall_with_tool() goes through
         # this one chokepoint before anything reaches the model host, so a
@@ -368,8 +377,8 @@ class LiteLLMClient:
             response = await litellm.acompletion(
                 model=target_model,
                 messages=messages,
-                api_base=self._api_base,
-                api_key=self._api_key or None,
+                api_base=settings.LITELLM_PROXY_URL,
+                api_key=settings.LITELLM_API_KEY or None,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 response_format={"type": "json_object"},
