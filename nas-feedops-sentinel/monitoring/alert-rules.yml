@@ -31,6 +31,23 @@ groups:
         annotations:
           summary: "Feed at {{ $labels.airport }} degraded or worse for 10 minutes"
 
+      - alert: SwimBacklogNearJanitorAge
+        # The janitor deletes by age (default 5 min), ingested or not: a message that waits longer than that
+        # is gone. This fires while there is still time to act.
+        expr: max(nas_swim_folder_oldest_waiting_seconds{job="nas-sentinel"}) > 180
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "SWIM messages have waited over 3 minutes to be ingested"
+          description: "Messages older than the janitor's age are deleted unprocessed (nas_swim_files_dropped_unprocessed_total). Is the watcher running and keeping up? See nas_swim_folder_backlog_files."
+
+      - alert: SwimFilesDroppedUnprocessed
+        expr: increase(nas_swim_files_dropped_unprocessed_total{job="nas-sentinel"}[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "The Kit-folder janitor deleted messages that were never ingested"
+          description: "The ingest fell behind the janitor's age. Raise the age, or fix the consumer; see docs/operations.md (The FAA SWIM Jumpstart kit)."
+
       - alert: NoEventsIngested
         expr: sum(increase(nas_events_ingested_total[30m])) == 0
         for: 30m
