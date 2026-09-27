@@ -62,6 +62,7 @@ __all__ = [
     "get_recent_events",
     "get_recent_alerts",
     "get_latest_rvr",
+    "get_last_seen_by_feed",
     "get_origin_counts",
     "get_event_counts_by_service",
     "get_validation_summary",
@@ -97,9 +98,6 @@ __all__ = [
     "get_events_by_ids",
     "get_pending_staged_actions",
     "get_recent_staged_actions",
-    "approve_staged_action",
-    "reject_staged_action",
-    "override_staged_action",
     "get_action_audit_log",
     "save_watch_officer_brief",
     "get_latest_watch_officer_brief",
@@ -140,14 +138,14 @@ async def save_alerts(alerts: list[AlertEvent]) -> None:
     await repo.save_alerts(alerts)
 
 
-async def get_recent_events(limit: int = 500) -> list[dict]:
+async def get_recent_events(limit: int = 500, *, data_origin: str | None = None) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_recent_events(limit)
+    return await repo.get_recent_events(limit, data_origin=data_origin)
 
 
-async def get_recent_alerts(limit: int = 200) -> list[dict]:
+async def get_recent_alerts(limit: int = 200, *, data_origin: str | None = None) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_recent_alerts(limit)
+    return await repo.get_recent_alerts(limit, data_origin=data_origin)
 
 
 async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
@@ -160,14 +158,19 @@ async def get_latest_rvr() -> list[dict]:
     return await repo.get_latest_rvr()
 
 
+async def get_last_seen_by_feed(since: datetime) -> dict[tuple[str | None, str | None], datetime]:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.get_last_seen_by_feed(since)
+
+
 async def get_event_counts_by_service() -> list[dict]:
     repo = EventsRepository(await get_db_pool())
     return await repo.get_event_counts_by_service()
 
 
-async def get_validation_summary() -> dict:
+async def get_validation_summary(since: datetime | None = None, *, data_origin: str | None = None) -> dict:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_validation_summary()
+    return await repo.get_validation_summary(since, data_origin=data_origin)
 
 
 async def get_events_for_critic(
@@ -199,9 +202,9 @@ async def get_altitude_distribution(window_minutes: int = 15) -> list[dict]:
     return await repo.get_altitude_distribution(window_minutes)
 
 
-async def get_latency_stats() -> dict:
+async def get_latency_stats(since: datetime | None = None, *, data_origin: str | None = None) -> dict:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_latency_stats()
+    return await repo.get_latency_stats(since, data_origin=data_origin)
 
 
 # ── SWIM file-ingest audit trail (ingest_log) ──────────────────────────────────
@@ -345,39 +348,14 @@ async def merge_pending_duplicates(condition_window: timedelta) -> int:
     return await repo.merge_pending_duplicates(condition_window)
 
 
-async def get_pending_staged_actions() -> list[StagedAction]:
+async def get_pending_staged_actions(*, data_origin: str | None = None) -> list[StagedAction]:
     repo = StagedActionsRepository(await get_db_pool())
-    return await repo.get_pending()
+    return await repo.get_pending(data_origin=data_origin)
 
 
 async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     repo = StagedActionsRepository(await get_db_pool())
     return await repo.get_recent(limit)
-
-
-async def approve_staged_action(
-    action_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> StagedAction | None:
-    repo = StagedActionsRepository(await get_db_pool())
-    return await repo.approve(action_id, actor, note)
-
-
-async def reject_staged_action(
-    action_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> StagedAction | None:
-    repo = StagedActionsRepository(await get_db_pool())
-    return await repo.reject(action_id, actor, note)
-
-
-async def override_staged_action(
-    action_id: str,
-    overridden_recommendation: str | None = None,
-    overridden_severity: str | None = None,
-    actor: str = "dashboard_operator",
-    note: str = "",
-) -> StagedAction | None:
-    repo = StagedActionsRepository(await get_db_pool())
-    return await repo.override(action_id, overridden_recommendation, overridden_severity, actor, note)
 
 
 async def get_action_audit_log(action_id: str | None = None, limit: int = 50) -> list[dict]:
@@ -472,13 +450,16 @@ async def decide_staged_action_with_ticket(
     *,
     overridden_recommendation: str | None = None,
     overridden_severity: str | None = None,
-) -> StagedAction | None:
+) -> tuple[StagedAction | None, bool]:
     """
     Decide a staged action and move its ticket in one transaction: both land or neither.
 
     The ticket moves only when the action itself changed, so a decision that arrives
     after the action was already decided cannot move the ticket to a status that
     disagrees with it.
+
+    Returns the action as it now stands and whether this call changed it, so the
+    caller can tell "decided by me" from "already decided by someone else".
     """
     pool = await get_db_pool()
     async with UnitOfWork(pool) as uow:
@@ -489,4 +470,4 @@ async def decide_staged_action_with_ticket(
         )
         if changed and ticket_id:
             await TicketsRepository(pool).transition_in(uow.conn, ticket_id, ticket_status, actor, note)
-    return action
+    return action, changed

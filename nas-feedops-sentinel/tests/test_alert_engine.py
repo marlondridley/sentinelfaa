@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from src import config
-from src.alert_engine import check_alerts
+from src.alert_engine import check_alerts, stale_feed_alerts
 from src.models import NASEvent
 
 
@@ -153,21 +153,48 @@ def test_below_spike_threshold_no_alert():
 
 # ── ALERT_FEED_STALE ──────────────────────────────────────────────────────────
 
-def test_stale_feed_triggers_alert():
-    stale_age = config.STALE_FEED_SECONDS + 120
-    event = NASEvent(
-        airport_code="KIAD",
-        tracon="PCT",
-        service_name="SMES",
-        message_type="SURFACE_MOVEMENT",
-        event_time_utc=_now() - timedelta(seconds=stale_age + 1),
-        received_time_utc=_now() - timedelta(seconds=stale_age),
-        latency_ms=1_000.0,
-        track_id="TRK9999",
-        validation_status="PASSED",
+def test_a_feed_silent_past_the_limit_raises_a_stale_alert():
+    now = _now()
+    silent = now - timedelta(seconds=config.STALE_FEED_SECONDS + 120)
+    [alert] = stale_feed_alerts({("KIAD", "SMES"): silent, ("KDCA", "SMES"): now}, now)
+    assert (alert.alert_type, alert.severity, alert.airport_code, alert.service_name) == \
+        ("ALERT_FEED_STALE", "WARNING", "KIAD", "SMES")
+    assert alert.data_origin == "live"
+
+
+def test_a_fresh_feed_is_not_stale():
+    assert stale_feed_alerts({("KDCA", "SMES"): _now()}) == []
+
+
+def _start_of_an_evaluation_window() -> tuple[datetime, int]:
+    """A moment pinned to the start of a window, so "a minute later" cannot fall in the next one."""
+    window = max(config.SURFACE_SPIKE_WINDOW_SECONDS, config.STALE_FEED_SECONDS)
+    assert window > 60
+    return datetime.fromtimestamp((int(_now().timestamp() // window) + 1) * window, tz=timezone.utc), window
+
+
+def test_the_same_silence_re_evaluated_is_the_same_alert():
+    now, _ = _start_of_an_evaluation_window()
+    silent = {("KIAD", "SMES"): now - timedelta(seconds=config.STALE_FEED_SECONDS + 120)}
+    [first] = stale_feed_alerts(silent, now)
+    [again] = stale_feed_alerts(silent, now + timedelta(seconds=60))
+    assert first.alert_id == again.alert_id, "one alert per evaluation window, not one per reconciler pass"
+
+
+def test_the_same_silence_in_the_next_window_is_a_new_alert():
+    now, window = _start_of_an_evaluation_window()
+    silent = {("KIAD", "SMES"): now - timedelta(seconds=config.STALE_FEED_SECONDS + 120)}
+    [first] = stale_feed_alerts(silent, now)
+    [later] = stale_feed_alerts(silent, now + timedelta(seconds=window))
+    assert first.alert_id != later.alert_id, "a silence that goes on is put in front of a person again"
+
+
+def test_a_batch_of_old_messages_is_not_a_stale_feed():
+    """A silent feed sends no batch, and a backlog of old files is ingest lag, not silence."""
+    old = NASEvent(
+        airport_code="KIAD", tracon="PCT", service_name="SMES", message_type="SURFACE_MOVEMENT",
+        event_time_utc=_now() - timedelta(seconds=config.STALE_FEED_SECONDS + 121),
+        received_time_utc=_now() - timedelta(seconds=config.STALE_FEED_SECONDS + 120),
+        latency_ms=1_000.0, track_id="TRK9999", validation_status="PASSED",
     )
-    assert "ALERT_FEED_STALE" in _alert_types([event])
-
-
-def test_fresh_feed_no_stale_alert():
-    assert "ALERT_FEED_STALE" not in _alert_types([_smes()])
+    assert "ALERT_FEED_STALE" not in _alert_types([old])
