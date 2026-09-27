@@ -50,6 +50,7 @@ SENSITIVE_FIELDS: frozenset[str] = frozenset({
     "squawk",
     "track_id",
     "callsign",
+    "vehicle_id",
     "latitude",
     "longitude",
     "lat",
@@ -96,6 +97,69 @@ _TAIL_NUMBER_RE = re.compile(r"\bN[0-9]{1,5}[A-Z]{0,2}\b")
 _COORD_PAIR_RE = re.compile(r"-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}")
 
 
+# A pydantic validation error quotes the offending value: "... [type=extra_forbidden,
+# input_value='AAL123', input_type=str]". The field name sits on the line before, so
+# neither pattern above can tie the two together, and the value would go out as-is.
+# Ingest failure text reaches the Feed Diagnostician in exactly this form.
+_INPUT_VALUE = "input_value="
+_INPUT_TYPE = ", input_type="
+
+
+def _input_value_end(text: str, start: int) -> int:
+    """
+    Where the value that begins at `start` ends. A scan, not a pattern, because the value is a Python
+    repr: a dict or list nests, and a pattern that stops at the first closing brace leaves everything
+    after an inner one in the clear. Quotes are honoured (a brace inside a string is not structure)
+    and so are escapes.
+
+    pydantic cuts a long repr short in the middle, so one may never balance; the scan is bounded by
+    pydantic's next field, ", input_type=", or the end of the line, and takes everything up to it.
+    """
+    limit = len(text)
+    for marker in (_INPUT_TYPE, "\n"):
+        found = text.find(marker, start)
+        if found != -1:
+            limit = min(limit, found)
+    depth, quote, k = 0, None, start
+    while k < limit:
+        c = text[k]
+        if quote:
+            if c == "\\":
+                k += 2
+                continue
+            if c == quote:
+                quote = None
+                if depth == 0:
+                    return k + 1                      # a quoted string on its own ends with its quote
+        elif c in "'\"":
+            quote = c
+        elif c in "{[(":
+            depth += 1
+        elif c in "}])":
+            if depth == 0:
+                return k                              # closes something outside the value: the error's own "]"
+            depth -= 1
+            if depth == 0:
+                return k + 1
+        elif depth == 0 and c in ", \t\r":
+            return k                                  # a bare number or word ends at the next separator
+        k += 1
+    return limit
+
+
+def _redact_input_values(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    while True:
+        found = text.find(_INPUT_VALUE, i)
+        if found == -1:
+            out.append(text[i:])
+            return "".join(out)
+        start = found + len(_INPUT_VALUE)
+        out.append(text[i:found] + _INPUT_VALUE + REDACTED)
+        i = _input_value_end(text, start)
+
+
 def redact_text(text: str) -> str:
     """
     Best-effort scrub of a free-text prompt before it reaches an LLM.
@@ -110,6 +174,7 @@ def redact_text(text: str) -> str:
     if not text:
         return text
     text = _FIELD_VALUE_RE.sub(lambda m: f"{m.group('prefix')}\"{REDACTED}\"", text)
+    text = _redact_input_values(text)
     text = _TAIL_NUMBER_RE.sub(REDACTED, text)
     text = _COORD_PAIR_RE.sub(REDACTED, text)
     return text
