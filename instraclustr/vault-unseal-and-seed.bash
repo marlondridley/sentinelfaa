@@ -46,19 +46,23 @@
 #     what actually bounds how long any one secret-id value stays valid
 #     (about one restart cycle) -- the ttl is slack for how long the stack
 #     can go without a restart at all, not a replay window.
-#   sentinel-app / sentinel-migrate: 1h, num_uses=1. Each has exactly ONE
-#     consumer (its own application container), so single-use is exact, not
-#     approximate, here. A fresh secret-id is
-#     minted every run and read exactly once, at process startup, by
-#     src/vault_config.py -- never re-read, never reused (confirmed by
-#     reading that module: the AppRole login happens once, when the
-#     Settings object is first constructed). An hour is slack for the
-#     documented bring-up order (vault-unseal, then the app containers) to
-#     complete, not for the file to sit around. Consequence: restarting a
-#     single app container WITHOUT re-running vault-unseal first now fails
-#     to log in (its secret-id was already consumed, or is stale) -- restart
-#     vault-unseal (or the whole stack) first. This is new; the old
-#     infinite ttl/uses tolerated it silently.
+#   sentinel-app / sentinel-migrate: 1h, num_uses=0 (unlimited within the
+#     ttl). NOT num_uses=1: each of these is read by MULTIPLE independent
+#     containers sharing the one on-disk file, not one -- confirmed by
+#     grepping docker-compose.yml, not assumed: sentinel-app is mounted into
+#     api, dashboard, sentinel AND temporal-worker (four); sentinel-migrate
+#     into migrate AND temporal-worker (two). Each container does log in
+#     exactly once, at its own process startup (src/vault_config.py), never
+#     re-reading the file after -- but num_uses=1 counts logins against the
+#     FILE, not the reader, so with several readers of the same file the
+#     first to start succeeds and every other one gets "invalid role or
+#     secret ID". This broke every consumer of sentinel-app but one, live,
+#     before it was caught: dashboard and sentinel started first and got the
+#     one use; api and temporal-worker did not. An hour of ttl is still
+#     slack for the documented bring-up order (vault-unseal, then the app
+#     containers) to complete before the credential ages out; rotation on
+#     every vault-unseal run is what bounds a given secret-id's real
+#     lifetime to about one restart cycle.
 #
 # States handled:
 #   uninitialized          -> init 3/2, distribute shares, set up, revoke root
@@ -86,31 +90,47 @@ json_str() { flat "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | sed -E 's/.*"([
 json_arr() { flat "$1" | grep -o "\"$2\":\[[^]]*\]" | sed -E 's/^[^[]*\[//; s/\]$//' | tr ',' '\n' | tr -d '"'; }
 status_field() { vault status -format=json 2>/dev/null | tr -d '\n\t ' | grep -o "\"$1\":[a-z]*" | sed 's/.*://'; }
 
-write_secret_file() {  # write_secret_file <path> <value>  (owner-only; umask scoped to a subshell)
+write_secret_file() {  # write_secret_file <path> <value> [mode]  (default 600, owner-only)
     # A shell redirect's O_CREAT only applies permission bits when the file does
     # not already exist -- overwriting one with the wrong mode (a file this same
     # helper wrote before this fix existed, or one from a compromised umask)
     # would silently keep that mode forever. rm -f first so the redirect always
-    # creates the file fresh, under THIS call's umask, every time.
+    # creates the file fresh (under a restrictive umask, then chmod to the
+    # requested mode explicitly -- simpler and more certain than computing a
+    # umask for an arbitrary target mode).
+    mode="${3:-600}"
     mkdir -p "$(dirname "$1")"
     rm -f "$1"
     ( umask 077; printf '%s\n' "$2" > "$1" )
+    chmod "$mode" "$1"
 }
 
-# rotate_secret_id <role> <dir>: mint a fresh secret-id for <role> into <dir>/secret_id
-# (owner-only), destroying every existing accessor first. Used for all three roles --
-# vault-bootstrap included, right after it logs in with the one it just used, so the
-# file on disk is always a not-yet-used secret-id, and the one that was just read is
-# never valid again regardless of its own num_uses/ttl.
+# rotate_secret_id <role> <dir> [mode]: mint a fresh secret-id for <role> into
+# <dir>/secret_id (mode, default 600/owner-only), destroying every existing
+# accessor first. Used for all three roles -- vault-bootstrap included, right
+# after it logs in with the one it just used, so the file on disk is always a
+# not-yet-used secret-id, and the one that was just read is never valid again
+# regardless of its own num_uses/ttl.
+#
+# mode matters here specifically: vault-bootstrap's files are read only by
+# this script, litellm-bootstrap.sh and the migration script -- all the
+# hashicorp/vault image, always root, so 600 (the default) is right and has
+# always worked. sentinel-app/sentinel-migrate's files are read by THIS
+# PROJECT's OWN application image, running as its own dedicated non-root user
+# (sentinel, uid 999 in the current build) -- a different UID we have no way
+# to coordinate with from this script, in a different image entirely. 600
+# there is unreadable by that user, full stop: proven live, not theorized --
+# api/sentinel/migrate all failed at the Vault login step itself (the file
+# could not even be read) the first time this ran with 600 for those two.
 rotate_secret_id() {
     # set -e does not fire on a command that fails inside a $(...) used as
     # someone else's argument, so a denied/failed `vault` call here would
     # otherwise write an EMPTY secret file and let the script report success.
     # Capture the value and check the exit status explicitly instead.
-    role="$1"; dir="$2"
+    role="$1"; dir="$2"; mode="${3:-600}"
     role_id=$(vault read -field=role_id "auth/approle/role/$role/role-id") \
         || { echo "ERROR: could not read role-id for $role" >&2; exit 1; }
-    write_secret_file "$dir/role_id" "$role_id"
+    write_secret_file "$dir/role_id" "$role_id" "$mode"
     # Accessors are UUIDs; with none issued yet `vault list` prints "{}".
     for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null \
                       | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'); do
@@ -119,7 +139,7 @@ rotate_secret_id() {
     done
     secret_id=$(vault write -f -field=secret_id "auth/approle/role/$role/secret-id") \
         || { echo "ERROR: could not mint a secret-id for $role" >&2; exit 1; }
-    write_secret_file "$dir/secret_id" "$secret_id"
+    write_secret_file "$dir/secret_id" "$secret_id" "$mode"
 }
 
 store_shares() {  # store_shares <file listing base64 shares, one per line>
@@ -204,15 +224,15 @@ POLICY
 
     for role in sentinel-app sentinel-migrate; do
         vault write "auth/approle/role/$role" token_policies="$role" \
-            token_ttl=1h token_max_ttl=4h secret_id_ttl=1h secret_id_num_uses=1 >/dev/null
+            token_ttl=1h token_max_ttl=4h secret_id_ttl=1h secret_id_num_uses=0 >/dev/null
     done
 
     # The very first secret-id for each role -- the every-run section below only
     # rotates one that already exists, and vault-bootstrap needs its own to log
     # in on the run right after this one.
     rotate_secret_id vault-bootstrap "$BOOT_DIR"
-    rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app"
-    rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate"
+    rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app" 644
+    rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate" 644
     echo "vault-bootstrap and sentinel-* AppRoles ready"
 }
 
@@ -303,8 +323,8 @@ echo "secrets seeded"
 
 # ── Service AppRoles: secret-ids only. Policy and role config are root_setup()'s
 # job now (see above); vault-bootstrap's policy does not grant it either. ──────
-rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app"
-rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate"
+rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app" 644
+rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate" 644
 echo "approle sentinel-app, sentinel-migrate: secret_id rotated"
 
 echo "=== Vault bootstrap complete ==="
