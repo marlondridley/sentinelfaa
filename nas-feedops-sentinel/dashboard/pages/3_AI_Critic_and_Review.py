@@ -42,6 +42,7 @@ from src.async_bridge import run_async as run
 from src.auth import AuthorizationError, Decision, authorize, can_decide, format_actor
 from src.config import settings
 from src.execution_gate import (
+    DecisionNotRecorded,
     decide_staged_action,
     get_action_audit_log,
     get_pending_staged_actions,
@@ -73,6 +74,10 @@ def _decide(action_id: str, decision: Decision, note: str | None, **override) ->
     except AuthorizationError as exc:
         st.error(str(exc))
         return
+    except DecisionNotRecorded as exc:
+        # Someone decided it first (or it was merged): nothing was written for this operator.
+        st.toast(f"{decision.value.upper()} not recorded for {action_id[:8]}: {exc}")
+        st.rerun()
     st.toast(f"{decision.value.upper()} recorded for {action_id[:8]} by {format_actor(_principal)}")
     st.rerun()
 
@@ -217,16 +222,20 @@ def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
     st.caption(f"Signed as {format_actor(_principal)}; one audit entry per review.")
     if st.button(f"{verb} {len(chosen)} review(s)", type="primary", use_container_width=True,
                  disabled=not note.strip()):
-        refused = []
+        refused, skipped, recorded = [], 0, 0
         for a in chosen:
             try:
                 run(decide_staged_action(a.action_id, decision, _principal, note.strip()))
+                recorded += 1
             except AuthorizationError as exc:
                 refused.append(str(exc))
+            except DecisionNotRecorded:
+                skipped += 1
         if refused:
             st.error(refused[0])
             return
-        st.toast(f"{verb.upper()} recorded for {len(chosen)} review(s) by {format_actor(_principal)}")
+        st.toast(f"{verb.upper()} recorded for {recorded} of {len(chosen)} review(s) by {format_actor(_principal)}"
+                 + (f"; {skipped} already decided by someone else, not changed" if skipped else ""))
         st.rerun()
 
 

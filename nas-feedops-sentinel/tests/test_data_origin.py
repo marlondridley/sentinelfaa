@@ -71,10 +71,13 @@ def test_alerts_inherit_their_events_origin_and_aggregates_say_mixed():
     per_event = check_alerts([_event("synthetic")])
     assert per_event and {a.data_origin for a in per_event} == {"synthetic"}
 
-    # An aggregate alert (stale feed) over live + synthetic events is "mixed".
-    stale = [_event("live", feed_status="operational", minutes_ago=30),
-             _event("synthetic", feed_status="operational", minutes_ago=31)]
-    agg = [a for a in check_alerts(stale) if a.alert_type == "ALERT_FEED_STALE"]
+    # An aggregate alert (a surface-event spike) over live + synthetic events is "mixed".
+    now = datetime.now(timezone.utc)
+    spike = [NASEvent(airport_code="KDCA", tracon="PCT", service_name="SMES", message_type="SURFACE_MOVEMENT",
+                      event_time_utc=now, received_time_utc=now, latency_ms=100.0, track_id="TRK1234",
+                      surface_event_type="TAXI_OUT", data_origin="live" if i % 2 else "synthetic")
+             for i in range(settings.SURFACE_SPIKE_COUNT)]
+    agg = [a for a in check_alerts(spike) if a.alert_type == "ALERT_SURFACE_EVENT_SPIKE"]
     assert agg and agg[0].data_origin == "mixed"
 
 

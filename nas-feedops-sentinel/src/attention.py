@@ -9,6 +9,7 @@ queue, feed status, RVR readings and alerts; no model is involved.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from src import config, storage
@@ -21,6 +22,26 @@ def _item(text: str, level: str, page: str, **params: Any) -> dict:
     """`params` are the page's own filters -- the Alert Log's include `severity`."""
     return {"text": text, "severity": level, "page": page,
             "params": {k: v for k, v in params.items() if v is not None}}
+
+
+def _lowest_rvr(row: dict) -> tuple[int, str] | None:
+    """
+    (feet, position) of the lowest RVR position on a live, current reading, or
+    None. The alert rule raises CRITICAL for any of the three positions, so the
+    strip reads all three; a replayed reading, or one older than the stale-feed
+    limit, is not the picture right now (a silent feed shows as a feed item).
+    """
+    if row.get("data_origin", "live") != "live":
+        return None
+    seen = row.get("event_time_utc")
+    if isinstance(seen, datetime):
+        seen = seen if seen.tzinfo else seen.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - seen).total_seconds() > config.STALE_FEED_SECONDS:
+            return None
+    positions = [(row[k], name) for k, name in
+                 (("rvr_touchdown", "touchdown"), ("rvr_midpoint", "midpoint"), ("rvr_rollout", "rollout"))
+                 if row.get(k) is not None]
+    return min(positions) if positions else None
 
 
 async def build_attention_items(
@@ -43,10 +64,11 @@ async def build_attention_items(
 
     threshold = config.RVR_LOW_THRESHOLD_FT
     for row in rvr_rows:
-        touchdown = row.get("rvr_touchdown")
-        if touchdown is not None and touchdown < threshold:
+        lowest = _lowest_rvr(row)
+        if lowest and lowest[0] < threshold:
+            feet, position = lowest
             airport, runway = row.get("airport_code"), row.get("runway")
-            items.append(_item(f"Low RVR {airport} runway {runway}: {touchdown:,} ft at touchdown "
+            items.append(_item(f"Low RVR {airport} runway {runway}: {feet:,} ft at {position} "
                                f"(minimum {threshold:,})", ACTION, "health", airport=airport, focus="rvr"))
 
     for airport, status in sorted(airport_status.items()):
@@ -60,9 +82,12 @@ async def build_attention_items(
             items.append(_item(f"{airport} feed degraded: check the ISMC link", ATTENTION, "health",
                                airport=airport, focus="status"))
 
-    critical = [a for a in alerts if a.get("severity") == "CRITICAL"]
-    if critical and not pending:
-        items.append(_item(f"{len(critical)} CRITICAL alert(s) with no open review", ATTENTION,
+    # Every CRITICAL alert is covered by a review, open or decided; one that no
+    # review covers is a gap in the escalation path (the reconciler repairs it).
+    critical_ids = [a["alert_id"] for a in alerts if a.get("severity") == "CRITICAL" and a.get("alert_id")]
+    uncovered = set(critical_ids) - set(await storage.get_covering_actions(critical_ids))
+    if uncovered:
+        items.append(_item(f"{len(uncovered)} CRITICAL alert(s) not covered by any review", ATTENTION,
                            "alerts", severity="CRITICAL"))
 
     if not airport_status:

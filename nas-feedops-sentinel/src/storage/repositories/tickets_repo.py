@@ -189,7 +189,16 @@ class TicketsRepository:
         return [_row_to_ticket(r) for r in rows]
 
     async def get_drafts(self) -> list[OperationalTicket]:
-        rows = await self._pool.fetch("SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC")
+        # A draft awaits a decision, so only one whose review is still PENDING counts:
+        # a review that was merged into another, expired or decided elsewhere has no
+        # decision left to make, and its ticket must not keep the queue looking busy.
+        rows = await self._pool.fetch(
+            """SELECT t.* FROM operational_tickets t
+               WHERE t.status = 'DRAFT'
+                 AND NOT EXISTS (SELECT 1 FROM staged_actions s
+                                 WHERE s.action_id = t.action_id AND s.status <> 'PENDING')
+               ORDER BY t.generated_at DESC"""
+        )
         return [_row_to_ticket(r) for r in rows]
 
     async def get_by_id(self, ticket_id: str) -> OperationalTicket | None:

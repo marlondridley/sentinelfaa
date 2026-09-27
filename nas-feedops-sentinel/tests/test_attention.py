@@ -67,9 +67,47 @@ async def test_a_stale_feed_links_to_that_airports_status_and_is_not_an_action()
 
 
 async def test_critical_alerts_without_a_review_link_to_the_filtered_alert_log():
-    items = await build_attention_items(ALL_OK, [{"severity": "CRITICAL"}, {"severity": "WARNING"}], [])
+    unreviewed = _critical("KIAD")
+    await storage.save_alerts([unreviewed])                      # saved, never staged: no review covers it
+    alerts = [{"alert_id": unreviewed.alert_id, "severity": "CRITICAL"}, {"alert_id": "w", "severity": "WARNING"}]
+    items = await build_attention_items(ALL_OK, alerts, [])
     assert [(i["text"], i["page"], i["params"]) for i in items] == [
-        ("1 CRITICAL alert(s) with no open review", "alerts", {"severity": "CRITICAL"})]
+        ("1 CRITICAL alert(s) not covered by any review", "alerts", {"severity": "CRITICAL"})]
+
+
+async def test_critical_alerts_a_review_covers_are_not_a_gap_open_or_decided():
+    from src.auth import Decision, Principal, PrincipalSource
+    from src.execution_gate import decide_staged_action
+
+    covered, other = _critical("KDCA"), _critical("KIAD")
+    [review, _] = await _stage(covered, other)
+    officer = Principal("jsmith", "Watch Officer", PrincipalSource.OIDC, roles=frozenset({"watch_officer"}))
+    await decide_staged_action(review.action_id, Decision.REJECT, officer, "artefact")
+    alerts = [{"alert_id": a.alert_id, "severity": "CRITICAL"} for a in (covered, other)]
+    items = await build_attention_items(ALL_OK, alerts, [])
+    assert [i["severity"] for i in items] == [ACTION], "only the still-pending review shows"
+    assert "KIAD" in items[0]["text"] and not any("not covered" in i["text"] for i in items)
+
+
+async def test_a_gap_is_not_hidden_by_an_unrelated_pending_review():
+    await _stage(_critical("KDCA"))                              # an open review for something else
+    gap = _critical("KIAD")
+    await storage.save_alerts([gap])
+    items = await build_attention_items(ALL_OK, [{"alert_id": gap.alert_id, "severity": "CRITICAL"}], [])
+    assert any("1 CRITICAL alert(s) not covered by any review" == i["text"] for i in items)
+
+
+async def test_low_rvr_at_any_position_counts_but_a_replayed_or_stale_reading_does_not():
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    midpoint = {"airport_code": "KBWI", "runway": "10", "rvr_touchdown": 1500, "rvr_midpoint": 900,
+                "rvr_rollout": 1400, "data_origin": "live", "event_time_utc": now}
+    [item] = await build_attention_items(ALL_OK, [], [midpoint])
+    assert item["text"] == "Low RVR KBWI runway 10: 900 ft at midpoint (minimum 1,200)"
+    replayed = {**midpoint, "data_origin": "replay"}
+    old = {**midpoint, "event_time_utc": now - timedelta(days=3)}
+    assert [i["severity"] for i in await build_attention_items(ALL_OK, [], [replayed, old])] == [GOOD]
 
 
 async def test_the_most_urgent_comes_first_and_all_clear_only_when_nothing_else():

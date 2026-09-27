@@ -778,6 +778,86 @@ def test_a_claim_abandoned_by_a_dead_scanner_is_released_and_processed(tmp_path:
     assert (tmp_path / "p" / "1787863348274").exists()
 
 
+def test_a_deferred_scan_archives_and_logs_only_once_committed(tmp_path: Path, monkeypatch):
+    """The events exist only in memory until the caller stores them, so the file must not be
+    archived, or logged as processed, before then."""
+    import shutil
+
+    from src import swim_file_ingest
+
+    logged: list[dict] = []
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: logged.extend(entries))
+    folder = tmp_path / "log"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+
+    events, stats = swim_file_ingest.scan_swim_folder(
+        folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f", defer_archive=True)
+
+    assert len(events) == 1
+    assert not (tmp_path / "p" / "1787863348274").exists(), "not archived before its events are stored"
+    assert (folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274").exists(), "still claimed"
+    assert logged == [], "and not yet logged as processed"
+
+    assert swim_file_ingest.commit_scan(stats) == 1
+    assert (tmp_path / "p" / "1787863348274").exists()
+    assert [(e["file"], e["status"]) for e in logged] == [("1787863348274", "processed")]
+    assert swim_file_ingest.commit_scan(stats) == 0, "committing twice is a no-op"
+
+
+def test_events_that_were_never_stored_are_scanned_again_after_the_claim_times_out(tmp_path: Path, monkeypatch):
+    import os
+    import shutil
+    import time
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    swim_file_ingest.scan_swim_folder(folder, processed_dir=tmp_path / "p", failed_dir=tmp_path / "f",
+                                      defer_archive=True)             # the pipeline then failed: no commit
+
+    claimed = folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274"
+    old = time.time() - swim_file_ingest.CLAIM_TIMEOUT_SECONDS - 5
+    os.utime(claimed, (old, old))
+    events, stats = swim_file_ingest.scan_swim_folder(folder, processed_dir=tmp_path / "p",
+                                                      failed_dir=tmp_path / "f", defer_archive=True)
+    assert len(events) == 1, "the file was not lost"
+    swim_file_ingest.commit_scan(stats)
+    assert (tmp_path / "p" / "1787863348274").exists()
+
+
+def test_the_watcher_survives_a_failed_pipeline_and_leaves_the_files_claimed(tmp_path: Path, monkeypatch):
+    import shutil
+
+    from src import swim_file_ingest
+
+    _isolate_ingest_log(monkeypatch)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    shutil.copy(CAPTURE / "1787863348274", folder / "1787863348274")
+    monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "p")
+    monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "f")
+    calls = []
+
+    def failing_pipeline(events, stats):
+        calls.append(len(events))
+        swim_file_ingest.request_shutdown()          # one pass is all this test needs
+        raise RuntimeError("database is down")
+
+    try:
+        swim_file_ingest.watch_swim_folder(folder, reconcile_interval=0.1, on_events=failing_pipeline)
+    finally:
+        swim_file_ingest._shutdown_requested.clear()
+
+    assert calls == [1], "the pipeline was given the events"
+    assert (folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274").exists(), "and the file was not archived"
+    assert not (tmp_path / "p" / "1787863348274").exists()
+
+
 def test_a_read_only_folder_is_still_ingested_in_place(tmp_path: Path, monkeypatch):
     """No claim is possible on a read-only mount; files are read in place, as before."""
     import os
