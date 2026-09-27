@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from src.airports import tracon_of
-from src.vault_config import VaultSettingsSource
+from src.vault_config import VaultAgentFileSettingsSource, VaultSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 
@@ -377,10 +377,21 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # VAULT_AGENT_ENV_FILE set: this container's compose service has the
+        # spiffe-helper + Vault Agent sidecars (Phase 4's cutover) -- read
+        # Agent's already-rendered file, never talk to Vault directly.
+        # Not set: today's still-live AppRole path, unchanged. See
+        # VaultAgentFileSettingsSource's docstring in src/vault_config.py for
+        # why both exist right now instead of one replacing the other.
+        vault_source: PydanticBaseSettingsSource = (
+            VaultAgentFileSettingsSource(settings_cls)
+            if os.getenv("VAULT_AGENT_ENV_FILE")
+            else VaultSettingsSource(settings_cls)
+        )
         # Priority: Init args > Vault > Environment Variables > .env file
         return (
             init_settings,
-            VaultSettingsSource(settings_cls),
+            vault_source,
             env_settings,
             dotenv_settings,
         )
