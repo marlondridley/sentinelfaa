@@ -23,7 +23,7 @@ None of this counts against the five minutes.
 **Say:** "This watches the FAA's SWIM feeds for the four Potomac TRACON airports. It answers one question: can we trust the aircraft-movement data SWIM is publishing right now, and if not, who needs to look at what?"
 
 **Show:**
-- The **verdict** at the top: GREEN, AMBER or RED. It is computed by fixed rules from schema conformance, ingest lag and open CRITICAL alerts. No model is consulted, so the verdict can never disagree with the numbers under it.
+- The **verdict** at the top: GREEN, AMBER or RED. It is computed by fixed rules from schema conformance, ingest lag and open CRITICAL alerts of the last hour, and only from the live feed: a replayed capture is never counted, so after a replay with the watcher off it says NO DATA and names the replayed events it left out. No model is consulted, so the verdict can never disagree with the numbers under it.
 - The **yellow banner**: "Not all data here is live FAA feed data". It counts the replayed events, if you replayed a capture. Every event is tagged with where it came from at ingest, and a file or API client cannot label itself live.
 - The **AI investigation** card: five indicators for the latest investigation, no more. Evidence quality, confidence, investigation time, cost, and "Human review: Required". Every figure is measured from the record, not reported by the agents.
 - The **Watch Officer brief** sits below the verdict and is visibly subordinate to it: a narrative, not a verdict.

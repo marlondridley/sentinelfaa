@@ -75,6 +75,8 @@ async def test_every_critical_alert_is_staged_whatever_the_llm_does(monkeypatch,
     import src.critic_agent as critic_agent
     import src.investigation.specialists as specialists
     import src.watch_officer_agent as watch_officer
+    from src.execution_gate import condition_key
+    from src.models import AlertEvent
 
     make_client = _LLM_OUTCOMES[outcome]
     monkeypatch.setattr(settings, "CRITIC_ENABLED", True)
@@ -90,7 +92,12 @@ async def test_every_critical_alert_is_staged_whatever_the_llm_does(monkeypatch,
     assert critical, "scenario must produce CRITICAL alerts or this test measures nothing"
     # One review per condition, each covering its alerts: every CRITICAL alert
     # is covered by exactly one pending review, and each review has a ticket.
-    conditions = {(a["alert_type"], a["airport_code"], a["service_name"]) for a in critical}
+    conditions = {
+        condition_key(AlertEvent(
+            alert_type=a["alert_type"], severity=a["severity"], airport_code=a["airport_code"],
+            service_name=a["service_name"], description=a["description"], data_origin=a["data_origin"]))
+        for a in critical
+    }
     assert summary["staged_count"] == len(pending) == len(conditions)
     covered = [alert_id for action in pending for alert_id in await storage.get_covered_alert_ids(action.action_id)]
     assert sorted(covered) == sorted(a["alert_id"] for a in critical)

@@ -15,7 +15,9 @@ invariant directly against the database and repairs it:
     it unrecorded would hide the gap. EXPIRED records it without doing either.
 
 It also exports the invariant as metrics (nas_critical_alerts_unstaged,
-nas_hitl_oldest_pending_age_seconds) for the alert rules.
+nas_hitl_oldest_pending_age_seconds) for the alert rules, and raises
+ALERT_FEED_STALE for any live feed that has gone quiet: that rule needs the
+clock and the last message stored, which a per-batch pipeline never has.
 
     python -m src.reconcile          # one pass, prints a summary
 """
@@ -25,6 +27,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from src import storage
+from src.alert_engine import stale_feed_alerts
 from src.config import settings
 from src.execution_gate import _idempotency_key, stage_critical_alert
 from src.logging_config import get_logger
@@ -52,6 +55,11 @@ async def reconcile_unstaged(*, limit: int = 1000) -> dict[str, int]:
     now = datetime.now(timezone.utc)
     window = timedelta(minutes=settings.RECONCILE_STAGE_WINDOW_MINUTES)
     staged, expired = [], 0
+
+    stale = stale_feed_alerts(
+        await storage.get_last_seen_by_feed(now - timedelta(seconds=settings.STALE_FEED_LOOKBACK_SECONDS)), now)
+    if stale:
+        await storage.save_alerts(stale)
 
     for row in await pool.fetch(_UNSTAGED_SQL, limit):
         alert = AlertEvent(**dict(row))
@@ -99,7 +107,7 @@ async def reconcile_unstaged(*, limit: int = 1000) -> dict[str, int]:
     HITL_OLDEST_PENDING_SECONDS.set(max(0.0, waited))
 
     summary = {"staged_pending": len(staged), "recorded_expired": expired, "still_unstaged": remaining,
-               "merged": merged}
+               "merged": merged, "stale_feeds": len(stale)}
     if staged or expired or remaining or merged:
         _log.warning("reconcile_repaired", extra=summary)
     return summary
