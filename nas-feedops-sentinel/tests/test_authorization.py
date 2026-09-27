@@ -141,12 +141,24 @@ async def test_a_crash_moving_the_ticket_rolls_back_the_decision(db, monkeypatch
 
 
 async def test_a_late_decision_cannot_move_the_ticket_away_from_the_action(db):
-    from src.execution_gate import decide_staged_action
+    from src.execution_gate import DecisionNotRecorded, decide_staged_action
 
     action = await _staged(db)
-    await db.reject_staged_action(action.action_id, actor="earlier", note="")
-    result = await decide_staged_action(action.action_id, Decision.APPROVE, _kc("watch_officer"), "late")
-    assert result.status == "REJECTED"
+    await decide_staged_action(action.action_id, Decision.REJECT, _kc("supervisor"), "earlier")
+    with pytest.raises(DecisionNotRecorded, match="already REJECTED") as refused:
+        await decide_staged_action(action.action_id, Decision.APPROVE, _kc("watch_officer"), "late")
+    assert refused.value.action.status == "REJECTED"
+    assert (await db.get_ticket_by_action_id(action.action_id)).status == "REJECTED"
+    assert len([a for a in await db.get_action_audit_log(action_id=action.action_id)
+                if a["new_status"] == "APPROVED"]) == 0, "the refused decision wrote nothing"
+
+
+async def test_monitor_without_a_ticket_is_reported_not_silently_dropped(db):
+    from src.execution_gate import DecisionNotRecorded, decide_staged_action
+
+    action = await _staged(db)
+    with pytest.raises(DecisionNotRecorded, match="no escalation ticket"):
+        await decide_staged_action("no-such-action", Decision.MONITOR, _kc("watch_officer"), "watching")
     assert (await db.get_ticket_by_action_id(action.action_id)).status == "DRAFT"
 
 

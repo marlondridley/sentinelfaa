@@ -126,6 +126,24 @@ async def test_an_investigation_is_evaluated_from_the_record_not_from_the_agents
     assert ev.gate_summary["Audit"] == "PASS"
 
 
+async def test_a_merge_is_not_an_automated_decision(monkeypatch):
+    from src.storage.pool import get_db_pool
+    from src.storage.repositories.audit_repo import AuditLogRepository
+
+    _, action, _ = await _investigate(monkeypatch, use_llm=False)
+    pool = await get_db_pool()
+
+    async def system_row(new_status: str) -> str:
+        async with pool.acquire() as conn:
+            await AuditLogRepository(pool).write(conn, action.action_id, previous_status="PENDING",
+                                                 new_status=new_status, actor="system", note="test")
+        ev = await evaluation.evaluate_action(action.action_id)
+        return {(g.group, g.name): g.status for g in ev.gates}[("Safety", "No automated decision")]
+
+    assert await system_row("MERGED") == "PASS", "folding a duplicate review is housekeeping"
+    assert await system_row("APPROVED") == "FAIL", "the system deciding an action is still refused"
+
+
 async def test_a_rules_only_investigation_has_no_decision_score_rather_than_a_made_up_one(monkeypatch):
     _, action, _ = await _investigate(monkeypatch, use_llm=False)
     ev = await evaluation.evaluate_action(action.action_id)

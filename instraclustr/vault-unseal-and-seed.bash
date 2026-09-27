@@ -13,8 +13,14 @@
 # initialization (or at the one-time migration from the old layout), long
 # enough to create the `vault-bootstrap` AppRole -- then it is revoked. Every
 # later run authenticates as vault-bootstrap, whose policy can seed this
-# project's secrets and manage its sentinel-* AppRoles, and nothing else (it
-# cannot unseal, seal, mount engines or mint root). For break-glass access,
+# project's secrets and write its sentinel-* policies and AppRoles. It cannot
+# unseal, seal, mount engines or generate a root token -- but writing an ACL
+# policy and minting a secret ID for a role bound to it is root-equivalent, so
+# treat vault-init-data/bootstrap/secret_id (it never expires) as a root
+# credential: owner-only, off shared storage, out of images and backups.
+# (Removing that power means writing the sentinel-* policies once, under root,
+# and reducing the every-run reconcile below to secret-ID rotation; a policy
+# change would then need the break-glass token.) For break-glass access,
 # regenerate a root token from two shares: `vault operator generate-root`.
 #
 # States handled:
@@ -88,8 +94,9 @@ root_setup() {
 
     vault policy write vault-bootstrap - <<'POLICY'
 # The bootstrap jobs (this script, litellm-bootstrap.sh). Seed this project's
-# secrets and manage its sentinel-* AppRoles; nothing else. No sys/seal,
-# sys/mounts writes, sys/generate-root, or other auth methods.
+# secrets and manage its sentinel-* policies and AppRoles. No sys/seal,
+# sys/mounts writes, sys/generate-root, or other auth methods -- but policy
+# and role management is itself root-equivalent (see the header).
 path "secret/data/*"                       { capabilities = ["create", "update", "read"] }
 path "secret/metadata/*"                   { capabilities = ["read", "list"] }
 path "sys/policies/acl/sentinel-*"         { capabilities = ["create", "update", "read"] }

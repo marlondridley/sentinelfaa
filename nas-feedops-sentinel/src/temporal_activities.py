@@ -11,7 +11,7 @@ from src import config
 from src.logging_config import bind_correlation_id, get_logger
 from src.models import NASEvent
 from src.pipeline import run_pipeline
-from src.swim_file_ingest import scan_swim_folder
+from src.swim_file_ingest import commit_scan, scan_swim_folder
 
 _log = get_logger(__name__)
 
@@ -48,8 +48,13 @@ async def ingest_folder_activity(
     # Temporal requires of async activities anyway. (The storage pool is
     # per-loop -- see src/storage/pool.py -- so the scan's writes on the
     # bridge loop and run_pipeline's on this one no longer collide.)
-    events, stats = await asyncio.to_thread(scan_swim_folder, source)
+    #
+    # The scan defers archiving: the files are archived and logged only once the
+    # pipeline has stored their events. If it fails they stay claimed, Temporal
+    # retries the activity, and the claims are released for another scan.
+    events, stats = await asyncio.to_thread(scan_swim_folder, source, defer_archive=True)
     summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
+    await asyncio.to_thread(commit_scan, stats)
     _log.info(
         "ingest_folder_complete",
         extra={"stats": stats.as_dict(), "pipeline": summary},

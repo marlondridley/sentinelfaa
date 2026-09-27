@@ -166,3 +166,23 @@ def test_unlinked_tile_is_a_div_with_no_drill_affordance():
     tile = theme.kpi("Messages ingested", "319")
     assert tile.startswith('<div class="kpi"')
     assert "kpi-drill" not in tile
+
+
+def test_map_tooltips_escape_what_they_interpolate():
+    """
+    The deck.gl tooltip is HTML assigned to innerHTML, and aircraft_id is an
+    unconstrained string from the feed or an API client: unescaped, a crafted id
+    runs script in an operator's signed-in session when they hover the aircraft.
+    """
+    import ast
+    from pathlib import Path
+
+    page = Path(__file__).resolve().parent.parent / "dashboard" / "pages" / "1_Live_Airspace.py"
+    tips = [value for node in ast.walk(ast.parse(page.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "tip"]
+    assert len(tips) == 2, "the airport and the aircraft tooltips"
+    for tip in tips:
+        assert isinstance(tip, ast.Call) and ast.unparse(tip.func) == "theme._esc", ast.unparse(tip)[:80]
+
