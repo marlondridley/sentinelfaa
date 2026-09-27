@@ -11,17 +11,54 @@
 #
 # No root token on disk. The root token exists only in memory, at first
 # initialization (or at the one-time migration from the old layout), long
-# enough to create the `vault-bootstrap` AppRole -- then it is revoked. Every
-# later run authenticates as vault-bootstrap, whose policy can seed this
-# project's secrets and write its sentinel-* policies and AppRoles. It cannot
-# unseal, seal, mount engines or generate a root token -- but writing an ACL
-# policy and minting a secret ID for a role bound to it is root-equivalent, so
-# treat vault-init-data/bootstrap/secret_id (it never expires) as a root
-# credential: owner-only, off shared storage, out of images and backups.
-# (Removing that power means writing the sentinel-* policies once, under root,
-# and reducing the every-run reconcile below to secret-ID rotation; a policy
-# change would then need the break-glass token.) For break-glass access,
-# regenerate a root token from two shares: `vault operator generate-root`.
+# enough to create the vault-bootstrap AppRole, write every sentinel-*
+# policy and AppRole role, and revoke itself -- see root_setup(). Every
+# later run authenticates as vault-bootstrap, which can do exactly two
+# things: read/write the KV secrets this project seeds, and rotate a
+# sentinel-* role's secret-id (mint a fresh one, destroy the old accessor).
+# It cannot write a policy, reconfigure a role's own token_policies, unseal,
+# seal, mount engines or generate a root token -- so it is not root-
+# equivalent: there is no policy it can write and bind a role to, the way
+# the old wide grant (sys/policies/acl/sentinel-*, plus create/update on
+# the bare auth/approle/role/sentinel-* path) allowed. See
+# instraclustr/vault-migrate-to-scoped-bootstrap.bash for the one-time,
+# root-token-authenticated migration this ran through on an existing
+# deployment, and for the red-team check that proves it.
+#
+# Trade-off, unchanged from before: a policy change, or adding a new
+# sentinel-* role, needs the break-glass root token now, not just a
+# bootstrap re-run. Regenerate one from two shares:
+# `vault operator generate-root`.
+#
+# secret_id_ttl / secret_id_num_uses, set once per role in root_setup():
+#   vault-bootstrap: 24h, num_uses=0 (unlimited uses within the ttl). Not
+#     num_uses=1: this identity has TWO one-shot consumers sharing the SAME
+#     on-disk secret-id every boot cycle -- this script, and
+#     litellm-bootstrap.sh, which docker-compose.yml orders strictly after
+#     this one finishes (depends_on: vault-unseal: condition:
+#     service_completed_successfully) and which reads the very file this
+#     script just rotated. num_uses=1 would let this script's own login
+#     succeed, hand litellm-bootstrap.sh a working secret-id for THIS cycle,
+#     and leave nothing for THIS SCRIPT's own next invocation -- breaking
+#     the bootstrap chain after exactly one restart, silently, since nothing
+#     rotates it again until this script itself next runs. Every run still
+#     rotates it (rotate_secret_id, below) right after using it, which is
+#     what actually bounds how long any one secret-id value stays valid
+#     (about one restart cycle) -- the ttl is slack for how long the stack
+#     can go without a restart at all, not a replay window.
+#   sentinel-app / sentinel-migrate: 1h, num_uses=1. Each has exactly ONE
+#     consumer (its own application container), so single-use is exact, not
+#     approximate, here. A fresh secret-id is
+#     minted every run and read exactly once, at process startup, by
+#     src/vault_config.py -- never re-read, never reused (confirmed by
+#     reading that module: the AppRole login happens once, when the
+#     Settings object is first constructed). An hour is slack for the
+#     documented bring-up order (vault-unseal, then the app containers) to
+#     complete, not for the file to sit around. Consequence: restarting a
+#     single app container WITHOUT re-running vault-unseal first now fails
+#     to log in (its secret-id was already consumed, or is stale) -- restart
+#     vault-unseal (or the whole stack) first. This is new; the old
+#     infinite ttl/uses tolerated it silently.
 #
 # States handled:
 #   uninitialized          -> init 3/2, distribute shares, set up, revoke root
@@ -29,15 +66,10 @@
 #                             set up with the old root token, revoke it, and
 #                             delete init.json
 #   normal                 -> unseal with shares 1+2 if sealed, log in as
-#                             vault-bootstrap, seed and reconcile
+#                             vault-bootstrap, seed and rotate secret-ids
 set -eu
 
 : "${VAULT_ADDR:?Missing VAULT_ADDR}"
-: "${POSTGRES_USER:?Missing POSTGRES_USER}"
-: "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
-: "${POSTGRES_DB:?Missing POSTGRES_DB}"
-: "${LITELLM_MASTER_KEY:?Missing LITELLM_MASTER_KEY}"
-: "${APP_DB_PASSWORD:?Missing APP_DB_PASSWORD}"
 APP_DB_USER="${APP_DB_USER:-sentinel_app}"
 
 INIT_DIR="${INIT_DIR:-/vault-init-data}"
@@ -55,8 +87,39 @@ json_arr() { flat "$1" | grep -o "\"$2\":\[[^]]*\]" | sed -E 's/^[^[]*\[//; s/\]
 status_field() { vault status -format=json 2>/dev/null | tr -d '\n\t ' | grep -o "\"$1\":[a-z]*" | sed 's/.*://'; }
 
 write_secret_file() {  # write_secret_file <path> <value>  (owner-only; umask scoped to a subshell)
+    # A shell redirect's O_CREAT only applies permission bits when the file does
+    # not already exist -- overwriting one with the wrong mode (a file this same
+    # helper wrote before this fix existed, or one from a compromised umask)
+    # would silently keep that mode forever. rm -f first so the redirect always
+    # creates the file fresh, under THIS call's umask, every time.
     mkdir -p "$(dirname "$1")"
+    rm -f "$1"
     ( umask 077; printf '%s\n' "$2" > "$1" )
+}
+
+# rotate_secret_id <role> <dir>: mint a fresh secret-id for <role> into <dir>/secret_id
+# (owner-only), destroying every existing accessor first. Used for all three roles --
+# vault-bootstrap included, right after it logs in with the one it just used, so the
+# file on disk is always a not-yet-used secret-id, and the one that was just read is
+# never valid again regardless of its own num_uses/ttl.
+rotate_secret_id() {
+    # set -e does not fire on a command that fails inside a $(...) used as
+    # someone else's argument, so a denied/failed `vault` call here would
+    # otherwise write an EMPTY secret file and let the script report success.
+    # Capture the value and check the exit status explicitly instead.
+    role="$1"; dir="$2"
+    role_id=$(vault read -field=role_id "auth/approle/role/$role/role-id") \
+        || { echo "ERROR: could not read role-id for $role" >&2; exit 1; }
+    write_secret_file "$dir/role_id" "$role_id"
+    # Accessors are UUIDs; with none issued yet `vault list` prints "{}".
+    for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null \
+                      | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'); do
+        vault write -f "auth/approle/role/$role/secret-id-accessor/destroy" secret_id_accessor="$accessor" >/dev/null \
+            || { echo "ERROR: could not destroy a stale secret-id accessor for $role" >&2; exit 1; }
+    done
+    secret_id=$(vault write -f -field=secret_id "auth/approle/role/$role/secret-id") \
+        || { echo "ERROR: could not mint a secret-id for $role" >&2; exit 1; }
+    write_secret_file "$dir/secret_id" "$secret_id"
 }
 
 store_shares() {  # store_shares <file listing base64 shares, one per line>
@@ -88,25 +151,69 @@ unseal_with() {  # unseal_with <key>...
 }
 
 # ── Setup that needs root (first init, or migration). Root is in VAULT_TOKEN. ─
+# Everything that WRITES A POLICY, or reconfigures a role's own token_policies/
+# ttls, lives here and only here -- never in the every-run section below, which
+# runs as vault-bootstrap. That is the whole fix: a caller with only the every-
+# run identity cannot write a policy and bind a role to it, because writing a
+# policy is not a capability vault-bootstrap's own policy grants itself.
 root_setup() {
     vault secrets list -format=json | grep -q '"secret/":' || vault secrets enable -path=secret kv-v2
     vault auth list -format=json | grep -q '"approle/":' || vault auth enable approle
 
     vault policy write vault-bootstrap - <<'POLICY'
-# The bootstrap jobs (this script, litellm-bootstrap.sh). Seed this project's
-# secrets and manage its sentinel-* policies and AppRoles. No sys/seal,
-# sys/mounts writes, sys/generate-root, or other auth methods -- but policy
-# and role management is itself root-equivalent (see the header).
-path "secret/data/*"                       { capabilities = ["create", "update", "read"] }
-path "secret/metadata/*"                   { capabilities = ["read", "list"] }
-path "sys/policies/acl/sentinel-*"         { capabilities = ["create", "update", "read"] }
-path "auth/approle/role/sentinel-*"        { capabilities = ["create", "update", "read", "list"] }
+# The bootstrap job (this script). Seed this project's secrets and rotate the
+# sentinel-* AppRoles' secret-ids; nothing that authors a policy or reconfigures
+# a role. No sys/seal, sys/mounts, sys/policies/acl writes, sys/generate-root,
+# other auth methods, or auth/approle/role/<name> (the bare path -- role
+# config) writes. This is why it is not root-equivalent: it can rotate a
+# credential for a role someone else already defined, never define one itself.
+#
+# Each role is named explicitly rather than "sentinel-*": Vault's ACL glob only
+# matches a trailing "*" against the REST of the path, not "*" followed by more
+# literal path (auth/approle/role/sentinel-*/role-id does not match
+# auth/approle/role/sentinel-app/role-id) -- confirmed the hard way, against a
+# real Vault, before this was caught as a silent 403 rather than a policy typo.
+path "secret/data/*"                                 { capabilities = ["create", "update", "read"] }
+path "secret/metadata/*"                             { capabilities = ["read", "list"] }
+path "auth/approle/role/vault-bootstrap/secret-id"                  { capabilities = ["create", "update"] }
+path "auth/approle/role/vault-bootstrap/secret-id-accessor/destroy" { capabilities = ["create", "update"] }
+path "auth/approle/role/vault-bootstrap/role-id"                    { capabilities = ["read"] }
+path "auth/approle/role/sentinel-app/secret-id"                     { capabilities = ["create", "update"] }
+path "auth/approle/role/sentinel-app/secret-id-accessor/destroy"    { capabilities = ["create", "update"] }
+path "auth/approle/role/sentinel-app/role-id"                       { capabilities = ["read"] }
+path "auth/approle/role/sentinel-migrate/secret-id"                 { capabilities = ["create", "update"] }
+path "auth/approle/role/sentinel-migrate/secret-id-accessor/destroy" { capabilities = ["create", "update"] }
+path "auth/approle/role/sentinel-migrate/role-id"                   { capabilities = ["read"] }
 POLICY
     vault write auth/approle/role/vault-bootstrap token_policies=vault-bootstrap \
-        token_ttl=15m token_max_ttl=30m secret_id_ttl=0 secret_id_num_uses=0 >/dev/null
-    write_secret_file "$BOOT_DIR/role_id" "$(vault read -field=role_id auth/approle/role/vault-bootstrap/role-id)"
-    write_secret_file "$BOOT_DIR/secret_id" "$(vault write -f -field=secret_id auth/approle/role/vault-bootstrap/secret-id)"
-    echo "vault-bootstrap AppRole ready"
+        token_ttl=15m token_max_ttl=30m secret_id_ttl=24h secret_id_num_uses=0 >/dev/null
+
+    # ── Service AppRoles: policy and role config, authored once, under root ──
+    vault policy write sentinel-app - <<'POLICY'
+# Application services: their database identity and LiteLLM key, nothing else.
+path "secret/data/postgres/app"    { capabilities = ["read"] }
+path "secret/data/sentinel/config" { capabilities = ["read"] }
+POLICY
+
+    vault policy write sentinel-migrate - <<'POLICY'
+# Schema job: the owner identity plus what it grants to the application role.
+path "secret/data/postgres/credentials" { capabilities = ["read"] }
+path "secret/data/postgres/app"         { capabilities = ["read"] }
+path "secret/data/sentinel/config"      { capabilities = ["read"] }
+POLICY
+
+    for role in sentinel-app sentinel-migrate; do
+        vault write "auth/approle/role/$role" token_policies="$role" \
+            token_ttl=1h token_max_ttl=4h secret_id_ttl=1h secret_id_num_uses=1 >/dev/null
+    done
+
+    # The very first secret-id for each role -- the every-run section below only
+    # rotates one that already exists, and vault-bootstrap needs its own to log
+    # in on the run right after this one.
+    rotate_secret_id vault-bootstrap "$BOOT_DIR"
+    rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app"
+    rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate"
+    echo "vault-bootstrap and sentinel-* AppRoles ready"
 }
 
 revoke_root() {
@@ -116,6 +223,20 @@ revoke_root() {
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+# Guarded so vault-migrate-to-scoped-bootstrap.bash can dot-source this file
+# for its functions (write_secret_file, rotate_secret_id, root_setup,
+# revoke_root) without running the init/unseal/every-run state machine below
+# -- an already-initialized, already-unsealed Vault needs none of that, and
+# the migration script drives root_setup()/revoke_root() itself against a
+# root token the operator supplies.
+if [ "${VAULT_BOOTSTRAP_SOURCED:-0}" != "1" ]; then
+
+: "${POSTGRES_USER:?Missing POSTGRES_USER}"
+: "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
+: "${POSTGRES_DB:?Missing POSTGRES_DB}"
+: "${LITELLM_MASTER_KEY:?Missing LITELLM_MASTER_KEY}"
+: "${APP_DB_PASSWORD:?Missing APP_DB_PASSWORD}"
+
 wait_for_vault
 
 if [ "$(status_field initialized)" != "true" ]; then
@@ -163,6 +284,11 @@ VAULT_TOKEN=$(vault write -field=token auth/approle/login \
 export VAULT_TOKEN
 echo "=== Authenticated as vault-bootstrap ==="
 
+# Rotate vault-bootstrap's own secret-id immediately: the one just used above is
+# never valid again after this, so a stolen copy of it is worthless from here on,
+# and the file on disk is always the one due for the NEXT run, not this one.
+rotate_secret_id vault-bootstrap "$BOOT_DIR"
+
 # ── Seed secrets (idempotent) ─────────────────────────────────────────────────
 vault kv put secret/postgres/credentials \
     username="${POSTGRES_USER}" password="${POSTGRES_PASSWORD}" database="${POSTGRES_DB}" >/dev/null
@@ -175,33 +301,12 @@ vault kv put secret/litellm \
 # a scoped virtual key, not the master key.
 echo "secrets seeded"
 
-# ── Service AppRoles: least privilege, secret IDs rotated every start ────────
-vault policy write sentinel-app - <<'POLICY'
-# Application services: their database identity and LiteLLM key, nothing else.
-path "secret/data/postgres/app"    { capabilities = ["read"] }
-path "secret/data/sentinel/config" { capabilities = ["read"] }
-POLICY
-
-vault policy write sentinel-migrate - <<'POLICY'
-# Schema job: the owner identity plus what it grants to the application role.
-path "secret/data/postgres/credentials" { capabilities = ["read"] }
-path "secret/data/postgres/app"         { capabilities = ["read"] }
-path "secret/data/sentinel/config"      { capabilities = ["read"] }
-POLICY
-
-for role in sentinel-app sentinel-migrate; do
-    vault write "auth/approle/role/$role" token_policies="$role" \
-        token_ttl=1h token_max_ttl=4h secret_id_ttl=0 secret_id_num_uses=0 >/dev/null
-    dir="$INIT_DIR/approle/$role"
-    mkdir -p "$dir"
-    vault read -field=role_id "auth/approle/role/$role/role-id" > "$dir/role_id"
-    # Accessors are UUIDs; with none issued yet `vault list` prints "{}".
-    for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null \
-                      | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'); do
-        vault write -f "auth/approle/role/$role/secret-id-accessor/destroy" secret_id_accessor="$accessor" >/dev/null
-    done
-    vault write -f -field=secret_id "auth/approle/role/$role/secret-id" > "$dir/secret_id"
-    echo "approle $role: policy written, secret_id rotated"
-done
+# ── Service AppRoles: secret-ids only. Policy and role config are root_setup()'s
+# job now (see above); vault-bootstrap's policy does not grant it either. ──────
+rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app"
+rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate"
+echo "approle sentinel-app, sentinel-migrate: secret_id rotated"
 
 echo "=== Vault bootstrap complete ==="
+
+fi  # VAULT_BOOTSTRAP_SOURCED
