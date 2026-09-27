@@ -9,18 +9,30 @@
     so building an image for it added a Maven/JDK-25 step that bought nothing.
 
     What this script does:
-      1. Reads the SWIM_* credentials from ..\.env so they never appear on a
-         command line, in PowerShell history, or in a process list argument
-         that other local users can read.
+      1. Reads the SWIM_* credentials from ..\.env. The password reaches the
+         kit in a private, owner-only config file (-Dconfig.file) that is
+         deleted when the kit exits, never as a -D argument: an argument is
+         visible in the process list and is recorded by command-line process
+         auditing (Windows event 4688, Sysmon event 1, EDR).
       2. Checks that a Java 25+ runtime is present -- the shipped jar is
          compiled to bytecode major 69 and will not load on anything older.
-      3. Creates the output directory and launches the kit from its parent,
-         because MessageFileOutput hardcodes its destination to <cwd>\log\.
+      3. Builds lib\swim-ingest-output.jar from
+         src\main\java\...\IngestFolderFileOutput.java against the kit's jar
+         (needs a JDK, i.e. javac, not just a JRE) when it is missing or older
+         than its source.
+      4. Launches the kit with that class as its output. The stock
+         MessageFileOutput is NOT used: the kit acknowledges a message when its
+         output returns, and that output logs a failed write and returns, so a
+         message could be acknowledged with nothing on disk. IngestFolderFileOutput
+         writes one durable record per message (fsync, atomic rename) and halts
+         the JVM before returning if it cannot, so the broker redelivers.
+      5. Restarts the kit when it exits, with a growing pause, because it now
+         exits on a failed write and on a lost broker connection. Nothing is
+         lost by that: what it had not acknowledged, the broker sends again.
 
-    -Djson=true -Dheaders=true are NOT optional. src/swim_file_ingest.py's
-    _parse_jms_message_file() parses exactly that shape: zero or more
-    "Property name = <k>; value = <v>" header lines, then one JSON object.
-    Drop either flag and every file lands in data/failed/.
+    -Djson=true -Dheaders=true are NOT optional. The record carries the JMS
+    properties (the SWIM message identity) and the payload converted to JSON;
+    without them the ingest quarantines every message.
 
 .EXAMPLE
     cd jumpstart
@@ -34,7 +46,10 @@
 param(
     # Defaults to ..\data\raw\swim_live\log, which is what SWIM_RAW_FOLDER
     # in .env points the watcher at. Change both together or not at all.
-    [string]$OutputDir
+    [string]$OutputDir,
+
+    # Run the kit once and return its exit code instead of restarting it.
+    [switch]$NoRestart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,12 +118,10 @@ if ($versionOutput -match 'version "(\d+)') {
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repoRoot 'data\raw\swim_live\log'
 }
-$launchDir = Split-Path -Parent $OutputDir   # MessageFileOutput writes to <cwd>\log\
-$leaf      = Split-Path -Leaf $OutputDir
-
-if ($leaf -ne 'log') {
-    Write-Warning "MessageFileOutput always writes to a folder literally named 'log' under the working directory. '$leaf' will be ignored; output will go to $launchDir\log."
-}
+# The kit's own log (messages.log, from its logging config) goes to <cwd>\log\, so the
+# kit runs from the parent of OutputDir to keep it beside the records. The records
+# themselves go wherever -DoutputDir says.
+$launchDir = Split-Path -Parent $OutputDir
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
@@ -116,6 +129,40 @@ $jar = Join-Path $PSScriptRoot 'lib\jumpstart-jar-with-dependencies.jar'
 if (-not (Test-Path $jar)) {
     throw "Prebuilt jar not found at $jar."
 }
+
+# --- Build the ingest output ----------------------------------------------
+# Compiled here rather than shipped: it is our source, and the jar is not tracked.
+$outputSource = Join-Path $PSScriptRoot 'src\main\java\com\harris\cinnato\outputs\IngestFolderFileOutput.java'
+$outputJar    = Join-Path $PSScriptRoot 'lib\swim-ingest-output.jar'
+if (-not (Test-Path $outputSource)) {
+    throw "Cannot find $outputSource."
+}
+if (-not (Test-Path $outputJar) -or (Get-Item $outputSource).LastWriteTimeUtc -gt (Get-Item $outputJar).LastWriteTimeUtc) {
+    $javac  = Get-Command javac -ErrorAction SilentlyContinue
+    $jarCmd = Get-Command jar -ErrorAction SilentlyContinue
+    if (-not $javac -or -not $jarCmd) {
+        throw "Building the ingest output needs a JDK ('javac' and 'jar' on PATH), not just a JRE. Install Temurin 25 (JDK)."
+    }
+    $build = Join-Path ([IO.Path]::GetTempPath()) ("swim-ingest-build-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $build | Out-Null
+    try {
+        # javac and jar report on stderr; see the java -version note above.
+        $ErrorActionPreference = 'Continue'
+        & $javac.Source -Xlint:all -cp $jar -d $build $outputSource
+        $compiled = $LASTEXITCODE
+        if ($compiled -eq 0) {
+            & $jarCmd.Source cf $outputJar -C $build .
+            $compiled = $LASTEXITCODE
+        }
+        $ErrorActionPreference = 'Stop'
+        if ($compiled -ne 0) { throw "Building $outputJar failed (exit code $compiled)." }
+    } finally {
+        $ErrorActionPreference = 'Stop'
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $build
+    }
+    Write-Host "Built $outputJar" -ForegroundColor DarkGray
+}
+$classpath = $jar + [IO.Path]::PathSeparator + $outputJar
 
 Write-Host ""
 Write-Host "Broker    : $($settings['SWIM_PROVIDER_URL'])"
@@ -127,21 +174,49 @@ Write-Host ""
 Write-Host "Ctrl+C to stop. The sentinel container picks these up automatically." -ForegroundColor DarkGray
 Write-Host ""
 
-# Launch from the parent so the hardcoded .\log\ resolves to $OutputDir.
+# The kit reads its settings with Typesafe Config, and -Dconfig.file names the file
+# it loads as its application config, so the password goes there instead of on the
+# command line. The file is created empty, restricted to this user, and only then
+# given the secret; it is removed when the kit exits.
+$secretConf = Join-Path ([IO.Path]::GetTempPath()) ("swim-kit-" + [guid]::NewGuid().ToString('N') + ".conf")
+
+$exitCode = 0
 Push-Location $launchDir
 try {
-    & java `
-        "-DproviderUrl=$($settings['SWIM_PROVIDER_URL'])" `
-        "-Dqueue=$($settings['SWIM_QUEUE'])" `
-        "-DconnectionFactory=$($settings['SWIM_CONNECTION_FACTORY'])" `
-        "-Dusername=$($settings['SWIM_USERNAME'])" `
-        "-Dpassword=$($settings['SWIM_PASSWORD'])" `
-        "-Dvpn=$($settings['SWIM_VPN'])" `
-        "-Doutput=com.harris.cinnato.outputs.MessageFileOutput" `
-        "-Djson=true" `
-        "-Dheaders=true" `
-        "-Dmetrics=true" `
-        -jar $jar
+    New-Item -ItemType File -Path $secretConf | Out-Null
+    & icacls $secretConf /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict $secretConf to the current user; refusing to write the SWIM password to it." }
+    # A HOCON quoted string: backslash and double quote are the only characters to escape.
+    $escaped = $settings['SWIM_PASSWORD'].Replace('\', '\\').Replace('"', '\"')
+    [IO.File]::WriteAllText($secretConf, "password = `"$escaped`"`n", (New-Object Text.UTF8Encoding($false)))
+
+    $delay = 2
+    while ($true) {
+        $started = Get-Date
+        & java `
+            "-Dconfig.file=$secretConf" `
+            "-DproviderUrl=$($settings['SWIM_PROVIDER_URL'])" `
+            "-Dqueue=$($settings['SWIM_QUEUE'])" `
+            "-DconnectionFactory=$($settings['SWIM_CONNECTION_FACTORY'])" `
+            "-Dusername=$($settings['SWIM_USERNAME'])" `
+            "-Dvpn=$($settings['SWIM_VPN'])" `
+            "-Doutput=com.harris.cinnato.outputs.IngestFolderFileOutput" `
+            "-DoutputDir=$OutputDir" `
+            "-Djson=true" `
+            "-Dheaders=true" `
+            "-Dmetrics=true" `
+            -cp $classpath com.harris.cinnato.Consumer
+        $exitCode = $LASTEXITCODE
+        if ($NoRestart) { break }
+
+        $ranFor = [int]((Get-Date) - $started).TotalSeconds
+        if ($ranFor -gt 300) { $delay = 2 }     # it was healthy for a while: start the backoff over
+        Write-Warning "The kit stopped (exit code $exitCode) after $ranFor s. Restarting in $delay s; the broker redelivers whatever it had not acknowledged."
+        Start-Sleep -Seconds $delay
+        $delay = [Math]::Min($delay * 2, 60)
+    }
 } finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue $secretConf
     Pop-Location
 }
+exit $exitCode
