@@ -35,6 +35,10 @@ x-app-env: &app-env
   SWIM_RAW_FOLDER: ${SWIM_RAW_FOLDER:-/app/data/raw}
   # The kit writes on the host; file events do not cross the bind mount.
   SWIM_WATCH_POLLING: ${SWIM_WATCH_POLLING:-true}
+  # What is in scope (src/airports.py; docs/operations.md, "Scope"). Empty airports is the default: the
+  # four Potomac TRACON airports.
+  SUPPORTED_AIRPORTS: ${SUPPORTED_AIRPORTS:-}
+  SUPPORTED_TRACON: ${SUPPORTED_TRACON:-PCT}
   # Database: the application role through PgBouncer. DATABASE_URL is empty
   # on purpose, so it is rebuilt from these settings rather than inherited
   # from .env with the owner's credentials in it.

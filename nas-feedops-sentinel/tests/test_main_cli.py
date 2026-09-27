@@ -37,7 +37,7 @@ def run_replay(monkeypatch, tmp_path):
 
 def test_replay_hands_the_pipeline_the_scanned_events_not_the_tuple(monkeypatch, run_replay):
     events = generate_cascade_failure_scenario()
-    monkeypatch.setattr(main, "scan_swim_folder", lambda path: (events, IngestStats()))
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: (events, IngestStats()))
     fallback_called = []
     monkeypatch.setattr(main, "replay_from_directory", lambda path: fallback_called.append(path) or ([], []))
 
@@ -50,14 +50,14 @@ def test_replay_hands_the_pipeline_the_scanned_events_not_the_tuple(monkeypatch,
 
 def test_replay_falls_back_to_directory_replay_when_the_scan_finds_nothing(monkeypatch, run_replay):
     events = generate_cascade_failure_scenario()
-    monkeypatch.setattr(main, "scan_swim_folder", lambda path: ([], IngestStats()))
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: ([], IngestStats()))
     monkeypatch.setattr(main, "replay_from_directory", lambda path: (events, []))
 
     assert run_replay() == [(events, "REPLAY")]
 
 
 def test_replay_with_nothing_anywhere_does_not_run_the_pipeline(monkeypatch, run_replay):
-    monkeypatch.setattr(main, "scan_swim_folder", lambda path: ([], IngestStats()))
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: ([], IngestStats()))
     monkeypatch.setattr(main, "replay_from_directory", lambda path: ([], []))
 
     assert run_replay() == []

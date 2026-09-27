@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from src import config
 from src.alert_engine import check_alerts
 from src.demo_scenario import generate_cascade_failure_scenario
 from src.guardrails import InputGuardrail, OutputGuardrail
@@ -43,10 +44,10 @@ def _gen_clean_state() -> list[NASEvent]:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     events = []
-    for airport in ["KDCA", "KIAD", "KBWI", "KADW"]:
+    for airport in sorted(config.SUPPORTED_AIRPORTS):
         events.append(
             NASEvent(
-                tracon="PCT",
+                tracon=config.SUPPORTED_TRACON,
                 airport_code=airport,
                 service_name="ISMC",
                 message_type="link_status",
@@ -59,7 +60,7 @@ def _gen_clean_state() -> list[NASEvent]:
         )
         events.append(
             NASEvent(
-                tracon="PCT",
+                tracon=config.SUPPORTED_TRACON,
                 airport_code=airport,
                 service_name="APDS_RVR",
                 message_type="rvr_reading",

@@ -36,7 +36,7 @@ import pydeck as pdk
 import streamlit as st
 
 from lib import theme
-from lib.data import PCT_AIRPORTS, fetch_live_events
+from lib.data import AIRPORTS, fetch_live_events
 from lib.page_setup import bootstrap_page
 from src import storage
 from src.async_bridge import run_async as run
@@ -141,7 +141,9 @@ map_col, side_col = st.columns([3, 2])
 
 with map_col:
     airport_data = []
-    for code, info in PCT_AIRPORTS.items():
+    for code, info in AIRPORTS.items():
+        if info["lat"] is None:      # not in src/airports.py: counted below, but nowhere to put a marker
+            continue
         status = health.get("airport_status", {}).get(code, "NO DATA")
         airport_data.append({
             "code": code,
@@ -152,7 +154,7 @@ with map_col:
             "color": _STATUS_RGB.get(str(status), _STATUS_RGB["NO DATA"]) + [230],
             "ring": _STATUS_RGB.get(str(status), _STATUS_RGB["NO DATA"]) + [90],
             "label": f"{code}",
-            "tip": f"{code} — {info['name']} — feed {status}",
+            "tip": theme._esc(f"{code} — {info['name']} — feed {status}"),
         })
 
     aircraft_data = []
@@ -174,7 +176,9 @@ with map_col:
             "rules": ac.get("flight_rules") or "—",
             "color": _PHASE_COLOR.get(phase, _PHASE_COLOR["UNKNOWN"]) + [235],
             "radius": 900 if is_focus else 520,
-            "tip": (
+            # The deck.gl tooltip is HTML assigned to innerHTML, and aircraft_id is whatever the
+            # feed or an API client sent, so it is escaped like every other stored string.
+            "tip": theme._esc(
                 f"{ac.get('aircraft_id', '?')} — {phase} — "
                 f"{ac.get('altitude_ft') or 0:,} ft {trend} — "
                 f"{ac.get('ground_speed_kt') or 0} kt"
@@ -324,7 +328,7 @@ with side_col:
 
     st.markdown('<div class="ev-title">Movements by facility</div>', unsafe_allow_html=True)
     _tiles = []
-    for code, info in PCT_AIRPORTS.items():
+    for code, info in AIRPORTS.items():
         pc = phase_counts.get(code, {})
         total_mv = sum(pc.values())
         status = str(health.get("airport_status", {}).get(code, "NO DATA"))

@@ -15,6 +15,14 @@ from src.models import PlannerResult
 from src.prompts_loader import system_prompt, tool_schema
 
 
+def _airport_list() -> str:
+    """The supported airports as prose: 'KDCA', 'KDCA and KIAD', 'KDCA, KIAD, and KBWI'."""
+    codes = sorted(settings.SUPPORTED_AIRPORTS)
+    if len(codes) < 3:
+        return " and ".join(codes)
+    return ", ".join(codes[:-1]) + ", and " + codes[-1]
+
+
 async def _read_recent_activity() -> tuple[list[dict], list[dict], list[dict]]:
     return (
         await storage.get_recent_events(limit=20),
@@ -163,7 +171,7 @@ class PlannerAgent:
                 answer=answer,
                 confidence=None,
                 recommended_actions=actions,
-                sub_queries=["Verify telemetry heartbeats across KDCA, KIAD, KBWI, and KADW."],
+                sub_queries=[f"Verify telemetry heartbeats across {_airport_list()}."],
             )
 
         if has_critical:
