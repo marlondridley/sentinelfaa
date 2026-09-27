@@ -222,32 +222,165 @@ Not containerized, deliberately. The kit ships a prebuilt fat jar
 (`jumpstart/lib/jumpstart-jar-with-dependencies.jar`) and its own launchers;
 containerizing it added a Maven/JDK 25 build that bought nothing. It runs
 natively on the host (the launcher's `-WithLiveFeed` starts it with
-`jumpstart/run-live.ps1`), or by hand:
+`jumpstart/run-live.ps1`). The edge stays a JVM JMS consumer: the SCDS Guideline
+makes JMS the only authorized API, so there is no Python AMQP client to write.
+
+### What the JVM hands over
+
+The stock kit acknowledges a message (JMS `AUTO_ACKNOWLEDGE`) when its output
+returns, and its `onMessage` catches every exception. `MessageFileOutput` logs a
+failed write and returns, so a disk that fails, fills or vanishes acknowledges
+messages that were never saved, and the broker will not send them again. It also
+names files by the millisecond and truncates on open, so two messages in one
+millisecond overwrite each other.
+
+`jumpstart/src/main/java/.../outputs/IngestFolderFileOutput.java` replaces it and
+is what `run-live.ps1` launches. It writes one record per message,
+`swim_<run>_<seq>_<arrival millis>.swimmsg`:
+
+```json
+{"format": "swim-raw/1", "message_id": "TDES:51190821:1874",
+ "received_at": "2026-08-27T20:42:25.503Z",
+ "headers": {"mex": "TDES", "tracon": "PCT", "...": "..."},
+ "body": "{...the payload as JSON...}"}
+```
+
+* `message_id` is the SWIM identity `mex:globalID:msgSeqID` when the message has
+  one, otherwise `sha256:<hex>` of the payload. Python computes it by the same
+  rule (`src/raw_message.py`) and a test holds the two to it.
+* The record is written to a hidden temp file, fsync'ed, and renamed into place, so
+  the watcher never sees half a record.
+* **If the record cannot be made durable the JVM halts before the output returns**,
+  so the kit never acknowledges and the broker redelivers. `run-live.ps1` restarts
+  the kit with a growing pause (2 s to 60 s). A payload that cannot be converted to
+  JSON is not a delivery failure: the original text is kept with a `convert_error`
+  and ingest quarantines it with that reason. Halting on it would redeliver it forever.
+* It refuses to start without `-DoutputDir`, or with a directory it cannot write.
+* Redelivery is harmless for a message with a SWIM identity: event ids are derived
+  from it, so the same message is the same events. A message with no identity
+  (none has been seen on the live feed) has only the hash to go on, and a redelivery
+  would be stored again.
+
+Durability ends at the folder, and the folder is pruned. The janitors
+(`scripts/Cleanup-KitLog.ps1`, the Ingest page's purge) delete every file older than
+a few minutes (default 5) whether or not it was ingested. That is deliberate load
+shedding, so a backlog cannot bury the live picture, but it means a sentinel outage
+longer than that drops records the broker has already been told were handled. Turn the
+janitor off, or raise its age, when nothing may be dropped.
+
+The distance to that cliff is measured: `nas_swim_folder_backlog_files` and
+`nas_swim_folder_oldest_waiting_seconds` (the oldest waiting record, by its arrival time)
+are set on every scan, and the alert `SwimBacklogNearJanitorAge` fires at 3 minutes,
+before the default 5-minute janitor. `nas_swim_files_dropped_unprocessed_total` counts what
+the Python janitor (the Ingest page's purge) deleted while it was still waiting; the
+PowerShell janitor cannot report, so for it the oldest-waiting gauge is the only signal.
+
+What was and was not shown: the kit's own `onMessage` was driven with fake JMS
+messages (`tests/java/`, run by `tests/test_ingest_output_java.py` when a JDK is
+present), and a write failure does halt the JVM before `onMessage` can return.
+
+That result was also checked against a real broker (2026-09-27): a local Solace
+PubSub+ Standard container (JNDI enabled, one exclusive queue with delivery-count
+tracking on), the unmodified `com.harris.cinnato.Consumer` entry point, and
+`IngestFolderFileOutput` -- the exact production classes and command line
+`run-live.ps1` uses, not a stand-in. Note that the kit uses JMS `AUTO_ACKNOWLEDGE`,
+not `CLIENT_ACKNOWLEDGE` (`SolaceConsumerV1.connect()`: `createSession(false,
+Session.AUTO_ACKNOWLEDGE)`); the property is `JMSXDeliveryCount`, and the sequence
+observed was:
+  1. A message published while the JVM was connected was consumed and written
+     durably; the record's `headers.JMSXDeliveryCount` read `"1"`.
+  2. The output directory was replaced with a plain file while the JVM stayed
+     connected. A second message was published; the JVM logged the write failure
+     and halted (confirmed by the process disappearing, not by a printed message)
+     before `onMessage` could return, so `AUTO_ACKNOWLEDGE` never fired. No record
+     was written.
+  3. The broker detected the dropped connection and kept the message spooled,
+     unacknowledged (`deletedMsgCount` stayed 0; `highestMsgId` still counted it).
+  4. A second Consumer JVM, pointed at a fresh writable directory, connected to
+     the same (exclusive) queue and received the same message redelivered, with
+     `headers.JMSXDeliveryCount` now `"2"` and the same `message_id`
+     (`mex:globalID:msgSeqID` is unchanged by redelivery, so the event id a
+     redelivery produces is identical) -- proving the durable-write/halt design
+     against JMS redelivery semantics as the broker actually implements them, not
+     only as the spec describes them.
+
+Not covered: the FAA's own SCDS broker, its VPN/ACL/redelivery-limit policy, TLS,
+and behavior under sustained load or a longer outage (the connection here dropped
+in well under a second; a real network partition may take the broker's keepalive
+timeout to notice). The setup used, including the SEMPv2 calls needed to get past
+a default-shipped VPN pointed at a disabled RADIUS profile with JNDI turned off,
+is in the session's scratch history, not this repo -- ask if it should become a
+runnable script.
+
+### Launching
+
+`run-live.ps1` builds `jumpstart/lib/swim-ingest-output.jar` from the tracked source
+(it needs a JDK, `javac` and `jar`, not only a JRE), then runs the kit. By hand:
 
 ```bat
 cd jumpstart
-mkdir ..\data\raw\swim_live\log
-cd ..\data\raw\swim_live
-..\..\..\jumpstart\bin\run.bat ^
+javac -cp lib\jumpstart-jar-with-dependencies.jar -d build src\main\java\com\harris\cinnato\outputs\IngestFolderFileOutput.java
+jar cf lib\swim-ingest-output.jar -C build .
+java -cp lib\jumpstart-jar-with-dependencies.jar;lib\swim-ingest-output.jar ^
     -DproviderUrl=%SWIM_PROVIDER_URL% -Dqueue=%SWIM_QUEUE% ^
     -DconnectionFactory=%SWIM_CONNECTION_FACTORY% ^
-    -Dusername=%SWIM_USERNAME% -Dpassword=%SWIM_PASSWORD% ^
+    -Dusername=%SWIM_USERNAME% -Dconfig.file=%SWIM_SECRET_CONF% ^
     -Dvpn=%SWIM_VPN% ^
-    -Doutput=com.harris.cinnato.outputs.MessageFileOutput ^
-    -Djson=true -Dheaders=true
+    -Doutput=com.harris.cinnato.outputs.IngestFolderFileOutput ^
+    -DoutputDir=..\data\raw\swim_live\log ^
+    -Djson=true -Dheaders=true ^
+    com.harris.cinnato.Consumer
 ```
 
-* `MessageFileOutput` writes to `<cwd>/log/`, which is why the kit is
-  launched from `data/raw/swim_live/`. `SWIM_RAW_FOLDER` points the watcher
-  at the same directory.
-* `-Djson=true -Dheaders=true` are required: the parser expects JMS property
-  header lines followed by one JSON object.
+* `SWIM_RAW_FOLDER` points the watcher at `-DoutputDir`. The kit's own log
+  (`messages.log`) goes to `<cwd>\log`, which `run-live.ps1` arranges to be the same
+  folder; the watcher does not read it.
+* Never pass the password as `-Dpassword=...`: a command-line argument is visible
+  in the process list and is recorded by command-line process auditing (Windows
+  event 4688, Sysmon event 1). Put `password = "..."` in a config file only you can
+  read and name it with `-Dconfig.file=` (`SWIM_SECRET_CONF` above); `run-live.ps1`
+  does this itself with a temporary owner-only file.
+* `-Djson=true -Dheaders=true` are required: the record carries the JMS properties
+  (the SWIM identity) and the payload as JSON.
 * Requires a Java 25 runtime (`java -version` must report 25 or newer).
-* Known limitations of the stock output: files named by epoch millisecond
-  (two messages in the same millisecond overwrite each other) and non-atomic
-  writes (mitigated by the watcher's 2 s debounce).
-  `jumpstart/src/.../outputs/IngestFolderFileOutput.java` fixes both and takes
-  `-DoutputDir`, but needs the jar rebuilt (JDK 25, `mvn -B -DskipTests clean package`).
+* Files the stock kit already wrote (extensionless, header lines then a JSON object)
+  still ingest.
+
+### The seam, and when to revisit Kafka
+
+Python reads through a small source interface (`src/raw_message.py`): `poll` what is
+waiting, `commit` a message once its events are stored, `quarantine` one that can never
+succeed. Everything above it (parsing, the STDDS extractors, validation, storage) sees a
+`RawMessage`: `{message_id, headers, body, received_at}`, and nothing about files. The folder
+is one implementation (`FolderSource` in `src/swim_file_ingest.py`; claim by atomic rename,
+archive on commit, `failed/` on quarantine). `commit` runs only after storage succeeds, so a
+source that acknowledges there is at-least-once.
+
+Kafka, or any broker between the JVM and Python, is a second implementation of those three
+methods and a Kafka producer in the JVM output; nothing downstream changes
+(`tests/test_ingest_source_seam.py` drives the pipeline from a source that is not a folder).
+It is deliberately not built. Revisit it when a **second consumer** of the raw stream exists,
+or a **second feed** (TFMS, TBFM) has to be ingested next to this one. Until then it adds a
+cluster to run, and a second place a message can be lost, for nothing the folder does not do.
+
+### Scope
+
+What is in scope is configuration, not code. The default is the four Potomac TRACON airports
+the system was verified on. To watch others, set the airports and their TRACON:
+
+```
+SUPPORTED_AIRPORTS=KJFK,KLGA,KEWR
+SUPPORTED_TRACON=N90
+```
+
+`src/airports.py` holds where each airport is and which TRACON it belongs to (a handful
+beyond PCT are listed); an airport it does not know still works, with no map marker. Events for
+anything else are refused where they are built, and the extractors keep only in-scope airports.
+Airports of several TRACONs can be listed together: the TRACONs in scope are those of the
+listed airports plus `SUPPORTED_TRACON`, which is also the default for a record that names none.
+Only PCT has ever been verified against a captured feed. Another TRACON's messages have the same
+STDDS shapes, but until one is captured that is an expectation, not a fact. The dashboard's
+product copy (titles, the login page) still says PCT.
 
 ## Volumes
 

@@ -14,8 +14,11 @@ The application: SWIM ingest, the alert and escalation pipeline, the investigati
 
 ```
 src/
-  swim_file_ingest.py     Jumpstart Kit folder: claim, parse, blockAtFAA, per-feed extractors,
-                          stable ids, the watcher
+  raw_message.py          the seam: the JVM's raw record {message_id, headers, body, received_at}
+                          and the source interface (poll / commit / quarantine)
+  swim_file_ingest.py     the folder source (claim, archive), the driver every source shares, blockAtFAA,
+                          per-feed extractors, stable ids, the watcher
+  airports.py             where each airport is and its TRACON (scope itself is config)
   pipeline.py             the one pipeline every entry point runs
   validators.py  alert_engine.py  feed_health.py
   execution_gate.py       staging, tickets, and role-checked decisions
@@ -42,7 +45,8 @@ dashboard/                app.py (Overview) and pages/: Live Airspace, Feed Heal
                           (lib/agent_eval.py: the three layers of the agent evaluation)
 policies/                 model-use.yaml and tool-use.yaml (AGT policies); model-slos.yaml
                           (readiness objectives and per-investigation gate limits)
-tests/                    pytest suite; real SWIM captures in fixtures/swim_kit/;
+tests/                    pytest suite; real SWIM captures in fixtures/swim_kit/, the Java edge's
+                          records of them in fixtures/swim_raw/, its harness in java/;
                           test_agt_known_bugs.py documents AGT bugs as strict xfails
 scripts/                  e2e_proof.py, Keycloak setup and RBAC, diagnostics
 prompts/                  one YAML prompt per model-backed role

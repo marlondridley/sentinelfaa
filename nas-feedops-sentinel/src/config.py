@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Any
 
+from src.airports import tracon_of
 from src.vault_config import VaultSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
@@ -129,6 +130,8 @@ class Settings(BaseSettings):
         }
     )
 
+    # The deployment's TRACON: the default for a record that names none. Scope is the airports above and the
+    # TRACONs they belong to (SUPPORTED_TRACONS); src/airports.py holds where each airport is and whose it is.
     SUPPORTED_TRACON: str = "PCT"
 
     SUPPORTED_SERVICES: Annotated[set[str], NoDecode] = Field(
@@ -190,6 +193,9 @@ class Settings(BaseSettings):
     #
     LATENCY_ALERT_MS: int = 30000
     STALE_FEED_SECONDS: int = 300
+    # How far back a feed must have last been seen to be judged for staleness: a
+    # feed that stopped longer ago than this is treated as decommissioned, not silent.
+    STALE_FEED_LOOKBACK_SECONDS: int = 3600
     SURFACE_SPIKE_COUNT: int = 10
     SURFACE_SPIKE_WINDOW_SECONDS: int = 60
     RVR_LOW_THRESHOLD_FT: int = 1200
@@ -470,6 +476,11 @@ class Settings(BaseSettings):
             )
 
         return self
+
+    @property
+    def SUPPORTED_TRACONS(self) -> set[str]:
+        """The deployment's TRACON plus the TRACON of every supported airport the registry knows."""
+        return {self.SUPPORTED_TRACON} | {t for a in self.SUPPORTED_AIRPORTS if (t := tracon_of(a))}
 
 
 settings = Settings()

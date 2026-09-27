@@ -16,17 +16,17 @@ def validate_event(event: NASEvent) -> ValidationResult:
     """Run all validation rules against a NASEvent. Returns ValidationResult."""
     errors: list[str] = []
 
-    # Rule 1 — Airport code must be one of the PCT airports
+    # Rule 1 — Airport code must be one of the supported airports
     if event.airport_code not in config.SUPPORTED_AIRPORTS:
         errors.append(
             f"Invalid airport_code '{event.airport_code}'. "
             f"Must be one of {sorted(config.SUPPORTED_AIRPORTS)}."
         )
 
-    # Rule 2 — TRACON must be PCT
-    if event.tracon != config.SUPPORTED_TRACON:
+    # Rule 2 — TRACON must be one of the supported airports' TRACONs
+    if event.tracon not in config.SUPPORTED_TRACONS:
         errors.append(
-            f"Invalid tracon '{event.tracon}'. Must be '{config.SUPPORTED_TRACON}'."
+            f"Invalid tracon '{event.tracon}'. Must be one of {sorted(config.SUPPORTED_TRACONS)}."
         )
 
     # Rule 3 — Service name must be a supported STDDS service

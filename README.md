@@ -235,7 +235,7 @@ Production agentic systems are judged less by model quality than by how they hol
 ## Known limits
 
 - **RVR encoding.** APDS reports runway visual range as a coded value. The ×100-to-feet scale is corroborated against KBWI weather observations but not confirmed against the non-public APDS interface document; implausible readings are refused rather than stored. `ALERT_LOW_RVR` depends on it.
-- **Transport.** The Jumpstart Kit writes one file per message. That is fine for PCT volumes on one host (a janitor keeps the folder scannable), but a production deployment would consume the Solace broker directly.
+- **Transport.** JMS is the only authorized SCDS API, so a JVM (the Jumpstart Kit) is the edge. It writes one durable record per message and stops rather than acknowledge one it could not write; Python reads the folder through a small source interface. That is fine for PCT volumes on one host (a janitor keeps the folder scannable). A broker such as Kafka would be a second implementation of that interface, and is deferred until a second consumer or a second feed (TFMS, TBFM) appears. What the broker does after the JVM halts has not been observed against a real broker here.
 - **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
 - **Decisions.** One approver per action; there is no four-eyes workflow.
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
