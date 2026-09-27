@@ -1,8 +1,8 @@
 # Build context allowlist-by-exclusion. The Dockerfile COPYs only src/,
-# prompts/, dashboard/ (and tests/, scripts/ for the test stage), but without
-# this file the whole directory -- including .env and .streamlit/secrets.toml
-# -- is sent to the daemon on every build and one careless `COPY . .` away
-# from being baked into an image layer.
+# prompts/, dashboard/ (and tests/, scripts/, docs/ for the test stage), but
+# without this file the whole directory -- including .env and
+# .streamlit/secrets.toml -- is sent to the daemon on every build and one
+# careless `COPY . .` away from being baked into an image layer.
 .env
 .env.*
 !.env.example
@@ -12,7 +12,14 @@
 .venv/
 .local/
 data/
-jumpstart/
+# The test stage's tests/test_swim_launcher.py reads run-live.ps1 and the
+# committed Java source to check them, not the prebuilt jar (10+ MB,
+# git-ignored, present only on a machine that built it) or the kit's own
+# licenses/pom.xml -- jumpstart/* excludes everything, then the two paths the
+# tests need are let back in, the same pattern as .streamlit/* above.
+jumpstart/*
+!jumpstart/run-live.ps1
+!jumpstart/src/
 jumpstart-latest.zip
 diagnostics.txt
 .coverage

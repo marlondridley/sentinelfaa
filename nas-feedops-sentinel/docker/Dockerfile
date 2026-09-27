@@ -78,10 +78,14 @@ COPY tests/ ./tests/
 COPY pytest.ini ./
 COPY scripts/ ./scripts/
 # Deployment files the tests pin (Keycloak serves HTTPS only; the realm fits
-# Keycloak's columns). Test stage only; not in the shipped image.
+# Keycloak's columns; docs/operations.md and the launcher/edge source are
+# checked by tests/test_swim_launcher.py -- see .dockerignore for what of
+# jumpstart/ actually reaches this COPY). Test stage only; not in the shipped image.
 COPY docker-compose.yml ./
 COPY keycloak/realm-nas-sentinel.json ./keycloak/
 COPY .streamlit/secrets.toml.example .streamlit/config.toml ./.streamlit/
+COPY docs/ ./docs/
+COPY jumpstart/ ./jumpstart/
 RUN chown -R sentinel:sentinel /app/tests /app/scripts
 USER sentinel
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-q"]
