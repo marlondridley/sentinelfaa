@@ -108,12 +108,18 @@ __all__ = [
     "get_draft_operational_tickets",
     "get_ticket_by_id",
     "get_ticket_by_action_id",
-    "approve_operational_ticket",
-    "reject_operational_ticket",
     "mark_operational_ticket_monitoring",
-    "mark_operational_ticket_overridden",
     "decide_staged_action_with_ticket",
 ]
+# approve_operational_ticket, reject_operational_ticket and
+# mark_operational_ticket_overridden used to live here as raw, ungated writers:
+# no guard_human_gate, no authorize(), and no relation to the ticket's staged_action,
+# so calling one directly could leave a ticket APPROVED_FOR_ESCALATION while its
+# review stayed PENDING. decide_staged_action_with_ticket (below) is the only door
+# for those three outcomes; it moves both rows in one transaction or neither.
+# mark_operational_ticket_monitoring stays: MONITOR deliberately leaves the staged
+# action PENDING (see execution_gate.decide_staged_action), so it is the one ticket
+# transition with no action-status counterpart to keep in step with.
 
 
 # ── Raw telemetry (nas_events / alert_events) ──────────────────────────────────
@@ -412,32 +418,11 @@ async def get_ticket_by_action_id(action_id: str) -> OperationalTicket | None:
     return await repo.get_by_action_id(action_id)
 
 
-async def approve_operational_ticket(
-    ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> OperationalTicket | None:
-    repo = TicketsRepository(await get_db_pool())
-    return await repo.approve(ticket_id, actor, note)
-
-
-async def reject_operational_ticket(
-    ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> OperationalTicket | None:
-    repo = TicketsRepository(await get_db_pool())
-    return await repo.reject(ticket_id, actor, note)
-
-
 async def mark_operational_ticket_monitoring(
     ticket_id: str, actor: str = "dashboard_operator", note: str = ""
 ) -> OperationalTicket | None:
     repo = TicketsRepository(await get_db_pool())
     return await repo.mark_monitoring(ticket_id, actor, note)
-
-
-async def mark_operational_ticket_overridden(
-    ticket_id: str, actor: str = "dashboard_operator", note: str = ""
-) -> OperationalTicket | None:
-    repo = TicketsRepository(await get_db_pool())
-    return await repo.mark_overridden(ticket_id, actor, note)
 
 
 async def decide_staged_action_with_ticket(
