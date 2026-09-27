@@ -45,6 +45,22 @@ SWIM_MESSAGES_WITHHELD = Counter(
     "SWIM messages not ingested because the FAA flagged them blockAtFAA=true.",
 )
 
+# The folder the Jumpstart edge writes into is a queue with a janitor: a record older than the janitor's age
+# is deleted whether or not it was ingested (scripts/Cleanup-KitLog.ps1, the Ingest page's purge). These
+# make the distance to that cliff visible.
+SWIM_FOLDER_BACKLOG = Gauge(
+    "nas_swim_folder_backlog_files",
+    "Message files waiting in the SWIM folder to be ingested, as of the last scan.",
+)
+SWIM_FOLDER_OLDEST_WAITING_SECONDS = Gauge(
+    "nas_swim_folder_oldest_waiting_seconds",
+    "Age of the oldest message waiting in the SWIM folder, by its arrival time (0 when none is waiting).",
+)
+SWIM_FILES_DROPPED_UNPROCESSED = Counter(
+    "nas_swim_files_dropped_unprocessed_total",
+    "Message files the Python janitor deleted while still waiting: never ingested.",
+)
+
 EVENTS_VALIDATED = Counter(
     "nas_events_validated_total",
     "Total NAS events that passed/failed validation.",
