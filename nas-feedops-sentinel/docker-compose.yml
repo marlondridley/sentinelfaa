@@ -337,10 +337,17 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
       # Substituted into the realm file; must equal client_secret in .streamlit/secrets.toml.
       KC_DASHBOARD_CLIENT_SECRET: ${KEYCLOAK_DASHBOARD_CLIENT_SECRET:?KEYCLOAK_DASHBOARD_CLIENT_SECRET is required -- run scripts/Setup-Keycloak.ps1}
-      # Browser-facing URLs on the host port; server-to-server calls keep the
-      # host they used (https://keycloak:8443 from the dashboard container).
-      KC_HOSTNAME: https://localhost:8081
+      # Browser-facing URLs: the host port by default; with public access
+      # (docs/public-access.md) the public sign-in hostname, reached through
+      # the tunnel and the edge's sign-in-only listener. Server-to-server
+      # calls keep the host they used (https://keycloak:8443 from the
+      # dashboard). The admin console is always loopback-only, never public.
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-https://localhost:8081}
+      KC_HOSTNAME_ADMIN: https://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # The edge (the only proxy in front of Keycloak) sets X-Forwarded-*, with
+      # the visitor's address from Cloudflare, so login events name the visitor.
+      KC_PROXY_HEADERS: xforwarded
       # HTTPS only, with a certificate for keycloak / localhost / 127.0.0.1
       # signed by the local authority (src/devcert.py). The management
       # interface (health, port 9000) inherits it.
@@ -437,6 +444,9 @@ services:
     volumes:
       - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./tls/edge:/etc/nginx/tls:ro     # its own certificate and key only
+      # The authority's public certificate: the public sign-in listener
+      # verifies Keycloak's certificate with it.
+      - ./tls/trust:/etc/nginx/trust:ro
     ports:
       - "127.0.0.1:8443:8443"   # dashboard
       - "127.0.0.1:8444:8444"   # API (/health, /v1/*)
@@ -586,6 +596,39 @@ services:
       - ../instraclustr/certs/trust:/certs-trust:ro
       - dashboard-svid:/run/spiffe:ro
       - dashboard-secrets:/vault/secrets
+
+  # 10. Public access (docs/public-access.md), opt-in: launch_nas_sentinel.ps1
+  # -Public starts it. An outbound-only Cloudflare tunnel -- no port opened on
+  # this machine or its router. Its only destinations are the edge's two
+  # public listeners (8450 dashboard, 8451 sign-in pages), which publish no
+  # host port and expose nothing else. Cloudflare's free WAF rules (country
+  # allow-list, sign-in rate limit, Bot Fight Mode) sit in front; Cloudflare
+  # Access can be added. The tunnel's routes live in the Cloudflare dashboard
+  # (a token-managed tunnel).
+  cloudflared:
+    profiles: ["public"]
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+    container_name: nas-cloudflared
+    restart: unless-stopped
+    # The image's entrypoint is `cloudflared --no-autoupdate`: pinned, never
+    # replacing itself. Metrics on loopback, for the health check only.
+    command: ["tunnel", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      # The tunnel's connector token (Cloudflare Zero Trust -> Tunnels), from
+      # either env file; empty, and the tunnel refuses to start.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      edge:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
 
   # The FAA SWIM Jumpstart kit is not containerized; see docs/operations.md.
 

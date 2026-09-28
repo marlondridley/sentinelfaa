@@ -9,11 +9,17 @@
 #
 # It is opt-in rather than automatic because it opens a live subscription to
 # the FAA broker and requires a Java 25 runtime on this machine.
+#
+# -Public also starts the Cloudflare tunnel (nas-cloudflared), making the
+# dashboard reachable at its public address -- see
+# nas-feedops-sentinel/docs/public-access.md. Without -Public a running tunnel
+# is stopped: the site is public only on the launches that ask for it.
 [CmdletBinding()]
 param(
     [switch]$WithLiveFeed,
     # Skip the Cleanup-KitLog janitor window (only meaningful with -WithLiveFeed).
-    [switch]$NoJanitor
+    [switch]$NoJanitor,
+    [switch]$Public
 )
 
 $ErrorActionPreference = "Stop"
@@ -217,6 +223,27 @@ if ($LASTEXITCODE -ne 0) {
 # one-shot job's credentials should not outlive the job.
 docker compose -f $appCompose @appEnvFiles stop migrate-vault-agent migrate-spiffe | Out-Null
 Write-Host "  [+] migrate finished; its identity sidecars stopped." -ForegroundColor Green
+
+# 4b. Public access: on for this launch only if asked for.
+if ($Public) {
+    $tokenSet = $false
+    foreach ($f in @($infraEnv, $appEnv)) {
+        if ((Test-Path $f) -and (Select-String -Path $f -Pattern '^\s*CLOUDFLARE_TUNNEL_TOKEN\s*=\s*\S' -Quiet)) { $tokenSet = $true }
+    }
+    if (-not $tokenSet) {
+        Write-Host "CRITICAL ERROR: -Public needs CLOUDFLARE_TUNNEL_TOKEN in an env file (nas-feedops-sentinel\docs\public-access.md)." -ForegroundColor Red
+        exit 1
+    }
+    docker compose -f $appCompose @appEnvFiles --profile public up -d --wait cloudflared
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "CRITICAL ERROR: the Cloudflare tunnel did not connect: docker logs nas-cloudflared" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [+] Public access ON: the Cloudflare tunnel is connected." -ForegroundColor Green
+} elseif ((docker inspect -f '{{.State.Running}}' nas-cloudflared 2>$null) -eq 'true') {
+    docker compose -f $appCompose @appEnvFiles --profile public stop cloudflared | Out-Null
+    Write-Host "  [+] Public access OFF: the Cloudflare tunnel was stopped (launch with -Public to publish)." -ForegroundColor Green
+}
 
 # 5. Optional: live FAA SWIM feed (native, not containerized)
 $feedStarted = $false
