@@ -26,6 +26,32 @@ $policy = Join-Path $infra "certs\policy"
 $certs = if ($CertsDir) { $CertsDir } else { Join-Path $infra "certs" }
 $image = "postgres:16"
 
+# Docker Desktop shares a Windows drive into its VM only if the drive was
+# there when Docker Desktop started. Mounting a folder on a drive it does not
+# share is NOT an error to docker: it quietly creates an empty folder on its
+# own virtual disk and mounts that -- and root-init once wrote the root key
+# there instead of to the USB. So prove each mount is the real folder, with a
+# marker written on the Windows side, before anything runs.
+function Assert-RealFolder([string]$hostDir) {
+    $marker = ".pki-mount-check-" + [guid]::NewGuid().ToString("N")
+    $markerPath = Join-Path $hostDir $marker
+    Set-Content -Path $markerPath -Value "mount check" -NoNewline
+    try {
+        docker run --rm --network none -v "${hostDir}:/check:ro" $image test -f "/check/$marker" 2>$null
+        $seen = ($LASTEXITCODE -eq 0)
+    } finally {
+        Remove-Item -Force $markerPath -ErrorAction SilentlyContinue
+    }
+    if (-not $seen) {
+        $drive = Split-Path -Qualifier $hostDir
+        Write-Host "ERROR: Docker cannot see $hostDir -- drive $drive is not shared into Docker Desktop." -ForegroundColor Red
+        Write-Host "  Docker shares a drive only if it was present when Docker Desktop started. With the" -ForegroundColor Red
+        Write-Host "  drive plugged in: quit Docker Desktop, run 'wsl --shutdown', start Docker Desktop," -ForegroundColor Red
+        Write-Host "  wait until it is running, and try again. Nothing was written." -ForegroundColor Red
+        exit 2
+    }
+}
+
 $mounts = @(
     "-v", "$(Join-Path $PSScriptRoot 'pki.sh'):/pki/scripts/pki.sh:ro",
     "-v", "${policy}:/pki/certs/policy:ro"
@@ -36,11 +62,15 @@ if ($Command -in @("root-init", "sign")) {
         throw "No root-ca.key in $RootDir"
     }
     New-Item -ItemType Directory -Force $RootDir | Out-Null
-    $mounts += @("-v", "$((Resolve-Path $RootDir).Path):/root-ca")
+    $rootPath = (Resolve-Path $RootDir).Path
+    Assert-RealFolder $rootPath
+    $mounts += @("-v", "${rootPath}:/root-ca")
 }
 if ($Command -ne "root-init") {
     New-Item -ItemType Directory -Force $certs | Out-Null
-    $mounts += @("-v", "$((Resolve-Path $certs).Path):/certs")
+    $certsPath = (Resolve-Path $certs).Path
+    Assert-RealFolder $certsPath
+    $mounts += @("-v", "${certsPath}:/certs")
 }
 
 $step = switch ($Command) {
