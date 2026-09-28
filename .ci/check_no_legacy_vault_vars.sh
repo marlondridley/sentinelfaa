@@ -19,7 +19,7 @@ cd "$ROOT" || exit 2
 # wiring tests that assert its absence -- are allowed where they must be.
 RULES='
 # Application AppRole credentials: retired, services use SPIFFE identities.
-approle-app-credential~VAULT_ROLE_ID|VAULT_SECRET_ID|VAULT_APPROLE_DIR~.ci/* instraclustr/tests/test_identity_wiring.py~an application AppRole credential (retired: services use SPIFFE identities)
+approle-app-credential~VAULT_ROLE_ID|VAULT_SECRET_ID|VAULT_APPROLE_DIR~.ci/* instraclustr/tests/test_identity_wiring.py scripts/smoke/01_zero_static_creds_probe.sh~an application AppRole credential (retired: services use SPIFFE identities)
 # A Vault token belongs only to the bootstrap jobs, the root ceremony (and the
 # Terraform provider it feeds), the probes, the retired vault-init.sh, and the
 # throwaway dev Vault in the guardrails workflow.
