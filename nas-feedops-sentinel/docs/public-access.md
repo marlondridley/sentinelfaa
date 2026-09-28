@@ -23,18 +23,20 @@ The tunnel only makes outbound connections from `nas-cloudflared`, and publishes
 
 ## 1. Cloudflare: the tunnel routes
 
-Zero Trust → Networks → **Tunnels** → your tunnel → Edit → **Public Hostname** (called "Published application routes" in newer dashboards) → Add, twice. Don't add DNS records by hand: saving a route creates its DNS record.
+Zero Trust → Networks → **Tunnels** → your tunnel → **Routes** → **Add route** → **Published application**, twice. Older dashboards call these *Public Hostname* routes. Don't add DNS records by hand: saving a route creates its DNS record (a proxied CNAME to `<tunnel-id>.cfargotunnel.com`). Networking → **Routes**, and the *Tunnel Hostname* / *Tunnel CIDR* choices, are private routes for WARP clients: not these.
 
 | | Route 1: dashboard | Route 2: sign-in |
 |---|---|---|
 | Subdomain | `sentinel` | `auth` |
 | Domain | your domain | your domain |
 | Path | *(empty)* | *(empty)* |
-| Service type | `HTTPS` | `HTTPS` |
-| URL | `nas-edge:8450` | `nas-edge:8451` |
-| Additional settings → TLS → **No TLS Verify** | On | On |
+| Service URL | `https://nas-edge:8450` | `https://nas-edge:8451` |
+| TLS → **Origin Server Name** | `localhost` | `localhost` |
+| TLS → **CA Pool** | `/etc/cloudflared/trust/edge-ca.crt` | `/etc/cloudflared/trust/edge-ca.crt` |
+| TLS → **Disable TLS certificate verification** (*No TLS Verify*) | **Off** | **Off** |
+| HTTP, Connection, Access | defaults | defaults |
 
-*No TLS Verify* applies only to the hop from `nas-cloudflared` to `nas-edge`. That hop runs inside Docker on this machine, with a certificate from the local authority, which Cloudflare doesn't know. Visitors connect to Cloudflare's own certificate.
+Service URL needs the `https://`: the listeners speak only TLS. The TLS settings make the tunnel verify the edge, as every other hop in this stack is verified. The edge's certificate comes from the local authority and is issued for `localhost`, and `nas-cloudflared` has that authority's public certificate (never a key) at `/etc/cloudflared/trust`. Visitors connect to Cloudflare's own certificate. Probe 05 fails if a route turns verification off.
 
 ## 2. Cloudflare: free protections (in place of Access)
 

@@ -617,6 +617,11 @@ services:
       # The tunnel's connector token (Cloudflare Zero Trust -> Tunnels), from
       # either env file; empty, and the tunnel refuses to start.
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    volumes:
+      # The local authority's public certificate only, so the tunnel verifies
+      # the edge: each route's TLS settings are Origin Server Name `localhost`
+      # and CA Pool /etc/cloudflared/trust/edge-ca.crt (docs/public-access.md).
+      - ./tls/trust:/etc/cloudflared/trust:ro
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
