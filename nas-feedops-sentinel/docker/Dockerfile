@@ -22,8 +22,10 @@ RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements-dev.lock
 # Stage 2: runtime image
 FROM python:3.12-slim AS runtime
 
-# Non-root user
-RUN groupadd -r sentinel && useradd -r -g sentinel -d /app -s /sbin/nologin sentinel
+# Non-root user, uid/gid 999 pinned: the Vault Agent and spiffe-helper
+# sidecars run as this same uid and share memory-only volumes with the
+# service, owner-only (docker-compose.yml, x-secret-tmpfs).
+RUN groupadd -r -g 999 sentinel && useradd -r -u 999 -g sentinel -d /app -s /sbin/nologin sentinel
 
 WORKDIR /app
 

@@ -119,3 +119,45 @@ def test_parser_skips_blank_lines_and_comments_and_splits_on_first_equals(tmp_pa
         "LITELLM_API_KEY": "sk-has=an=equals-sign",
         "POSTGRES_USER": "sentinel_app",
     }
+
+
+# -- What the deployed services actually get ----------------------------------
+
+def test_the_rendered_file_outranks_the_environment(monkeypatch, tmp_path):
+    """A stale password left in an environment or .env never wins over Vault's."""
+    env_file = tmp_path / "app-config.env"
+    _write(env_file, POSTGRES_USER="sentinel_app", POSTGRES_PASSWORD="from-vault",
+           LITELLM_API_KEY="sk-agent-rendered")
+    monkeypatch.setenv("VAULT_AGENT_ENV_FILE", str(env_file))
+    monkeypatch.setenv("POSTGRES_PASSWORD", "stale-from-environment")
+
+    settings = src.config.Settings()
+
+    assert settings.POSTGRES_PASSWORD == "from-vault"
+    assert settings.LITELLM_API_KEY == "sk-agent-rendered"
+
+
+def test_migrate_job_takes_the_app_role_password_from_the_rendered_file(monkeypatch, tmp_path):
+    """
+    The migrate job's environment holds no password (docker-compose.yml): the
+    application role it creates gets its password from the migrate sidecar's
+    file (instraclustr/vault-agent/migrate.hcl), through Settings.
+    """
+    import src.storage.migrate as migrate_job
+
+    env_file = tmp_path / "app-config.env"
+    _write(env_file, POSTGRES_USER="sentinel_user", POSTGRES_PASSWORD="owner-from-vault",
+           APP_DB_USER="sentinel_app", APP_DB_PASSWORD="app-from-vault",
+           LITELLM_API_KEY="sk-agent-rendered")
+    monkeypatch.setenv("VAULT_AGENT_ENV_FILE", str(env_file))
+    monkeypatch.delenv("APP_DB_PASSWORD", raising=False)
+    monkeypatch.setattr(migrate_job, "settings", src.config.Settings())
+    called = {}
+
+    async def fake_migrate(role, password):
+        called["args"] = (role, password)
+
+    monkeypatch.setattr(migrate_job, "migrate", fake_migrate)
+    migrate_job.main()
+
+    assert called["args"] == ("sentinel_app", "app-from-vault")

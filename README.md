@@ -99,7 +99,8 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 | Stack | Service | Role |
 |---|---|---|
 | `instraclustr/` | `postgres`, `pgbouncer` | the database, pooled |
-| | `vault` (+ `vault-unseal` job) | secrets; one AppRole per service; unseal key split 2-of-3; no stored root token |
+| | `vault` (+ `vault-unseal` job) | secrets; TLS only; unseal key split 2-of-3; no stored root token; policy as code (Terraform), applied in a root ceremony |
+| | `spire-server`, `spire-agent` | workload identity: each application service gets its own short-lived X.509-SVID, chained to an offline root, and uses it to log in to Vault over mutual TLS |
 | | `litellm` (+ `litellm-db-init`, `litellm-bootstrap` jobs) | the model gateway; the application holds a scoped, budgeted key |
 | `nas-feedops-sentinel/` | `migrate` | one-shot schema owner job; everything else runs as a restricted role |
 | | `sentinel` | the live SWIM folder watcher and the reconciler |
@@ -118,7 +119,7 @@ Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit
 
 Requires Windows with Docker Desktop and PowerShell. The live feed also needs Java 25 and a SWIFT-authorized SCDS subscription; everything else runs without one.
 
-1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys belong in `instraclustr/.env`; `APP_DB_PASSWORD` must match in both.
+1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys and every database password belong in `instraclustr/.env`; the application's `.env` holds none. First time only: the certificate ceremony, Vault's workload auth and SPIRE's first boot, in the order in [instraclustr/README.md](instraclustr/README.md#first-time-setup).
 2. From the repository root:
    ```powershell
    .\launch_nas_sentinel.ps1                # infrastructure, then the application
