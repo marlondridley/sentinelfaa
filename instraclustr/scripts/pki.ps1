@@ -1,15 +1,27 @@
-# Windows wrapper for pki.sh: runs each ceremony step in a throwaway
-# container (postgres:16, already in the stack, ships OpenSSL 3) with no
-# network, mounting only what that step needs. See instraclustr/certs/README.md.
+# Windows wrapper for pki.sh -- see instraclustr/certs/README.md.
 #
-#   .\instraclustr\scripts\pki.ps1 root-init -RootDir E:\sentinelfaa-root   # OFFLINE, once
+#   .\instraclustr\scripts\pki.ps1 root-init -RootDir D:\sentinelfaa-root-ca   # once
 #   .\instraclustr\scripts\pki.ps1 request
-#   .\instraclustr\scripts\pki.ps1 sign -RootDir E:\sentinelfaa-root        # asks for the passphrase
+#   .\instraclustr\scripts\pki.ps1 sign -RootDir D:\sentinelfaa-root-ca        # asks for the passphrase
 #   .\instraclustr\scripts\pki.ps1 install
-#   .\instraclustr\scripts\pki.ps1 check                                    # 0 ok, 1 due, 2 broken
+#   .\instraclustr\scripts\pki.ps1 check                                       # 0 ok, 1 due, 2 broken
 #
-# RootDir is the root's USB folder. It is mounted only for root-init and
-# sign, and the root key is read from it in place -- never copied to this disk.
+# Where each step runs:
+#   root-init, sign   natively, with Git for Windows' sh and OpenSSL 3, reading
+#                     and writing the root's USB folder in place. Docker Desktop
+#                     does not share removable drives into its VM, and mounting
+#                     a folder on an unshared drive is not an error to docker:
+#                     it silently mounts an empty folder on its own disk -- the
+#                     first root-init wrote the root key there, not to the USB.
+#   request, install, check
+#                     in a throwaway container (postgres:16, OpenSSL 3) with no
+#                     network, on instraclustr/certs; install runs as root there
+#                     so it can hand vault.key to Vault's user (uid 100).
+#
+# The root passphrase is read here with a masked prompt (root-init asks twice
+# and needs 12+ characters), handed to pki.sh through this process's
+# environment for the one command, and removed right after.
+# Rehearsals: set PKI_ROOT_PASS (env:NAME or file:PATH) to skip the prompt.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -22,74 +34,108 @@ param(
 
 $ErrorActionPreference = "Stop"
 $infra = Split-Path -Parent $PSScriptRoot
+$pkiSh = Join-Path $PSScriptRoot "pki.sh"
 $policy = Join-Path $infra "certs\policy"
 $certs = if ($CertsDir) { $CertsDir } else { Join-Path $infra "certs" }
 $image = "postgres:16"
+$minPassphrase = 12
 
-# Docker Desktop shares a Windows drive into its VM only if the drive was
-# there when Docker Desktop started. Mounting a folder on a drive it does not
-# share is NOT an error to docker: it quietly creates an empty folder on its
-# own virtual disk and mounts that -- and root-init once wrote the root key
-# there instead of to the USB. So prove each mount is the real folder, with a
-# marker written on the Windows side, before anything runs.
-function Assert-RealFolder([string]$hostDir) {
-    $marker = ".pki-mount-check-" + [guid]::NewGuid().ToString("N")
-    $markerPath = Join-Path $hostDir $marker
-    Set-Content -Path $markerPath -Value "mount check" -NoNewline
-    try {
-        docker run --rm --network none -v "${hostDir}:/check:ro" $image test -f "/check/$marker" 2>$null
-        $seen = ($LASTEXITCODE -eq 0)
-    } finally {
-        Remove-Item -Force $markerPath -ErrorAction SilentlyContinue
-    }
-    if (-not $seen) {
-        $drive = Split-Path -Qualifier $hostDir
-        Write-Host "ERROR: Docker cannot see $hostDir -- drive $drive is not shared into Docker Desktop." -ForegroundColor Red
-        Write-Host "  Docker shares a drive only if it was present when Docker Desktop started. With the" -ForegroundColor Red
-        Write-Host "  drive plugged in: quit Docker Desktop, run 'wsl --shutdown', start Docker Desktop," -ForegroundColor Red
-        Write-Host "  wait until it is running, and try again. Nothing was written." -ForegroundColor Red
-        exit 2
-    }
+function Fail([string]$message) {
+    Write-Host "ERROR: $message" -ForegroundColor Red
+    exit 2
 }
 
-$mounts = @(
-    "-v", "$(Join-Path $PSScriptRoot 'pki.sh'):/pki/scripts/pki.sh:ro",
-    "-v", "${policy}:/pki/certs/policy:ro"
-)
+# A path pki.sh (under Git's sh) reads the same way: forward slashes.
+function To-ShPath([string]$path) { return ((Resolve-Path $path).Path -replace '\\', '/') }
+
+# Native programs may write to stderr; under Windows PowerShell 5.1 with
+# ErrorActionPreference=Stop, a redirected stderr line is a terminating error.
+function Invoke-Quiet([scriptblock]$block) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $block *> $null; return $LASTEXITCODE } finally { $ErrorActionPreference = $previous }
+}
+
+function Read-Secret([string]$prompt) {
+    $secure = Read-Host -Prompt $prompt -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+# ── root-init, sign: natively ────────────────────────────────────────────────
 if ($Command -in @("root-init", "sign")) {
-    if (-not $RootDir) { throw "-RootDir (the root's USB folder) is required for $Command" }
+    if (-not $RootDir) { Fail "-RootDir (the root's USB folder) is required for $Command" }
     if ($Command -eq "sign" -and -not (Test-Path (Join-Path $RootDir "root-ca.key"))) {
-        throw "No root-ca.key in $RootDir"
+        Fail "no root-ca.key in $RootDir"
     }
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    $sh = if ($git) { Join-Path (Split-Path -Parent (Split-Path -Parent $git.Source)) "bin\sh.exe" }
+    if (-not $sh -or -not (Test-Path $sh)) { Fail "Git for Windows is required (its sh and OpenSSL 3 run the root steps)" }
+    $version = & $sh -c "openssl version" 2>$null
+    if ($version -notmatch '^OpenSSL 3\.') { Fail "Git for Windows' OpenSSL 3 is required; found: $version" }
+
     New-Item -ItemType Directory -Force $RootDir | Out-Null
-    $rootPath = (Resolve-Path $RootDir).Path
-    Assert-RealFolder $rootPath
-    $mounts += @("-v", "${rootPath}:/root-ca")
-}
-if ($Command -ne "root-init") {
-    New-Item -ItemType Directory -Force $certs | Out-Null
-    $certsPath = (Resolve-Path $certs).Path
-    Assert-RealFolder $certsPath
-    $mounts += @("-v", "${certsPath}:/certs")
+    $shArgs = @($Command, (To-ShPath $RootDir))
+    if ($Command -eq "sign") {
+        New-Item -ItemType Directory -Force $certs | Out-Null
+        $shArgs += (To-ShPath $certs)
+    }
+
+    $ownPassphrase = -not $env:PKI_ROOT_PASS
+    if ($ownPassphrase) {
+        if ($Command -eq "root-init") {
+            if (Test-Path (Join-Path $RootDir "root-ca.key")) {
+                # Let pki.sh say which case this is (finished root, or an unfinished one).
+                $passphrase = ""
+            } else {
+                $passphrase = Read-Secret "Root key passphrase"
+                if ($passphrase.Length -lt $minPassphrase) { Fail "use at least $minPassphrase characters; nothing was created" }
+                if ((Read-Secret "Again, to confirm") -ne $passphrase) { Fail "the two entries differ; nothing was created" }
+            }
+        } else {
+            $passphrase = Read-Secret "Root key passphrase"
+        }
+        $env:PKI_CEREMONY_PASS = $passphrase
+        $env:PKI_ROOT_PASS = "env:PKI_CEREMONY_PASS"
+        $passphrase = $null
+    }
+    try {
+        & $sh ($pkiSh -replace '\\', '/') @shArgs
+        $code = $LASTEXITCODE
+    } finally {
+        if ($ownPassphrase) { Remove-Item Env:\PKI_CEREMONY_PASS, Env:\PKI_ROOT_PASS -ErrorAction SilentlyContinue }
+    }
+    exit $code
 }
 
-$step = switch ($Command) {
-    "root-init" { "/root-ca" }
-    "sign"      { "/root-ca", "/certs" }
-    default     { "/certs" }
+# ── request, install, check: in a container ──────────────────────────────────
+if ((Invoke-Quiet { docker info }) -ne 0) {
+    Fail "Docker is not running (or still starting): wait for 'Engine running' and try again"
 }
 
-# One explicit argument list, built by appending. Windows PowerShell 5.1
-# turns a one-element array returned from `if` into a plain string, and
-# splatting a string passes it one character at a time: "-it" reached docker
-# as "- i t" ("invalid reference format").
-$dockerArgs = @("run", "--rm")
-if ($Command -in @("root-init", "sign")) {
-    $dockerArgs += "-it"            # root-init and sign prompt for the passphrase here
+# Prove the certs folder is really mounted (see the header): a marker written
+# on the Windows side must be visible in the container.
+New-Item -ItemType Directory -Force $certs | Out-Null
+$certsPath = (Resolve-Path $certs).Path
+$marker = ".pki-mount-check-" + [guid]::NewGuid().ToString("N")
+Set-Content -Path (Join-Path $certsPath $marker) -Value "mount check" -NoNewline
+try {
+    $seen = (Invoke-Quiet { docker run --rm --network none -v "${certsPath}:/check:ro" $image test -f "/check/$marker" }) -eq 0
+} finally {
+    Remove-Item -Force (Join-Path $certsPath $marker) -ErrorAction SilentlyContinue
 }
-$dockerArgs += @("--network", "none")
-$dockerArgs += $mounts
-$dockerArgs += @($image, "sh", "/pki/scripts/pki.sh", $Command)
-$dockerArgs += $step
+if (-not $seen) {
+    Fail "Docker cannot see $certsPath (drive $(Split-Path -Qualifier $certsPath) is not shared into Docker Desktop). Nothing was written."
+}
+
+# One explicit argument list, built by appending: Windows PowerShell 5.1
+# unrolls a one-element array returned from `if` into a string, and
+# splatting a string passes it one character at a time.
+$dockerArgs = @("run", "--rm", "--network", "none",
+    "-v", "${pkiSh}:/pki/scripts/pki.sh:ro",
+    "-v", "${policy}:/pki/certs/policy:ro",
+    "-v", "${certsPath}:/certs",
+    $image, "sh", "/pki/scripts/pki.sh", $Command, "/certs")
 docker @dockerArgs
 exit $LASTEXITCODE
