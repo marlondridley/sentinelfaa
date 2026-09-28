@@ -53,6 +53,14 @@ def test_changed_dns_names_under_the_same_id_are_replaced():
     assert p.delete == [(API, "e1", ident("api", dns=False))] and p.create == [(API, ident("api"))]
 
 
+def test_a_changed_svid_lifetime_is_drift_and_replaced():
+    """The rotation probe shortens api's lifetime for minutes; one left behind must show."""
+    short = apply.Identity(ident("api").spiffe_id, ident("api").dns_names, 90)
+    p = apply.plan({API: ident("api")}, {API: ("e1", short)})
+    assert p.drift
+    assert p.delete == [(API, "e1", short)] and p.create == [(API, ident("api"))]
+
+
 def test_manifest_loads_dns_names_in_order(tmp_path):
     manifest = tmp_path / "m.yaml"
     manifest.write_text(

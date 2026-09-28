@@ -31,12 +31,20 @@ No application container holds a credential, a Vault token, or a route to Vault.
 | What each service may read, and how it logs in | [`terraform/`](terraform/main.tf), [`vault-policies/`](vault-policies) | `vault-ceremony apply` | `vault-ceremony plan` (exit 2 = drift) |
 | How sidecars fetch and render | [`vault-agent/`](vault-agent) | compose | CI |
 
-`../scripts/smoke/02_negative_access_probe.sh` checks that every unauthorized path is refused:
+The smoke suite proves all of this against the running stack. Run it after the ceremony, after any change here, and before showing the system:
 
-- a container with no identity, or an unregistered one;
-- a real SVID reaching for another service's secrets, policy, tokens or role;
-- a missing or forged client certificate;
-- plaintext HTTP, or TLS without the root.
+```sh
+scripts/smoke/run_phase6_smoke_suite.sh            # from the repository root, Git Bash or any sh
+```
+
+| Probe | Proves |
+|---|---|
+| `01_zero_static_creds_probe.sh` | no password, key, Vault token or Vault route in any application container's environment or mounts, and no credential file for the application on disk; the by-design bootstrap exceptions are listed, not hidden |
+| `02_negative_access_probe.sh` | every unauthorized path is refused: a container with no identity or an unregistered one; a real SVID reaching for another service's secrets, policy, tokens or role; a missing or forged client certificate; plaintext HTTP, or TLS without the root |
+| `03_token_rotation_probe.sh` | identities and Vault logins survive rotation: it shortens the api identity's lifetime to 90 s, watches the SVID rotate and renew, proves Vault Agent logs in with the rotated certificate (Vault's audit log shows the reads), and always restores the default |
+| (suite) | then `spire-entries-apply.py --check`: the live registrations match `spire-entries.yaml`, lifetimes included |
+
+`SKIP_ROTATION=1` skips 03 (about four minutes).
 
 ## First-time setup
 
