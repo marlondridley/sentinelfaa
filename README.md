@@ -119,7 +119,7 @@ Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit
 
 Requires Windows with Docker Desktop and PowerShell. The live feed also needs Java 25 and a SWIFT-authorized SCDS subscription; everything else runs without one.
 
-1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys and every database password belong in `instraclustr/.env`; the application's `.env` holds none. First time only: the workload-identity ceremony, scripted step by step in [ceremony/](ceremony/README.md).
+1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys and every database password belong in `instraclustr/.env`; the application's `.env` holds none. First time only: the certificate ceremony, Vault's workload auth and SPIRE's first boot, in the order in [instraclustr/README.md](instraclustr/README.md#first-time-setup).
 2. From the repository root:
    ```powershell
    .\launch_nas_sentinel.ps1                # infrastructure, then the application

@@ -74,15 +74,15 @@ if ($existingSpireVolume -eq $spireSocketVolume) {
 
 # 1b. Workload-identity PKI: Vault serves TLS only, and SPIRE signs under the
 #     offline root, so nothing can start without these certificates. They come
-#     from the ceremony (ceremony/README.md), never from here.
+#     from the root ceremony (instraclustr/certs/README.md), never from here.
 $pkiScript = Join-Path $scriptDir "instraclustr\scripts\pki.ps1"
 & $pkiScript check
 switch ($LASTEXITCODE) {
     0 { Write-Host "  [+] Workload-identity certificates are current." -ForegroundColor Green }
-    1 { Write-Host "  [!] A workload-identity certificate is due for renewal (above). Renew: instraclustr\certs\README.md (Every year)" -ForegroundColor Yellow }
+    1 { Write-Host "  [!] A workload-identity certificate is due for renewal (above). Plan the ceremony: instraclustr\certs\README.md" -ForegroundColor Yellow }
     default {
         Write-Host "CRITICAL ERROR: workload-identity certificates missing or invalid (above)." -ForegroundColor Red
-        Write-Host "  Run the ceremony first: ceremony\README.md" -ForegroundColor Red
+        Write-Host "  Run the root ceremony first: instraclustr\certs\README.md" -ForegroundColor Red
         exit 1
     }
 }
@@ -177,8 +177,8 @@ foreach ($job in @("vault-unseal", "litellm-db-init", "litellm-bootstrap")) {
 $agentState = docker inspect spire-agent --format '{{.State.Status}}' 2>$null
 if ($agentState -ne "running") {
     Write-Host "CRITICAL ERROR: spire-agent is not running (state=$agentState)." -ForegroundColor Red
-    Write-Host "  First boot, or its data volume was reset: ceremony\07-spire-first-boot.ps1" -ForegroundColor Red
-    Write-Host "  Then Vault's cert auth, if never applied: ceremony\06-vault-ceremony.ps1" -ForegroundColor Red
+    Write-Host "  First boot, or its data volume was reset: instraclustr\scripts\spire-first-boot.ps1" -ForegroundColor Red
+    Write-Host "  Then Vault's cert auth, if never applied: the root ceremony in instraclustr\README.md" -ForegroundColor Red
     exit 1
 }
 Write-Host "  [+] spire-agent is running." -ForegroundColor Green
