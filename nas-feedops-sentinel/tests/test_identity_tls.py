@@ -12,6 +12,7 @@ fresh Keycloak could not import it).
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import stat
 import threading
@@ -164,7 +165,11 @@ def test_compose_serves_keycloak_over_https_only():
     compose = yaml.safe_load((REPO / "docker-compose.yml").read_text(encoding="utf-8"))
     env = compose["services"]["keycloak"]["environment"]
     assert env["KC_HTTP_ENABLED"] == "false"
-    assert env["KC_HOSTNAME"].startswith("https://")
+    # The public sign-in address is a setting (docs/public-access.md); its
+    # default, and the admin console always, are https on loopback.
+    hostname = re.fullmatch(r"\$\{KEYCLOAK_PUBLIC_URL:-(.+)\}", env["KC_HOSTNAME"])
+    assert hostname and hostname.group(1).startswith("https://"), env["KC_HOSTNAME"]
+    assert env["KC_HOSTNAME_ADMIN"] == "https://localhost:8081"
     assert env["KC_HTTPS_CERTIFICATE_FILE"] and env["KC_HTTPS_CERTIFICATE_KEY_FILE"]
     assert compose["services"]["keycloak"]["ports"] == ["127.0.0.1:8081:8443"]
     mounts = " ".join(compose["services"]["keycloak"]["volumes"])

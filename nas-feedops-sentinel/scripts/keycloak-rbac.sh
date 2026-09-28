@@ -49,14 +49,29 @@ CLIENT_UUID=$(kc get clients -r "$REALM" -q clientId="$CLIENT_ID" --fields id --
 # The dashboard signs in with OIDC: the realm's login page, then back through
 # the edge proxy (src/keycloak_auth.py). These are the realm file's client
 # settings; set on every run, so a realm imported earlier converges on them.
+# PUBLIC_DASHBOARD_URL (docs/public-access.md), when set, is allowed as well:
+# HTTPS only, exact callback, never a wildcard.
 DASHBOARD_URL="${DASHBOARD_URL:-https://localhost:8443}"
+PUBLIC_DASHBOARD_URL="${PUBLIC_DASHBOARD_URL:-}"
+redirects="\"$DASHBOARD_URL/oauth2callback\""
+origins="\"$DASHBOARD_URL\""
+logouts="$DASHBOARD_URL/oauth2callback"
+if [ -n "$PUBLIC_DASHBOARD_URL" ]; then
+    case "$PUBLIC_DASHBOARD_URL" in
+        https://*[!/]) ;;
+        *) echo "ERROR: PUBLIC_DASHBOARD_URL must be https://host (no trailing slash): $PUBLIC_DASHBOARD_URL" >&2; exit 1 ;;
+    esac
+    redirects="$redirects,\"$PUBLIC_DASHBOARD_URL/oauth2callback\""
+    origins="$origins,\"$PUBLIC_DASHBOARD_URL\""
+    logouts="$logouts##$PUBLIC_DASHBOARD_URL/oauth2callback"   # Keycloak's list separator
+fi
 kc update "clients/$CLIENT_UUID" -r "$REALM" \
     -s standardFlowEnabled=true -s directAccessGrantsEnabled=false \
-    -s "redirectUris=[\"$DASHBOARD_URL/oauth2callback\"]" \
-    -s "webOrigins=[\"$DASHBOARD_URL\"]" \
-    -s "attributes.\"post.logout.redirect.uris\"=$DASHBOARD_URL/oauth2callback" \
+    -s "redirectUris=[$redirects]" \
+    -s "webOrigins=[$origins]" \
+    -s "attributes.\"post.logout.redirect.uris\"=$logouts" \
     -s 'attributes."pkce.code.challenge.method"=S256'
-echo "client $CLIENT_ID: OIDC via $DASHBOARD_URL/oauth2callback, PKCE S256, no direct access grant"
+echo "client $CLIENT_ID: OIDC via $DASHBOARD_URL${PUBLIC_DASHBOARD_URL:+ and $PUBLIC_DASHBOARD_URL}, PKCE S256, no direct access grant"
 if kc get "clients/$CLIENT_UUID/protocol-mappers/models" -r "$REALM" --fields name --format csv --noquotes \
         | grep -qx "realm roles in ID token"; then
     echo "mapper: exists"
