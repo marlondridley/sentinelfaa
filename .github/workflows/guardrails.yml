@@ -1,0 +1,100 @@
+name: Guardrails
+
+# Architectural guardrails for the workload-identity model: what must never
+# come back, what static analysis must keep finding nothing, and that Vault's
+# configuration as code applies cleanly and converges.
+#   tripwire   retired credential paths and plaintext Vault access
+#              (.ci/check_no_legacy_vault_vars.sh; self-tested first)
+#   semgrep    SAST: Python, secrets and Java registry rulesets plus this
+#              project's invariants (.semgrep/sentinel.yml), blocking
+#   terraform  instraclustr/terraform against a throwaway Vault and PKI: the
+#              ceremony image builds, providers install offline from the
+#              committed lock, fmt/validate pass, apply succeeds, and a second
+#              plan is empty (no perpetual diff). Drift against the REAL Vault
+#              is `vault-ceremony plan` on the host -- CI cannot and must not
+#              reach it.
+# Not yet here: a Joern CPG scan of the Java JMS edge (deferred).
+
+on:
+  push:
+    paths:
+      - 'nas-feedops-sentinel/**'
+      - 'instraclustr/**'
+      - 'scripts/**'
+      - '.ci/**'
+      - '.semgrep/**'
+      - '.github/workflows/guardrails.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tripwire:
+    name: Legacy credential tripwire
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every rule fires on a legacy-style fixture
+        run: sh .ci/check_no_legacy_vault_vars.sh --self-test
+      - name: Tracked files are clean
+        run: sh .ci/check_no_legacy_vault_vars.sh
+
+  semgrep:
+    name: Semgrep (SAST, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: semgrep scan
+        # Pinned by digest (1.140.0). Any finding fails the job; an accepted
+        # exception is a `# nosemgrep: <rule>` with the reason on the same line.
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src \
+            semgrep/semgrep@sha256:4372a1de903521f9f10f877b6caf15d150d17e1ca592582682c8d02b77cbd4f6 \
+            semgrep scan --metrics=off --error \
+              --config p/python --config p/secrets --config p/java --config .semgrep/ \
+              nas-feedops-sentinel/src nas-feedops-sentinel/dashboard nas-feedops-sentinel/scripts \
+              nas-feedops-sentinel/jumpstart/src instraclustr/scripts scripts
+
+  terraform:
+    name: Vault as code applies and converges
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Throwaway PKI (the real root never leaves its USB)
+        run: |
+          export PKI_ROOT_PASS=env:CI_ROOT_PASS CI_ROOT_PASS="ci-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+          sh instraclustr/scripts/pki.sh root-init "$RUNNER_TEMP/usb"
+          sh instraclustr/scripts/pki.sh request "$RUNNER_TEMP/certs"
+          sh instraclustr/scripts/pki.sh sign "$RUNNER_TEMP/usb" "$RUNNER_TEMP/certs"
+      - name: Throwaway Vault (dev mode, loopback only)
+        run: |
+          docker run -d --name ci-vault -p 127.0.0.1:8200:8200 \
+            -e VAULT_DEV_ROOT_TOKEN_ID=ci-only-not-a-secret \
+            hashicorp/vault@sha256:6b4e5dadf082cb3587930ced09b52851c5ae9f8d1c7df31ed39f0085a3029f63
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break; sleep 1; done
+      - name: Build the ceremony image (providers baked from the committed lock)
+        run: docker build -t sentinelfaa-vault-ceremony:ci instraclustr/terraform
+      - name: fmt, validate, apply, and a second plan that must be empty
+        run: |
+          cp -r instraclustr/terraform "$RUNNER_TEMP/tf"
+          tf() {
+            docker run --rm --network host \
+              -v "$RUNNER_TEMP/tf:/terraform" -v "$PWD/instraclustr/vault-policies:/vault-policies:ro" \
+              -v "$RUNNER_TEMP/certs/trust:/certs/trust:ro" \
+              -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=ci-only-not-a-secret \
+              -w /terraform --entrypoint terraform sentinelfaa-vault-ceremony:ci "$@"
+          }
+          tf fmt -check -recursive
+          tf init -input=false
+          tf validate
+          tf apply -input=false -auto-approve
+          tf plan -input=false -detailed-exitcode
