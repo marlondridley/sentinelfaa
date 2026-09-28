@@ -33,9 +33,14 @@
 #                                   missing, expired, mismatched, or not issued
 #                                   by this root.
 #
-# PKI_ROOT_PASS, when set, is handed to OpenSSL as the root key's passphrase
+# The root passphrase is typed ONCE per command (root-init asks twice, to
+# confirm) and handed to each OpenSSL call on a pipe -- never argv, never the
+# environment, never a file -- so root-init cannot end up with a key encrypted
+# under one entry and a self-signature attempted with another, and sign
+# checks it against the key before it signs anything.
+# PKI_ROOT_PASS, when set, is handed to OpenSSL instead as its passphrase
 # source (env:NAME or file:PATH): for the throwaway roots tests and the smoke
-# harness create. A real ceremony leaves it unset and types the passphrase.
+# harness create. A real ceremony leaves it unset.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -50,8 +55,30 @@ VAULT_GID=1000
 
 die() { echo "ERROR: $*" >&2; exit 2; }
 
-# `openssl ... $(pass -passin)`: the passphrase source flag, or nothing (prompt).
-pass() { if [ -n "${PKI_ROOT_PASS:-}" ]; then echo "$1 $PKI_ROOT_PASS"; fi; }
+# `root_pass | openssl ... $(pass -passin)`: the passphrase source flag, and
+# the typed passphrase on the pipe it reads (ignored when PKI_ROOT_PASS is set).
+PASS=""
+pass() { if [ -n "${PKI_ROOT_PASS:-}" ]; then echo "$1 $PKI_ROOT_PASS"; else echo "$1 stdin"; fi; }
+root_pass() { printf '%s\n' "$PASS"; }
+
+# ask_pass [confirm]: read the root passphrase from the terminal, unechoed.
+MIN_PASS=12
+ask_pass() {
+    [ -n "${PKI_ROOT_PASS:-}" ] && return 0
+    [ -t 0 ] || die "the root passphrase is typed at a terminal: run with a TTY (pki.ps1 does)"
+    trap 'stty echo 2>/dev/null' EXIT INT TERM
+    # Echo off BEFORE the prompt appears: anything typed or pasted the moment
+    # it shows must never reach the screen.
+    stty -echo; printf 'Root key passphrase: ' >&2
+    IFS= read -r PASS || PASS=""; stty echo; printf '\n' >&2
+    if [ "${1:-}" = confirm ]; then
+        [ "${#PASS}" -ge "$MIN_PASS" ] || die "use at least $MIN_PASS characters; nothing was created"
+        stty -echo; printf 'Again, to confirm: ' >&2
+        IFS= read -r again || again=""; stty echo; printf '\n' >&2
+        [ "$PASS" = "$again" ] || die "the two entries differ; nothing was created"
+        unset again
+    fi
+}
 
 # issued <function>: calls <function> once per certificate the root issues,
 # as <function> <dir> <name> <request section> <extension section> <curve>.
@@ -96,14 +123,24 @@ secure_key() {  # secure_key <dir> <key file>
 root_init() {
     root=$1
     mkdir -p "$root"
+    if [ -e "$root/root-ca.key" ] && [ ! -e "$root/root-ca.crt" ]; then
+        die "$root/root-ca.key exists without root-ca.crt: an unfinished root-init, never used to sign
+       anything. Delete root-ca.key (and nothing else) and run root-init again."
+    fi
     [ ! -e "$root/root-ca.key" ] || die "$root/root-ca.key already exists: a root is created once"
+    ask_pass confirm
     # shellcheck disable=SC2046
     ( umask 077
-      openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc \
+      root_pass | openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc \
           $(pass -pass) -out "$root/root-ca.key" )
+    # All or nothing: a key whose self-signature failed is removed, not left
+    # to block the next attempt.
     # shellcheck disable=SC2046
-    openssl req -x509 -new -key "$root/root-ca.key" $(pass -passin) \
-        -config "$POLICY/root.cnf" -days "$ROOT_DAYS" -out "$root/root-ca.crt"
+    if ! root_pass | openssl req -x509 -new -key "$root/root-ca.key" $(pass -passin) \
+            -config "$POLICY/root.cnf" -days "$ROOT_DAYS" -out "$root/root-ca.crt"; then
+        rm -f "$root/root-ca.key" "$root/root-ca.crt"
+        die "self-signing the root failed; nothing was kept"
+    fi
     echo "root created: $root/root-ca.crt, $root/root-ca.key"
     echo "Copy root-ca.key to the backup USB and put the passphrase in the password manager."
 }
@@ -129,7 +166,7 @@ sign_one() {
     # certificate that looks pending.
     out="$CERTS/$1/$2.crt.signing"
     # shellcheck disable=SC2046
-    if ! openssl x509 -req -in "$csr" -CA "$ROOT/root-ca.crt" -CAkey "$ROOT/root-ca.key" $(pass -passin) \
+    if ! root_pass | openssl x509 -req -in "$csr" -CA "$ROOT/root-ca.crt" -CAkey "$ROOT/root-ca.key" $(pass -passin) \
             -CAserial "$ROOT/root-ca.srl" -CAcreateserial -days "$ISSUED_DAYS" -sha384 \
             -extfile "$POLICY/signing.cnf" -extensions "$4" -out "$out" 2>/dev/null; then
         rm -f "$out"
@@ -214,6 +251,10 @@ case "$cmd" in
         elif ! cmp -s "$ROOT/root-ca.crt" "$CERTS/trust/root-ca.crt"; then
             die "$CERTS/trust/root-ca.crt is a different root than $ROOT/root-ca.crt"
         fi
+        ask_pass
+        # shellcheck disable=SC2046
+        root_pass | openssl pkey -in "$ROOT/root-ca.key" $(pass -passin) -noout 2>/dev/null \
+            || die "that passphrase does not open $ROOT/root-ca.key; nothing was signed"
         issued sign_one ;;
     install)
         [ $# -eq 2 ] || die "usage: $0 install <certs-dir>"

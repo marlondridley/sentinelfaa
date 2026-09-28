@@ -112,7 +112,7 @@ def test_wrong_passphrase_signs_nothing(tmp_path):
     pki("root-init", str(usb))
     pki("request", str(certs))
     result = pki("sign", str(usb), str(certs), passphrase="not-the-passphrase", check=False)
-    assert result.returncode == 2 and "wrong passphrase" in result.stderr
+    assert result.returncode == 2 and "does not open" in result.stderr
     assert not list(certs.rglob("*.crt.pending"))
 
 
@@ -391,3 +391,108 @@ def test_sign_refuses_a_certs_dir_that_trusts_a_different_root(ceremony, tmp_pat
     pki("request", str(certs))
     result = pki("sign", str(other_usb), str(certs), check=False)
     assert result.returncode == 2 and "different root" in result.stderr
+
+
+# -- The passphrase at a real terminal ----------------------------------------
+# The ceremony types the passphrase: once per command (root-init confirms it),
+# handed to every OpenSSL call on a pipe. It used to be asked three times by
+# OpenSSL itself, and a slip on the third left a root key with no
+# certificate that then blocked every retry -- which is what happened to the
+# first real ceremony.
+
+def pki_tty(*args: str, inputs: list[str], timeout: float = 60) -> tuple[int, str]:
+    """Run pki.sh on a pseudo-terminal, answering each passphrase prompt in turn."""
+    import pty
+    import select
+    import time
+
+    env = {k: v for k, v in os.environ.items() if k != "PKI_ROOT_PASS"}
+    pid, fd = pty.fork()
+    if pid == 0:                                   # child: the ceremony, on the tty
+        os.execvpe("sh", ["sh", str(PKI), *args], env)
+    out, answered, deadline = b"", 0, time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if not ready:
+            if os.waitpid(pid, os.WNOHANG)[0]:
+                break
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:                            # EIO: the child has exited
+            break
+        if not chunk:
+            break
+        out += chunk
+        prompts = out.count(b"passphrase: ") + out.count(b"confirm: ")
+        while answered < prompts and answered < len(inputs):
+            os.write(fd, (inputs[answered] + "\n").encode())
+            answered += 1
+    else:
+        os.kill(pid, 9)
+        raise AssertionError(f"pki.sh {args} did not finish:\n{out.decode(errors='replace')}")
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status), out.decode(errors="replace")
+
+
+GOOD = "correct horse battery staple"
+
+
+def test_root_init_asks_once_confirms_and_creates_the_root(tmp_path):
+    code, out = pki_tty("root-init", str(tmp_path / "usb"), inputs=[GOOD, GOOD])
+    assert code == 0, out
+    assert out.count("Root key passphrase:") == 1 and out.count("Again, to confirm:") == 1
+    assert GOOD not in out, "the passphrase is never echoed"
+    key = (tmp_path / "usb" / "root-ca.key").read_bytes()
+    assert serialization.load_pem_private_key(key, password=GOOD.encode())
+
+
+def test_a_mismatched_confirmation_creates_nothing(tmp_path):
+    code, out = pki_tty("root-init", str(tmp_path / "usb"), inputs=[GOOD, GOOD + "x"])
+    assert code == 2 and "the two entries differ" in out
+    assert not (tmp_path / "usb" / "root-ca.key").exists()
+
+
+def test_a_short_passphrase_creates_nothing(tmp_path):
+    code, out = pki_tty("root-init", str(tmp_path / "usb"), inputs=["short"])
+    assert code == 2 and "at least 12 characters" in out
+    assert not (tmp_path / "usb" / "root-ca.key").exists()
+
+
+def test_sign_with_the_wrong_passphrase_signs_nothing_and_the_right_one_signs_both(tmp_path):
+    usb, certs = tmp_path / "usb", tmp_path / "certs"
+    assert pki_tty("root-init", str(usb), inputs=[GOOD, GOOD])[0] == 0
+    pki("request", str(certs))
+
+    code, out = pki_tty("sign", str(usb), str(certs), inputs=["not the passphrase"])
+    assert code == 2 and "does not open" in out
+    assert not list(certs.rglob("*.crt.pending")) and not list(certs.rglob("*.crt.signing"))
+
+    code, out = pki_tty("sign", str(usb), str(certs), inputs=[GOOD])
+    assert code == 0, out
+    assert out.count("Root key passphrase:") == 1, "one entry signs both certificates"
+    assert sorted(p.name for p in certs.rglob("*.crt.pending")) == ["intermediate-ca.crt.pending", "vault.crt.pending"]
+
+
+def test_an_unfinished_root_init_says_exactly_what_to_do(tmp_path):
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    (usb / "root-ca.key").write_text("half-made\n", encoding="utf-8")   # a key, no certificate
+
+    result = pki("root-init", str(usb), check=False)
+
+    assert result.returncode == 2
+    assert "unfinished root-init" in result.stderr and "Delete root-ca.key" in result.stderr
+
+
+def test_a_failed_self_signature_leaves_nothing_behind(tmp_path):
+    broken = tmp_path / "policy"
+    shutil.copytree(POLICY, broken)
+    (broken / "root.cnf").write_text("[ req ]\nprompt = no\ndistinguished_name = nope\n", encoding="utf-8")
+    env = {**os.environ, "PKI_POLICY": str(broken), "PKI_ROOT_PASS": "env:PKI_TEST_PASS", "PKI_TEST_PASS": PASSPHRASE}
+
+    result = subprocess.run(["sh", str(PKI), "root-init", str(tmp_path / "usb")],
+                            capture_output=True, text=True, env=env)
+
+    assert result.returncode == 2 and "nothing was kept" in result.stderr
+    assert not (tmp_path / "usb" / "root-ca.key").exists()
