@@ -156,6 +156,6 @@ Write-Host "  authorization_endpoint : $($disc.authorization_endpoint)"
 Write-Host ""
 Write-Host "Next: docker compose --env-file .env up -d dashboard   (picks up the new settings)" -ForegroundColor Cyan
 Write-Host "  .streamlit/secrets.toml must use server_metadata_url = https://keycloak:8443/... and" -ForegroundColor Cyan
-Write-Host "  ca_file = /run/tls/edge-ca.crt (see .streamlit/secrets.toml.example)." -ForegroundColor Cyan
+Write-Host "  [auth.keycloak.client_kwargs] verify = /run/tls/edge-ca.crt (see .streamlit/secrets.toml.example)." -ForegroundColor Cyan
 Write-Host "Then open https://localhost:8443 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
 Write-Host "Keycloak admin console: https://localhost:8081/admin  (user 'admin', KEYCLOAK_ADMIN_PASSWORD)" -ForegroundColor DarkGray

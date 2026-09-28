@@ -106,3 +106,21 @@ nas-feedops-sentinel/tls/
 
 # Vault recovery key share 3: move off this machine, never commit
 instraclustr/vault-recovery/
+
+# Workload-identity PKI (instraclustr/certs/README.md): per environment,
+# never committed. Only the CA policy and the README are source.
+instraclustr/certs/*
+!instraclustr/certs/policy/
+!instraclustr/certs/README.md
+
+# Terraform: local state and provider cache. State holds no secrets here
+# (policies, roles, the public root) but belongs to one deployment.
+instraclustr/terraform/.terraform/
+instraclustr/terraform/*.tfstate
+instraclustr/terraform/*.tfstate.*
+instraclustr/terraform/*.tfplan
+
+# The operator's ceremony workspace (step scripts, filled-in record sheet):
+# local to this machine. The tracked procedure is instraclustr/README.md,
+# "First-time setup", and instraclustr/certs/README.md.
+ceremony/

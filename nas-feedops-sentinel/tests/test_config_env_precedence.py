@@ -36,8 +36,7 @@ import src.config
 
 # The overrides src/storage/test_support.py tells operators to use, verbatim.
 TEST_DB_OVERRIDES = {
-    "VAULT_ADDR": "",
-    "VAULT_TOKEN": "",
+    "VAULT_AGENT_ENV_FILE": "",
     "POSTGRES_HOST": "postgres",
     "POSTGRES_PORT": "5432",
     "POSTGRES_DB": "sentinel_test",
@@ -88,16 +87,14 @@ def test_documented_overrides_never_resolve_to_the_live_database():
         assert not config.settings.DATABASE_URL.endswith("/sentinel_db")
 
 
-def test_empty_vault_address_disables_the_vault_settings_source():
+def test_empty_agent_file_setting_disables_the_vault_settings_source():
     """
-    VaultSettingsSource outranks the environment, so if an empty VAULT_ADDR did
-    not disable it, it would seed POSTGRES_DB from secret/postgres/credentials
-    and put the suite back on sentinel_db.
+    The Vault source outranks the environment, so an empty VAULT_AGENT_ENV_FILE
+    must turn it off, leaving the overrides above in charge.
     """
     with config_imported_with(**TEST_DB_OVERRIDES) as config:
-        assert config.settings.VAULT_ADDR == ""
-        assert not config.settings.VAULT_TOKEN
         assert config.settings.POSTGRES_DB == "sentinel_test"
+        assert config.settings.POSTGRES_HOST == "postgres"
 
 
 # ── Collection-typed settings ────────────────────────────────────────────────
@@ -167,26 +164,30 @@ def test_direct_provider_model_route_is_refused():
     assert proxy_model("openai/primary-model") == "openai/primary-model"
 
 
-def test_explicit_postgres_db_wins_over_the_vault_secrets_database(monkeypatch):
-    """Vault supplies credentials; an explicitly configured database name is not overridden."""
-    import types
-
+def test_vault_can_never_choose_the_database_or_host(monkeypatch, tmp_path, caplog):
+    """
+    Vault supplies credentials; which database and host are deployment
+    configuration. POSTGRES_DB from Vault once moved the end-to-end proof off
+    its disposable database onto the live one -- so a rendered file that names
+    a database, host or DSN (a template edit, or a secret written to Vault) is
+    ignored for those keys, and says so.
+    """
     import src.vault_config as vault_config
 
-    class FakeKV:
-        def read_secret_version(self, path):
-            data = {"postgres/credentials": {"username": "owner", "password": "pw", "database": "sentinel_db"},
-                    "sentinel/config": {"LITELLM_API_KEY": "k"}}.get(path, {})
-            return {"data": {"data": data}}
-
-    fake_hvac = types.SimpleNamespace(Client=lambda url, token: types.SimpleNamespace(
-        secrets=types.SimpleNamespace(kv=types.SimpleNamespace(v2=FakeKV()))))
-    monkeypatch.setattr(vault_config, "hvac", fake_hvac)
-    monkeypatch.setenv("VAULT_ADDR", "http://vault:8200")
-    monkeypatch.setenv("VAULT_TOKEN", "t")
-
+    rendered = tmp_path / "app-config.env"
+    rendered.write_text(
+        "POSTGRES_USER=owner\nPOSTGRES_PASSWORD=pw\nLITELLM_API_KEY=k\n"
+        "POSTGRES_DB=sentinel_db\nPOSTGRES_HOST=evil.example\nDATABASE_URL=postgresql://x@evil/db\n",
+        encoding="utf-8")
+    monkeypatch.setenv("VAULT_AGENT_ENV_FILE", str(rendered))
     monkeypatch.setenv("POSTGRES_DB", "sentinel_test")
-    assert "POSTGRES_DB" not in vault_config.VaultSettingsSource(src.config.Settings)()
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
 
-    monkeypatch.delenv("POSTGRES_DB")
-    assert vault_config.VaultSettingsSource(src.config.Settings)()["POSTGRES_DB"] == "sentinel_db"
+    with caplog.at_level("WARNING", logger="src.vault_config"):
+        values = vault_config.VaultAgentFileSettingsSource(src.config.Settings)()
+        settings = src.config.Settings()
+
+    assert values == {"POSTGRES_USER": "owner", "POSTGRES_PASSWORD": "pw", "LITELLM_API_KEY": "k"}
+    assert settings.POSTGRES_DB == "sentinel_test" and settings.POSTGRES_HOST == "postgres"
+    assert "evil" not in settings.DATABASE_URL
+    assert any("vault_agent_file_keys_ignored" in r.getMessage() for r in caplog.records)

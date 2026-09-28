@@ -37,8 +37,9 @@ allows unverified decisions; the evaluation flags it.
 
 1. **Overview.**
    - Read the verdict first (GREEN, AMBER, RED or NO DATA). Rules compute
-     it from schema conformance, ingest lag and open CRITICAL alerts; no
-     model is consulted.
+     it from schema conformance, ingest lag and open CRITICAL alerts of the last
+     hour, from live data only (replays and synthetic data are never counted);
+     no model is consulted.
    - RED means validate against a secondary source before relying on the
      feed.
 2. **Facility status.** Is a problem isolated to one airport or sector-wide?

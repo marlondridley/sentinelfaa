@@ -19,6 +19,7 @@ import time
 from typing import Any, NoReturn
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from src.auth import Principal
 from src.keycloak_auth import (
@@ -43,34 +44,74 @@ ROLES = [
 ]
 
 
-def _auth_config() -> dict[str, Any] | None:
-    """[auth] from secrets.toml when a Keycloak provider is configured, else None."""
+def _load_auth() -> tuple[dict[str, Any] | None, str]:
+    """
+    ([auth] from secrets.toml when a Keycloak provider is configured, else None,
+    why secrets.toml could not be read, else "").
+
+    No secrets file at all means sign-in was never set up: the lab fallback, a
+    self-declared callsign that cannot decide anything. A file that exists but
+    cannot be read is a broken setup, and it must not look like the lab
+    fallback: a typo would otherwise open the console to anyone.
+    """
     try:
         auth = st.secrets.get("auth")
-        return auth.to_dict() if auth and auth.get(PROVIDER) else None
-    except Exception as exc:  # noqa: BLE001 -- a malformed secrets file must not crash every page
-        _log.warning("auth_config_unreadable", extra={"error": str(exc)})
-        return None
+        return (auth.to_dict() if auth and auth.get(PROVIDER) else None), ""
+    except StreamlitSecretNotFoundError as exc:
+        if exc.__cause__ is None:                    # no secrets file: not configured
+            return None, ""
+        reason = f"secrets.toml could not be parsed ({type(exc.__cause__).__name__})"
+    except Exception as exc:  # noqa: BLE001 -- never crash every page
+        reason = f"secrets.toml could not be read ({type(exc).__name__})"
+    _log.warning("auth_config_unreadable", extra={"error": reason})
+    return None, reason
+
+
+def _auth_config() -> dict[str, Any] | None:
+    return _load_auth()[0]
 
 
 def oidc_configured() -> bool:
-    return _auth_config() is not None
+    """Sign-in is wanted: a Keycloak provider is configured, or the file that would say so is broken."""
+    auth, unreadable = _load_auth()
+    return auth is not None or bool(unreadable)
+
+
+# The example file ships these; a value that was never replaced is not a secret.
+_PLACEHOLDERS = ("REPLACE_WITH", "change-me", "changeme")
+_MIN_COOKIE_SECRET = 16
 
 
 def _config_problem(auth: dict[str, Any]) -> str:
-    """Why sign-in cannot start safely, or "" if it can. Identity URLs must be HTTPS."""
+    """
+    Why sign-in cannot start safely, or "" if it can. Identity URLs must be HTTPS,
+    and the secrets that make a sign-in trustworthy must have been set: the roles
+    the dashboard acts on are read from a cookie signed with cookie_secret, so
+    anyone who knows a placeholder secret can forge a supervisor.
+    """
     try:
         require_https(str(auth.get("redirect_uri", "")), "redirect_uri")
         require_https(str(auth[PROVIDER].get("server_metadata_url", "")), "server_metadata_url")
     except InsecureIdentityEndpoint as exc:
         return f"{exc}. See .streamlit/secrets.toml.example."
+    for where, value, minimum in (
+        ("[auth] cookie_secret", auth.get("cookie_secret"), _MIN_COOKIE_SECRET),
+        ("[auth.keycloak] client_secret", auth[PROVIDER].get("client_secret"), 1),
+    ):
+        text = str(value or "").strip()
+        if len(text) < minimum or any(text.lower().startswith(p.lower()) for p in _PLACEHOLDERS):
+            return (f"{where} is missing, too short or still the example placeholder. "
+                    "See .streamlit/secrets.toml.example.")
     return ""
 
 
 def current_principal() -> Principal | None:
     """The signed-in operator, or None. A sign-in past the realm's maximum session is ended here."""
-    # st.user has no is_logged_in at all without an [auth] section.
-    if not oidc_configured() or not st.user.is_logged_in:
+    # st.user has no is_logged_in at all without an [auth] section. With an unusable
+    # configuration nobody is signed in, whatever cookie the browser presents: it may
+    # have been signed with a secret that is public.
+    auth, unreadable = _load_auth()
+    if auth is None or unreadable or _config_problem(auth) or not st.user.is_logged_in:
         return None
     claims = st.user.to_dict()
     if session_expired(claims):
@@ -115,8 +156,9 @@ def _login_styles() -> None:
 
 def render_login() -> NoReturn:
     """Draw the sign-in screen and stop the page: nothing below renders for a signed-out visitor."""
-    auth = _auth_config() or {}
-    problem = _config_problem(auth) if auth else "Sign-in is not configured."
+    auth, unreadable = _load_auth()
+    problem = unreadable or (_config_problem(auth) if auth else "Sign-in is not configured.")
+    auth = auth or {}
     _login_styles()
     _, mid, _ = st.columns([1, 1.15, 1])
     with mid:

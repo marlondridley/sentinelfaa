@@ -189,16 +189,12 @@ if view == "Status":
         services, focus_airports, cells,
         href_for=lambda svc, ap: theme.drill_href("alerts", airport=ap, service=svc),
     )
-    st.markdown(
-        f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-top:10px;line-height:1.6;">'
-        "Reading the matrix: <b>OK</b> means a message arrived inside the freshness "
-        f"budget. <b>STALE</b> means the last message is older than that budget. "
-        "<b>DEGRADED</b>, <b>UNAVAILABLE</b> and <b>DISCONNECTED</b> are states the "
-        "upstream service declared about itself. <b>NO DATA</b> means nothing has ever "
-        "arrived for that pair &mdash; it is not a health claim. Click a cell to see the "
-        "alerts raised for it.</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div style="margin-top:8px;">' + theme.help_hint(
+        "OK: a message arrived inside the freshness budget. STALE: the last message is older "
+        "than that budget. DEGRADED, UNAVAILABLE, DISCONNECTED: states the upstream service "
+        "declared about itself. NO DATA: nothing has ever arrived for that pair -- not a health "
+        "claim. Click a cell for the alerts raised for it.", "How to read the matrix") + "</div>",
+        unsafe_allow_html=True)
 
     theme.section("Surface movement volume", "How busy is each airport surface?", tone="neutral")
     smes = {k: v for k, v in health.get("smes_counts", {}).items() if k in focus_airports}

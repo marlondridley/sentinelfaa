@@ -14,8 +14,11 @@ The application: SWIM ingest, the alert and escalation pipeline, the investigati
 
 ```
 src/
-  swim_file_ingest.py     Jumpstart Kit folder: claim, parse, blockAtFAA, per-feed extractors,
-                          stable ids, the watcher
+  raw_message.py          the seam: the JVM's raw record {message_id, headers, body, received_at}
+                          and the source interface (poll / commit / quarantine)
+  swim_file_ingest.py     the folder source (claim, archive), the driver every source shares, blockAtFAA,
+                          per-feed extractors, stable ids, the watcher
+  airports.py             where each airport is and its TRACON (scope itself is config)
   pipeline.py             the one pipeline every entry point runs
   validators.py  alert_engine.py  feed_health.py
   execution_gate.py       staging, tickets, and role-checked decisions
@@ -42,7 +45,8 @@ dashboard/                app.py (Overview) and pages/: Live Airspace, Feed Heal
                           (lib/agent_eval.py: the three layers of the agent evaluation)
 policies/                 model-use.yaml and tool-use.yaml (AGT policies); model-slos.yaml
                           (readiness objectives and per-investigation gate limits)
-tests/                    pytest suite; real SWIM captures in fixtures/swim_kit/;
+tests/                    pytest suite; real SWIM captures in fixtures/swim_kit/, the Java edge's
+                          records of them in fixtures/swim_raw/, its harness in java/;
                           test_agt_known_bugs.py documents AGT bugs as strict xfails
 scripts/                  e2e_proof.py, Keycloak setup and RBAC, diagnostics
 prompts/                  one YAML prompt per model-backed role
@@ -72,12 +76,12 @@ Python 3.12. The suite needs a real Postgres, and it truncates every table befor
 pip install --require-hashes -r requirements-dev.lock
 export POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_DB=sentinel_test \
        POSTGRES_USER=... POSTGRES_PASSWORD=...
-export DATABASE_URL= VAULT_ADDR= VAULT_TOKEN= CRITIC_ENABLED=0   # empty values are deliberate
+export DATABASE_URL= VAULT_AGENT_ENV_FILE= CRITIC_ENABLED=0   # empty values are deliberate
 python -m pytest
 ruff check src tests scripts dashboard
 ```
 
-Each empty value switches something off: `DATABASE_URL` so the `POSTGRES_*` settings are used, the Vault settings so Vault cannot redirect the connection to the live database, and `CRITIC_ENABLED` so no test calls a model. `src/storage/test_support.py` explains the guard. CI runs the same suite, plus `scripts/e2e_proof.py`, in the image's `test` stage against Postgres 16; `.github/workflows/pyapp-ci.yml` is the reference invocation.
+Each empty value switches something off: `DATABASE_URL` so the `POSTGRES_*` settings are used, `VAULT_AGENT_ENV_FILE` so a deployed service's Vault-rendered credentials cannot replace the ones given here, and `CRITIC_ENABLED` so no test calls a model. `src/storage/test_support.py` explains the guard. CI runs the same suite, plus `scripts/e2e_proof.py`, in the image's `test` stage against Postgres 16; `.github/workflows/pyapp-ci.yml` is the reference invocation.
 
 ## Dependencies
 

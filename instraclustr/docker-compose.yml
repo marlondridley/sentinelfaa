@@ -189,7 +189,10 @@ services:
     ports:
       - "127.0.0.1:8200:8200"
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # TLS only (vault-config.hcl). The health check below talks to itself
+      # over TLS too, verifying against the root like any other client.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: /vault/trust/root-ca.crt
     cap_add:
       - IPC_LOCK
     volumes:
@@ -200,37 +203,35 @@ services:
       # root-owned and the vault process would fail to write Raft data).
       - vault-data:/vault/file
       - ./vault-config.hcl:/vault/config/vault-config.hcl:ro
+      # Its own certificate and key (instraclustr/certs/README.md), and the
+      # public root for its health check. Directories, never single files:
+      # Docker turns a missing file mount into an empty directory.
+      - ./certs/vault:/vault/tls:ro
+      - ./certs/trust:/vault/trust:ro
     command: ["vault", "server", "-config=/vault/config/vault-config.hcl"]
+    # Vault's audit log goes to its stdout (terraform/main.tf, vault_audit):
+    # bounded here, so it can never fill the disk and stop Vault.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
     healthcheck:
       # `vault status` exits 0 (unsealed), 1 (error/unreachable), or 2
       # (reachable but sealed). Only 1 should count as unhealthy here --
       # sealed-but-reachable is the expected state after every restart until
       # vault-unseal runs, and vault-unseal itself needs the API to be
       # reachable (not "unsealed") before it can do anything.
-      test: ["CMD-SHELL", "vault status -address=http://127.0.0.1:8200; test $? -ne 1"]
+      test: ["CMD-SHELL", "vault status; test $? -ne 1"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # One-shot-per-boot helper: initializes Vault on its very first ever run
-  # (writing the root token + unseal key to ./vault-init-data/init.json, a
-  # host-visible bind mount -- see .gitignore, this file must never be
-  # committed), unseals it on every subsequent restart, and re-seeds the
-  # app's secrets. See vault-unseal-and-seed.bash for the full logic.
-  #
-  # NOTE: after the very first run, the real root token lives only in
-  # ./vault-init-data/init.json -- NOT in VAULT_TOKEN in .env. Both
-  # instraclustr/.env AND ../nas-feedops-sentinel/.env still have the old
-  # dev-mode placeholder (VAULT_TOKEN=myroottoken), which only worked
-  # because -dev mode let you pick your own root token. Real Vault
-  # generates a random one at first `vault operator init`, so EVERY
-  # service that authenticates with VAULT_TOKEN from either .env file --
-  # litellm here, plus dashboard/sentinel/api/temporal-worker in
-  # nas-feedops-sentinel/docker-compose.yml -- needs that value updated to
-  # the generated root token before it can read its secrets. Bring-up
-  # order: (1) `docker compose up -d vault vault-unseal`, (2) read the
-  # root token out of ./vault-init-data/init.json, (3) put it in both
-  # .env files as VAULT_TOKEN, (4) THEN bring up everything else.
+  # One-shot, every boot: initializes Vault on its very first run, unseals it
+  # on every restart (Shamir shares 1 and 2), and seeds the secrets this
+  # project owns, as the vault-bootstrap AppRole -- no root token is stored
+  # anywhere. See vault-unseal-and-seed.bash. Policy and auth-method changes
+  # are Terraform's (instraclustr/terraform/), applied in a root ceremony.
   vault-unseal:
     image: hashicorp/vault:1.15.2
     container_name: vault-unseal
@@ -238,7 +239,8 @@ services:
       vault:
         condition: service_healthy
     environment:
-      VAULT_ADDR: "http://vault:8200"
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: /certs-trust/root-ca.crt
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
@@ -255,7 +257,93 @@ services:
       - vault-unseal-share:/vault-share-2
       # Share 3, written once for the operator to move off this machine.
       - ./vault-recovery:/vault-recovery
+      - ./certs/trust:/certs-trust:ro
+      - ./vault-policies:/vault-policies:ro
     entrypoint: ["/bin/sh", "/scripts/vault-unseal-and-seed.bash"]
+
+  # The root ceremony (instraclustr/terraform/ceremony.sh), on demand only:
+  #   docker compose --profile ceremony run --rm vault-ceremony plan|apply
+  # A root token from unseal shares 1 and 2, one Terraform run, revoked.
+  vault-ceremony:
+    profiles: ["ceremony"]
+    build: ./terraform
+    image: sentinelfaa-vault-ceremony:local
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: /certs/trust/root-ca.crt
+      CEREMONY_AUTO_APPROVE: ${CEREMONY_AUTO_APPROVE:-0}
+    volumes:
+      # main.tf's relative paths: ../vault-policies and ../certs/trust.
+      - ./terraform:/terraform
+      - ./vault-policies:/vault-policies:ro
+      - ./certs/trust:/certs/trust:ro
+      - ./vault-init-data/unseal:/vault-init-data/unseal:ro
+      - vault-unseal-share:/vault-share-2:ro
+
+  # SPIRE: workload identity for the application containers, replacing the
+  # AppRole role_id/secret_id files this stack used to hand-rotate. A
+  # container proves who it is by platform attestation (the Docker label its
+  # compose service sets) and receives a short-lived X.509-SVID, which its
+  # Vault Agent sidecar presents to Vault over mutual TLS -- see
+  # spire-entries.yaml and vault-agent/ for the application side.
+  #
+  # spire-server's data_dir is a persistent volume: once initialized, it
+  # keeps its own signing keys and registration entries across restarts,
+  # same as Vault's own storage volume. Its CA is signed by the offline
+  # root's SPIRE upstream CA (instraclustr/certs/README.md), mounted here
+  # and nowhere else.
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.6
+    container_name: spire-server
+    volumes:
+      - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/opt/spire/data
+      - ./certs/spire:/opt/spire/conf/upstream/spire:ro
+      - ./certs/trust:/opt/spire/conf/upstream/trust:ro
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck",
+             "-socketPath", "/tmp/spire-server/private/api.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # spire-agent's data_dir also persists: SPIRE_JOIN_TOKEN is needed for this
+  # agent's very first boot only. Once attested, a restart reuses the cached
+  # node SVID and ignores the flag (an empty -joinToken means none) -- see
+  # "SPIRE: first boot" in instraclustr/README.md. The image has no shell, so
+  # compose passes the token straight to the binary.
+  #
+  # pid: host is required by the docker WorkloadAttestor (agent.conf): it
+  # resolves a caller's PID to a container ID via /proc/<pid>/cgroup, which
+  # is only visible across containers when sharing the host's PID
+  # namespace -- there is no narrower way to grant just that on plain
+  # Docker Compose (no Kubernetes here). This container can see every other
+  # container's process list as a result; it does not gain the ability to
+  # act on them (no ptrace/SYS_ADMIN granted), only to read /proc.
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.6
+    container_name: spire-agent
+    pid: host
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./spire/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - spire-agent-data:/opt/spire/data
+      # The root it verifies spire-server against (agent.conf trust_bundle_path).
+      - ./certs/trust:/opt/spire/conf/trust:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The socket every application container's spiffe-helper sidecar
+      # reads from (nas-feedops-sentinel/docker-compose.yml) -- external,
+      # like nas-network, so it's one real volume shared across both
+      # compose projects rather than two separately project-scoped ones.
+      - nas-spire-agent-socket:/tmp/spire-agent/public
+    command: ["-config", "/opt/spire/conf/agent/agent.conf", "-joinToken", "${SPIRE_JOIN_TOKEN:-}"]
 
   litellm:
     # Pinned: was main-latest, a moving nightly tag. This is the digest that ran.
@@ -326,8 +414,8 @@ services:
     entrypoint: ["/bin/sh", "/scripts/litellm-db-init.sh"]
 
   # One-shot: the application's scoped virtual key, stored in Vault
-  # (litellm-bootstrap.sh). The application services read it with their
-  # AppRole; the master key stays with the proxy.
+  # (litellm-bootstrap.sh). The application services receive it through their
+  # Vault Agent sidecars; the master key stays with the proxy.
   litellm-bootstrap:
     image: hashicorp/vault:1.15.2
     container_name: litellm-bootstrap
@@ -337,13 +425,15 @@ services:
       vault-unseal:
         condition: service_completed_successfully
     environment:
-      VAULT_ADDR: "http://vault:8200"
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: /certs-trust/root-ca.crt
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       LITELLM_APP_BUDGET_USD: ${LITELLM_APP_BUDGET_USD:-10}
       LITELLM_APP_RPM: ${LITELLM_APP_RPM:-30}
     volumes:
       - ./litellm-bootstrap.sh:/scripts/litellm-bootstrap.sh:ro
       - ./vault-init-data/bootstrap:/vault-bootstrap:ro
+      - ./certs/trust:/certs-trust:ro
     entrypoint: ["/bin/sh", "/scripts/litellm-bootstrap.sh"]
 
 volumes:
@@ -352,6 +442,13 @@ volumes:
   postgres-data:
   vault-data:
   vault-unseal-share:
+  spire-server-data:
+  spire-agent-data:
+  # External, like nas-network: one real volume, pre-created by
+  # launch_nas_sentinel.ps1, shared with nas-feedops-sentinel/docker-compose.yml
+  # rather than two separately project-scoped volumes of the same name.
+  nas-spire-agent-socket:
+    external: true
 
 networks:
   default:

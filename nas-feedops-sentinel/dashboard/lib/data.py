@@ -7,7 +7,7 @@ viewed, so there's no single shared "live_events" to hand between pages
 the way the old one-file dashboard could. What *is* shared, and what
 belongs here, is the parsing/formatting logic: reconstructing NASEvent
 objects from raw storage rows, the readiness/status label thresholds, and
-the PCT airport reference data -- so every page applies it identically
+the airport reference data -- so every page applies it identically
 instead of six pages carrying six slightly-drifting copies.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from src import config
+from src import airports, config
 from src.async_bridge import run_async as run
 from src.logging_config import get_logger
 from src.models import NASEvent
@@ -37,12 +37,19 @@ STATUS_EMOJI = {
 }
 SEVERITY_EMOJI = {"CRITICAL": "🔴", "WARNING": "🟡", "INFO": "🔵"}
 
-PCT_AIRPORTS = {
-    "KDCA": {"name": "Reagan National",       "lat": 38.8521, "lon": -77.0377},
-    "KIAD": {"name": "Dulles International",  "lat": 38.9531, "lon": -77.4565},
-    "KBWI": {"name": "Baltimore-Washington",  "lat": 39.1754, "lon": -76.6683},
-    "KADW": {"name": "Joint Base Andrews",    "lat": 38.8108, "lon": -76.8669},
-}
+def _in_scope_airports() -> dict[str, dict]:
+    """
+    The airports this deployment supports (config.SUPPORTED_AIRPORTS), registry airports first in the
+    registry's order, then any the registry does not know: those have no coordinates, so no map marker.
+    """
+    known = {c: a for c, a in airports.REGISTRY.items() if c in config.SUPPORTED_AIRPORTS}
+    table = {c: {"name": a.name, "lat": a.lat, "lon": a.lon} for c, a in known.items()}
+    for code in sorted(config.SUPPORTED_AIRPORTS - set(known)):
+        table[code] = {"name": code, "lat": None, "lon": None}
+    return table
+
+
+AIRPORTS = _in_scope_airports()
 
 
 def status_label(status: str) -> str:

@@ -25,13 +25,14 @@ from __future__ import annotations
 import pytest
 
 from src import storage
+from src.auth import Decision, Principal, PrincipalSource, format_actor
 from src.execution_gate import (
+    DecisionNotRecorded,
     _idempotency_key,
-    approve_staged_action,
+    decide_staged_action,
     get_action_audit_log,
     get_pending_staged_actions,
     get_recent_staged_actions,
-    reject_staged_action,
     stage_critical_alert,
 )
 from src.models import AlertEvent, CriticResult
@@ -158,6 +159,19 @@ class TestStaging:
         assert action.alert_type in action.rationale
 
 
+def _officer(name: str) -> Principal:
+    """A verified supervisor: the only kind of caller a decision is written for."""
+    return Principal(name, "Supervisor", PrincipalSource.OIDC, roles=frozenset({"supervisor"}))
+
+
+async def approve_staged_action(action_id: str, actor: str, note: str = ""):
+    return await decide_staged_action(action_id, Decision.APPROVE, _officer(actor), note)
+
+
+async def reject_staged_action(action_id: str, actor: str, note: str = ""):
+    return await decide_staged_action(action_id, Decision.REJECT, _officer(actor), note)
+
+
 # ── Decision workflow (approve / reject) ─────────────────────────────────────
 
 class TestDecisionWorkflow:
@@ -168,7 +182,7 @@ class TestDecisionWorkflow:
 
         assert updated is not None
         assert updated.status == "APPROVED"
-        assert updated.decided_by == "supervisor_smith"
+        assert updated.decided_by == format_actor(_officer("supervisor_smith"))
         assert updated.decision_note == "verified"
         assert updated.decided_at is not None
 
@@ -179,7 +193,7 @@ class TestDecisionWorkflow:
 
         assert updated is not None
         assert updated.status == "REJECTED"
-        assert updated.decided_by == "supervisor_smith"
+        assert updated.decided_by == format_actor(_officer("supervisor_smith"))
         assert updated.decision_note == "false alarm"
 
     async def test_approve_writes_audit_row(self):
@@ -193,7 +207,7 @@ class TestDecisionWorkflow:
         latest = audit[0]
         assert latest["previous_status"] == "PENDING"
         assert latest["new_status"] == "APPROVED"
-        assert latest["actor"] == "supervisor_smith"
+        assert latest["actor"] == format_actor(_officer("supervisor_smith"))
         assert latest["note"] == "ok"
 
     async def test_reject_writes_audit_row(self):
@@ -205,17 +219,19 @@ class TestDecisionWorkflow:
         latest = audit[0]
         assert latest["previous_status"] == "PENDING"
         assert latest["new_status"] == "REJECTED"
-        assert latest["actor"] == "supervisor_smith"
+        assert latest["actor"] == format_actor(_officer("supervisor_smith"))
 
     async def test_duplicate_approval_is_idempotent(self):
         alert = _critical_alert()
         action = await _persist_and_stage(alert)
         await approve_staged_action(action.action_id, actor="a", note="first")
-        second = await approve_staged_action(action.action_id, actor="b", note="second-attempt")
+        with pytest.raises(DecisionNotRecorded, match="already APPROVED") as refused:
+            await approve_staged_action(action.action_id, actor="b", note="second-attempt")
+        second = refused.value.action
 
         # State must not change on re-approval
         assert second.status == "APPROVED"
-        assert second.decided_by == "a", \
+        assert second.decided_by == format_actor(_officer("a")), \
             "Terminal state must be sticky; second approval must not overwrite the first"
         assert second.decision_note == "first"
 
@@ -228,11 +244,13 @@ class TestDecisionWorkflow:
         alert = _critical_alert()
         action = await _persist_and_stage(alert)
         await reject_staged_action(action.action_id, actor="supervisor", note="ignore")
-        attempted = await approve_staged_action(action.action_id, actor="supervisor2", note="overrule?")
+        with pytest.raises(DecisionNotRecorded) as refused:
+            await approve_staged_action(action.action_id, actor="supervisor2", note="overrule?")
+        attempted = refused.value.action
 
         # Terminal — must remain REJECTED.
         assert attempted.status == "REJECTED"
-        assert attempted.decided_by == "supervisor"
+        assert attempted.decided_by == format_actor(_officer("supervisor"))
 
     async def test_approving_unknown_action_returns_none(self):
         result = await approve_staged_action("nonexistent-id-12345", actor="x", note="")
@@ -277,10 +295,13 @@ class TestQuerySemantics:
         await reject_staged_action(a2.action_id, actor="x", note="")
 
         global_audit = await get_action_audit_log(action_id=None, limit=50)
-        # 2 stagings (action) + 2 ticket DRAFT rows + 1 approve + 1 reject = 6
-        # (Each staging also creates an OperationalTicket whose initial draft
-        # transition is recorded in the shared action_audit_log table.)
-        assert len(global_audit) == 6
+        # 2 stagings (action) + 2 ticket DRAFT rows + 1 approve + 1 reject
+        # + the decision on each review's ticket (2) = 8. Each staging creates
+        # an OperationalTicket whose transitions are recorded in the shared
+        # action_audit_log table, and a decision moves its ticket with it.
+        assert len(global_audit) == 8
+        ticket_rows = [r["new_status"] for r in global_audit if str(r["action_id"]).startswith("ticket:")]
+        assert sorted(ticket_rows) == ["APPROVED_FOR_ESCALATION", "DRAFT", "DRAFT", "REJECTED"]
 
 
 # ── Event-loop responsiveness ────────────────────────────────────────────────

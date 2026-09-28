@@ -2,10 +2,14 @@
 Repository for Watch Officer-generated operational tickets (`operational_tickets`
 table), the human-facing escalation packages built from staged actions.
 
-_transition() (used by approve/reject/mark-monitoring) wraps its UPDATE and its
-action_audit_log write in one UnitOfWork transaction with `SELECT ... FOR UPDATE`,
-for the same atomicity/race reason as StagedActionsRepository._decide() -- see that
-class's docstring and unit_of_work.py.
+transition_in() wraps its UPDATE and its action_audit_log write in one UnitOfWork
+transaction with `SELECT ... FOR UPDATE`, for the same atomicity/race reason as
+StagedActionsRepository.decide_in() -- see that class's docstring and unit_of_work.py.
+It is called two ways: from src/storage/__init__.py's decide_staged_action_with_ticket,
+inside the same transaction as the staged_action's own decide_in() so the two rows can
+never disagree, and, for MONITOR (which leaves the action PENDING, so has no action-side
+write to share a transaction with), from this class's own mark_monitoring() via
+_transition(), which opens its own UnitOfWork.
 """
 from __future__ import annotations
 
@@ -189,7 +193,16 @@ class TicketsRepository:
         return [_row_to_ticket(r) for r in rows]
 
     async def get_drafts(self) -> list[OperationalTicket]:
-        rows = await self._pool.fetch("SELECT * FROM operational_tickets WHERE status = 'DRAFT' ORDER BY generated_at DESC")
+        # A draft awaits a decision, so only one whose review is still PENDING counts:
+        # a review that was merged into another, expired or decided elsewhere has no
+        # decision left to make, and its ticket must not keep the queue looking busy.
+        rows = await self._pool.fetch(
+            """SELECT t.* FROM operational_tickets t
+               WHERE t.status = 'DRAFT'
+                 AND NOT EXISTS (SELECT 1 FROM staged_actions s
+                                 WHERE s.action_id = t.action_id AND s.status <> 'PENDING')
+               ORDER BY t.generated_at DESC"""
+        )
         return [_row_to_ticket(r) for r in rows]
 
     async def get_by_id(self, ticket_id: str) -> OperationalTicket | None:
@@ -240,14 +253,18 @@ class TicketsRepository:
         updated = await conn.fetchrow("SELECT * FROM operational_tickets WHERE ticket_id = $1", ticket_id)
         return _row_to_ticket(updated) if updated else None
 
-    async def approve(self, ticket_id: str, actor: str = "dashboard_operator", note: str = "") -> OperationalTicket | None:
-        return await self._transition(ticket_id, "APPROVED_FOR_ESCALATION", actor, note)
-
-    async def reject(self, ticket_id: str, actor: str = "dashboard_operator", note: str = "") -> OperationalTicket | None:
-        return await self._transition(ticket_id, "REJECTED", actor, note)
-
     async def mark_monitoring(self, ticket_id: str, actor: str = "dashboard_operator", note: str = "") -> OperationalTicket | None:
+        # The one ticket transition with no staged_action counterpart: MONITOR leaves
+        # the action PENDING (execution_gate.decide_staged_action), so unlike
+        # APPROVED_FOR_ESCALATION/REJECTED/OVERRIDDEN it is never itself the terminal
+        # outcome of a decision, and there is no companion status to keep in step with.
         return await self._transition(ticket_id, "MONITORING", actor, note)
 
-    async def mark_overridden(self, ticket_id: str, actor: str = "dashboard_operator", note: str = "") -> OperationalTicket | None:
-        return await self._transition(ticket_id, "OVERRIDDEN", actor, note)
+    # approve(), reject() and mark_overridden() used to live here as one-line wrappers
+    # over _transition(), reachable directly by anything that imports this repository --
+    # with no principal, no role check, and no write to the ticket's staged_action, so a
+    # caller could move ONLY the ticket (e.g. to APPROVED_FOR_ESCALATION) while the review
+    # it belongs to stayed PENDING forever. decide_staged_action_with_ticket
+    # (src/storage/__init__.py) is the only door for those three outcomes now: it calls
+    # transition_in() for the ticket in the same transaction as the action's own decide_in(),
+    # so the two rows can never disagree.

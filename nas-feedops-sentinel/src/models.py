@@ -10,9 +10,11 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+
+from src import config
 
 # Namespace for identifiers derived from content (uuid5). Fixed forever: changing
 # it would give every re-ingested record a new identity.
@@ -44,8 +46,22 @@ def content_key(record: dict) -> str:
 DataOrigin = Literal["live", "replay", "synthetic", "api", "unknown"]
 AlertOrigin = Literal["live", "replay", "synthetic", "api", "unknown", "mixed"]
 
-AirportCode = Literal["KDCA", "KIAD", "KBWI", "KADW"]
-TraconCode = Literal["PCT"]
+def _in_scope_airport(code: str) -> str:
+    """An event's airport must be one this deployment supports (config.SUPPORTED_AIRPORTS)."""
+    if code not in config.SUPPORTED_AIRPORTS:
+        raise ValueError(f"airport {code!r} is not one of the supported airports {sorted(config.SUPPORTED_AIRPORTS)}")
+    return code
+
+
+def _in_scope_tracon(code: str) -> str:
+    """An event's TRACON must be one of those the supported airports belong to (config.SUPPORTED_TRACONS)."""
+    if code not in config.SUPPORTED_TRACONS:
+        raise ValueError(f"TRACON {code!r} is not one of the supported TRACONs {sorted(config.SUPPORTED_TRACONS)}")
+    return code
+
+
+AirportCode = Annotated[str, AfterValidator(_in_scope_airport)]
+TraconCode = Annotated[str, AfterValidator(_in_scope_tracon)]
 ServiceName = Literal["SMES", "APDS_RVR", "ISMC", "TOWER_DEPARTURE", "TERMINAL_AUTO"]
 
 
@@ -199,8 +215,8 @@ class NASEvent(BaseModel):
 
     # Core identity
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    airport_code: AirportCode           # ICAO: KDCA, KIAD, KBWI, KADW
-    tracon: TraconCode                  # Always PCT for this scenario
+    airport_code: AirportCode           # ICAO; must be in config.SUPPORTED_AIRPORTS (default KDCA, KIAD, KBWI, KADW)
+    tracon: TraconCode                  # must be in config.SUPPORTED_TRACONS (default PCT)
     service_name: ServiceName           # SMES, APDS_RVR, ISMC, etc.
     message_type: str                   # Subtype within the service
 

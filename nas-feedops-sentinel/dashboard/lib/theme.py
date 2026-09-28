@@ -391,6 +391,12 @@ def inject_theme() -> None:
     )
 
 
+def help_hint(text: str, label: str = "How to read this") -> str:
+    """An unobtrusive "i" whose tooltip holds the explanation, so the page shows data, not prose."""
+    return (f'<span title="{_esc(text)}" style="cursor:help;font-size:11.5px;color:{GRAY1};'
+            f'font-style:normal;white-space:nowrap;margin-left:8px;">&#9432; {_esc(label)}</span>')
+
+
 def page_header(title: str, question: str, *, detail: str | None = None) -> None:
     """
     The identical opening block on every page: what this page is, and the
@@ -405,13 +411,8 @@ def page_header(title: str, question: str, *, detail: str | None = None) -> None
         f'<div style="margin:0 0 2px 0;">'
         f'<span style="font-size:24px;font-weight:700;color:{LIGHT_GRAY5};'
         f'letter-spacing:-0.01em;">{_esc(title)}</span></div>'
-        f'<div style="font-size:13px;color:{GRAY3};font-style:italic;'
-        f'margin-bottom:{"4px" if detail else "14px"};">{_esc(question)}</div>'
-        + (
-            f'<div style="font-size:12px;color:{GRAY1};line-height:1.55;'
-            f'margin-bottom:14px;max-width:1100px;">{_esc(detail)}</div>'
-            if detail else ""
-        ),
+        f'<div style="font-size:13px;color:{GRAY3};font-style:italic;margin-bottom:14px;">'
+        f'{_esc(question)}{help_hint(detail) if detail else ""}</div>',
         unsafe_allow_html=True,
     )
 

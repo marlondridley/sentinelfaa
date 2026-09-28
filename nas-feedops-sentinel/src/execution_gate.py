@@ -43,18 +43,14 @@ Public API:
     stage_critical_alert(alert, critic_result=None)
         -> StagedAction | None
 
-    approve_staged_action(action_id, actor, note)
+    decide_staged_action(action_id, decision, principal, note, ...)
         -> StagedAction | None
-
-    reject_staged_action(action_id, actor, note)
-        -> StagedAction | None
-
-    override_staged_action(action_id, overridden_recommendation, overridden_severity, actor, note)
-        -> StagedAction | None
-        Human-edited sign-off: the operator changes the AI's recommendation
-        text and/or severity before approving. Still purely advisory/record-
-        keeping -- see the module docstring's "gate NEVER" list below. No
-        automated execution is triggered by this any more than by approve/reject.
+        The only door for a human disposition: approve, reject, override
+        (a human-edited sign-off of the AI's recommendation text and/or
+        severity) or monitor. It authorises the principal first, records the
+        decision under their identity, and raises DecisionNotRecorded when the
+        review was already decided. Purely record-keeping -- see the "gate
+        NEVER" list above; no automated execution is triggered by any of them.
 
     get_pending_staged_actions()
         -> list[StagedAction]
@@ -69,6 +65,7 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -85,10 +82,8 @@ from src.models import (
     StagedAction,
 )
 
-# Re-export storage-layer HITL operations through the gate's public API.
-approve_staged_action = storage.approve_staged_action
-reject_staged_action = storage.reject_staged_action
-override_staged_action = storage.override_staged_action
+# Re-export storage-layer HITL reads through the gate's public API. There is no
+# re-exported writer: decisions go through decide_staged_action, which authorises.
 get_pending_staged_actions = storage.get_pending_staged_actions
 get_recent_staged_actions = storage.get_recent_staged_actions
 get_action_audit_log = storage.get_action_audit_log
@@ -119,14 +114,29 @@ def _strict_bool(value: Any) -> bool:
     return False
 
 
+# The low-RVR rule names its runway only in the description ("... on runway 10L at KBWI").
+_RUNWAY_RE = re.compile(r"\bon runway (\S+)")
+
+
 def condition_key(alert: AlertEvent) -> str:
     """
-    The condition a CRITICAL alert reports: alert type, airport, service.
+    The condition a CRITICAL alert reports: alert type, airport, service, the
+    runway when the alert names one, and the data origin when it is not live.
     One review covers a condition while it keeps firing (see
-    CONDITION_QUIET_MINUTES). Matches the migration's backfill,
+    CONDITION_QUIET_MINUTES), so anything that makes two alerts different
+    conditions to a person has to be in the key: a rejected sensor artefact on
+    one runway must not cover a real low RVR on another, and a replay or
+    synthetic alert must not join, or hide, a live review. For a live alert
+    that names no runway this is the migration's backfill,
     concat_ws('|', alert_type, airport_code, service_name).
     """
-    return "|".join(str(v) for v in (alert.alert_type, alert.airport_code, alert.service_name) if v is not None)
+    parts: list[str | None] = [alert.alert_type, alert.airport_code, alert.service_name]
+    runway = _RUNWAY_RE.search(alert.description or "")
+    if runway:
+        parts.append(f"runway {runway.group(1)}")
+    if alert.data_origin != "live":
+        parts.append(alert.data_origin)
+    return "|".join(str(v) for v in parts if v is not None)
 
 
 def _idempotency_key(alert: AlertEvent) -> str:
@@ -249,15 +259,17 @@ async def stage_critical_alert(
     Deterministic rule:
 
         severity != CRITICAL -> no staged action
-        severity == CRITICAL -> covered by a PENDING review of its condition
+        severity == CRITICAL -> covered by a review of its condition
 
     One review per condition, not per reading: an alert whose condition
-    (condition_key) fired within CONDITION_QUIET_MINUTES joins that review;
-    otherwise it opens a new one. The critic/LLM cannot change the rule.
+    (condition_key) fired within CONDITION_QUIET_MINUTES joins that review --
+    a PENDING one while it keeps firing, a decided one only for
+    CONDITION_QUIET_MINUTES after the decision -- otherwise it opens a new one.
+    The critic/LLM cannot change the rule.
 
     Returns the review only when this call opened it -- the caller builds its
     ticket and investigation once -- and None when the alert is not CRITICAL,
-    joined an open review, or was already staged.
+    joined an existing review, or was already staged.
 
     No execution occurs here.
     """
@@ -455,6 +467,19 @@ async def _build_escalation_package(
     )
 
 
+class DecisionNotRecorded(RuntimeError):
+    """
+    A decision that changed nothing: the review was already decided (by someone
+    else, or a moment ago), expired or merged, or MONITOR had no ticket to mark.
+    The audit trail is untouched, so callers must say so instead of reporting
+    the decision as recorded. `action` is the review as it now stands, if it exists.
+    """
+
+    def __init__(self, reason: str, action: StagedAction | None = None):
+        super().__init__(reason)
+        self.action = action
+
+
 # (staged action status, ticket status) each decision records.
 _DECISION_STATUSES: dict[Decision, tuple[str, str]] = {
     Decision.APPROVE: ("APPROVED", "APPROVED_FOR_ESCALATION"),
@@ -479,7 +504,8 @@ async def decide_staged_action(
     then records the decision under format_actor(principal), then moves the
     linked ticket. Raises AuthorizationError without writing anything if the
     principal may not decide. MONITOR leaves the action PENDING and only
-    marks the ticket.
+    marks the ticket. Raises DecisionNotRecorded, again without writing
+    anything, when the review can no longer be decided or MONITOR has no ticket.
 
     Before any of that, code running as an agent is refused by the tool-use
     policy (src/agent_tools.py): whatever principal it presents, an agent
@@ -502,15 +528,19 @@ async def decide_staged_action(
     result: StagedAction | None = None
 
     if decision == Decision.MONITOR:
-        if ticket_id:
-            await storage.mark_operational_ticket_monitoring(ticket_id, actor=actor, note=note)
+        if not ticket_id:
+            raise DecisionNotRecorded("there is no escalation ticket to mark as monitoring")
+        await storage.mark_operational_ticket_monitoring(ticket_id, actor=actor, note=note)
     else:
         new_status, ticket_status = _DECISION_STATUSES[decision]
-        result = await storage.decide_staged_action_with_ticket(
+        result, changed = await storage.decide_staged_action_with_ticket(
             action_id, ticket_id, new_status, ticket_status, actor, note,
             overridden_recommendation=overridden_recommendation,
             overridden_severity=overridden_severity,
         )
+        if result is not None and not changed:
+            by = f" by {result.decided_by}" if result.decided_by else ""
+            raise DecisionNotRecorded(f"this review is already {result.status}{by}", result)
 
     await _refresh_hitl_queue_metric()
     _log.info("staged_action_decided", extra={

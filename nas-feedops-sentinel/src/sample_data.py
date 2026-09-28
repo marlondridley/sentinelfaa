@@ -28,6 +28,8 @@ RUNWAYS: dict[str, list[str]] = {
     "KBWI": ["10", "15L", "15R", "28", "33L", "33R"],
     "KADW": ["01L", "01R", "19L", "19R"],
 }
+# Synthetic data for an airport added to the scope but not listed above: generic runway ends.
+DEFAULT_RUNWAYS: list[str] = ["09", "18", "27", "36"]
 
 SURFACE_EVENT_TYPES: list[str] = [
     "TAXI_OUT", "TAXI_IN", "PUSHBACK", "RUNWAY_ENTER",
@@ -110,7 +112,7 @@ def generate_rvr_event(airport: str | None = None) -> NASEvent:
     """Airport Data / Runway Visual Range — sensor reading for a specific runway."""
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "APDS_RVR", "RVR_UPDATE")
-    runway = random.choice(RUNWAYS[airport])
+    runway = random.choice(RUNWAYS.get(airport, DEFAULT_RUNWAYS))
 
     # 15% probability of low-visibility condition to exercise ALERT_LOW_RVR
     if random.random() < 0.15:
@@ -140,7 +142,7 @@ def generate_tower_departure_event(airport: str | None = None) -> NASEvent:
     airport = airport or random.choice(AIRPORTS)
     fields = _base_fields(airport, "TOWER_DEPARTURE", "DEPARTURE_EVENT")
     fields.update(
-        runway=random.choice(RUNWAYS[airport]),
+        runway=random.choice(RUNWAYS.get(airport, DEFAULT_RUNWAYS)),
         aircraft_id=random.choice(AIRCRAFT_IDS),
         track_id=f"TRK{random.randint(1000, 9999)}",
         surface_event_type="TAKEOFF",

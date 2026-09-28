@@ -42,15 +42,26 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
+import defusedxml.ElementTree as SafeET
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from src import config, storage
 from src.async_bridge import run_async
-from src.metrics import SWIM_MESSAGES_WITHHELD
+from src.metrics import SWIM_FOLDER_BACKLOG, SWIM_FOLDER_OLDEST_WAITING_SECONDS, SWIM_MESSAGES_WITHHELD
 from src.models import NASEvent, content_key, stable_id
+from src.raw_message import (
+    ENVELOPE_EXTENSION,
+    PROPERTY_RE,
+    Delivery,
+    PollBatch,
+    RawMessage,
+    RawMessageSource,
+    message_from_envelope,
+    message_from_kit_text,
+)
 from src.logging_config import get_logger
 
 _log = get_logger(__name__)
@@ -75,13 +86,10 @@ FAILED_DIR: Path = config.DATA_DIR / "failed"
 
 # Accept .json/.xml/.txt AND extension-less files (Kit's MessageFileOutput
 # writes one file per JMS message named by epoch millis, no extension).
-SCAN_EXTENSIONS: set[str] = {".json", ".xml", ".txt", ""}
+SCAN_EXTENSIONS: set[str] = {".json", ".xml", ".txt", ENVELOPE_EXTENSION, ""}
 
 # The Jumpstart kit names each file with its arrival time in epoch millis.
 _ARRIVAL_MILLIS = re.compile(r"(\d{12,})$")
-
-# PCT TRACON primary airports -- used to filter TAIS records to in-scope traffic.
-_PCT_PRIMARY_AIRPORTS: set[str] = {"KDCA", "KIAD", "KBWI", "KADW"}
 
 # XML tag names that map to NASEvent fields (best-effort)
 _XML_FIELD_MAP: dict[str, str] = {
@@ -163,8 +171,13 @@ def _parse_xml_file(path: Path) -> list[dict]:
     Best-effort extraction from FIXM/AIXM-style XML.
     Maps known tag names to NASEvent field names.
     Returns at least one record even if most fields are absent.
+
+    Parsed with defusedxml: these files come from an external broker, so a
+    DTD, entity declaration or external reference is refused outright (the
+    file is quarantined with that reason) rather than left to the stdlib
+    parser's defaults to bound.
     """
-    tree = ET.parse(path)
+    tree = SafeET.parse(path, forbid_dtd=True)
     root = tree.getroot()
 
     # Collect all repeating message elements, or treat the whole doc as one
@@ -198,7 +211,7 @@ def _parse_xml_file(path: Path) -> list[dict]:
 
 #  FAA Jumpstart Kit MessageFileOutput parser (JMS headers + JSON body) 
 
-_JMS_PROPERTY_RE = re.compile(r"^Property name = (?P<key>[^;]+);\s*value = (?P<val>.*)$")
+_JMS_PROPERTY_RE = PROPERTY_RE   # the pattern lives with the codec, src/raw_message.py
 
 
 class WithheldMessage(Exception):
@@ -250,31 +263,34 @@ def _parse_jms_message_file(path: Path) -> list[dict]:
     into each record so downstream knows tracon, msgType, timestamp, etc.
     """
     text = path.read_text(encoding="utf-8-sig", errors="replace")
+    return records_from_raw(message_from_kit_text(text, path.name, _receipt_time(path)), path)
 
-    headers: dict[str, str] = {}
-    body_lines: list[str] = []
-    in_body = False
 
-    for line in text.splitlines():
-        if not in_body:
-            m = _JMS_PROPERTY_RE.match(line)
-            if m:
-                headers[m.group("key").strip()] = m.group("val").strip()
-                continue
-            stripped = line.strip()
-            if not stripped:
-                continue
-            # First non-header, non-blank line begins the JSON body
-            in_body = True
-            body_lines.append(line)
-        else:
-            body_lines.append(line)
+def records_from_raw(message: RawMessage, path: Path | None = None) -> list[dict]:
+    """
+    Turn one raw SWIM message into normalised record dicts: the STDDS understanding
+    starts here. Every source shares this -- a file of the stock kit format, a record
+    from the Java edge, or a broker delivery all arrive as a RawMessage.
+
+    Returns one record per aircraft track in the payload (TAIS messages typically
+    contain many). Headers are merged into each record so downstream knows tracon,
+    msgType, timestamp, etc.
+    """
+    path = path or Path(message.source_name or message.message_id)
+    headers = message.headers
 
     # Before anything is read out of the message, including the headers-only
     # fallback below.
     _honor_block_at_faa(headers)
 
-    body_text = "\n".join(body_lines).strip()
+    if message.convert_error:
+        # The edge could not turn the payload into JSON and kept the text as received:
+        # that is a data problem to surface, not a message to guess at.
+        raise ValueError(
+            f"the payload could not be converted to JSON by the kit ({message.convert_error}); "
+            "the original text is kept in the record")
+
+    body_text = message.body.strip()
     if not body_text:
         # No payload; emit one summary record from headers alone
         return [_jms_headers_only_record(headers, path)]
@@ -330,9 +346,9 @@ def _jms_headers_only_record(headers: dict[str, str], path: Path) -> dict:
     """Fallback when there's no JSON body -- synthesize a metadata-only event."""
     return {
         "airport_code": _normalise_icao(
-            headers.get("tracon") or headers.get("srcTracon") or "PCT"
+            headers.get("tracon") or headers.get("srcTracon") or config.SUPPORTED_TRACON
         ),
-        "tracon": headers.get("tracon", "PCT"),
+        "tracon": headers.get("tracon", config.SUPPORTED_TRACON),
         "service_name": _service_from_mex(headers.get("mex", "")),
         "message_type": headers.get("msgType", "unknown"),
         "event_time_utc": headers.get("safaRcvTimestamp") or headers.get("timestamp"),
@@ -379,9 +395,10 @@ def _derive_flight_phase(
     if altitude_ft < 500:
         return "GROUND"
     if v_vert is not None:
-        if v_vert > 300 and (departure == this_airport or departure == "PCT"):
+        # A flight plan names the TRACON itself when the airport is not filed.
+        if v_vert > 300 and (departure == this_airport or departure in config.SUPPORTED_TRACONS):
             return "DEPARTURE"
-        if v_vert < -300 and (destination == this_airport or destination == "PCT"):
+        if v_vert < -300 and (destination == this_airport or destination in config.SUPPORTED_TRACONS):
             return "ARRIVAL"
         if v_vert > 500:
             return "DEPARTURE"
@@ -399,7 +416,7 @@ def _derive_flight_phase(
 def _normalise_icao(code: str | None) -> str:
     """Ensure an airport identifier is a K-prefixed ICAO (US convention)."""
     if not code:
-        return "PCT"
+        return config.SUPPORTED_TRACON
     c = code.strip().upper()
     if len(c) == 3 and c.isalpha():
         return f"K{c}"
@@ -423,9 +440,9 @@ def _drill_payload(body: dict) -> tuple[str, dict]:
     return "", body if isinstance(body, dict) else {}
 
 
-def _pct_primary_from(*candidates: str | None) -> str | None:
+def _primary_airport_from(*candidates: str | None) -> str | None:
     """
-    Return the first candidate identifier that is a PCT primary airport.
+    Return the first candidate identifier that is a supported (in-scope) airport.
 
     Deliberately checks EVERY candidate rather than normalising the first
     non-empty one and then testing it. A flight from HGR into KDCA carries
@@ -438,7 +455,7 @@ def _pct_primary_from(*candidates: str | None) -> str | None:
         if not candidate:
             continue
         code = _normalise_icao(candidate)
-        if code in _PCT_PRIMARY_AIRPORTS:
+        if code in config.SUPPORTED_AIRPORTS:
             return code
     return None
 
@@ -495,7 +512,7 @@ def _extract_records(
 def _common_fields(headers: dict[str, str]) -> tuple[str, str, str | None]:
     """tracon, service_name and the header-derived timestamp shared by all feeds."""
     return (
-        headers.get("tracon") or headers.get("srcTracon") or "PCT",
+        headers.get("tracon") or headers.get("srcTracon") or config.SUPPORTED_TRACON,
         _service_from_mex(headers.get("mex", "")),
         headers.get("safaRcvTimestamp") or headers.get("timestamp"),
     )
@@ -524,7 +541,7 @@ def _extract_apds_rvr(headers: dict[str, str], payload: dict) -> list[dict]:
     tracon, service_name, event_ts = _common_fields(headers)
     msg_type = headers.get("msgType", "RR")
 
-    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    airport = _primary_airport_from(payload.get("airport"), headers.get("airport"))
     if airport is None:
         return []
 
@@ -620,7 +637,7 @@ def _extract_tdes(headers: dict[str, str], payload: dict) -> list[dict]:
     msg_type = headers.get("msgType", "DE")
     enhanced = payload.get("enhancedData") or {}
 
-    airport = _pct_primary_from(
+    airport = _primary_airport_from(
         payload.get("departureAirport"),
         headers.get("airport"),
         enhanced.get("destinationAirport"),
@@ -685,7 +702,7 @@ def _extract_tdls_dcl(headers: dict[str, str], payload: dict) -> list[dict]:
     msg_type = headers.get("msgType", "RD")
     enhanced = payload.get("enhancedData") or {}
 
-    airport = _pct_primary_from(
+    airport = _primary_airport_from(
         payload.get("airportID"),
         headers.get("airport"),
         enhanced.get("destinationAirport"),
@@ -731,7 +748,7 @@ def _extract_smes_holdbar(headers: dict[str, str], payload: dict) -> list[dict]:
     tracon, service_name, header_ts = _common_fields(headers)
     msg_type = headers.get("msgType", "SH")
 
-    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    airport = _primary_airport_from(payload.get("airport"), headers.get("airport"))
     if airport is None:
         return []
 
@@ -851,7 +868,7 @@ def _extract_smes(headers: dict[str, str], payload: dict) -> list[dict]:
     tracon, service_name, header_ts = _common_fields(headers)
     msg_type = headers.get("msgType", "AD")
 
-    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    airport = _primary_airport_from(payload.get("airport"), headers.get("airport"))
     if airport is None:
         return []
 
@@ -936,7 +953,7 @@ def _extract_smes_event(headers: dict[str, str], payload: dict) -> list[dict]:
     tracon, service_name, header_ts = _common_fields(headers)
     msg_type = headers.get("msgType", "SE")
 
-    airport = _pct_primary_from(payload.get("airport"), headers.get("airport"))
+    airport = _primary_airport_from(payload.get("airport"), headers.get("airport"))
     if airport is None:
         return []
 
@@ -981,7 +998,7 @@ def _extract_tais(headers: dict[str, str], payload: dict) -> list[dict]:
 
     What was a gap: airport selection took the first non-empty identifier and
     then tested it, so an arrival into KDCA whose flightPlan.airport named its
-    origin was discarded. _pct_primary_from() now tests every candidate.
+    origin was discarded. _primary_airport_from() now tests every candidate.
     """
     tracon, service_name, event_ts = _common_fields(headers)
     msg_type = headers.get("msgType", "track")
@@ -999,7 +1016,7 @@ def _extract_tais(headers: dict[str, str], payload: dict) -> list[dict]:
         enhanced = rec.get("enhancedData") or {}
         track = rec.get("track") or {}
 
-        airport = _pct_primary_from(
+        airport = _primary_airport_from(
             enhanced.get("destinationAirport"),
             enhanced.get("departureAirport"),
             fp.get("airport"),
@@ -1080,6 +1097,10 @@ def _parse_file(path: Path) -> tuple[list[dict], str | None]:
             return _parse_txt_file(path), None
         elif suffix == ".xml":
             return _parse_xml_file(path), None
+        elif suffix == ENVELOPE_EXTENSION:
+            # A record written by the Java edge (IngestFolderFileOutput).
+            text = path.read_text(encoding="utf-8")
+            return records_from_raw(message_from_envelope(text, path.name), path), None
         elif suffix == "":
             # Extension-less = Kit's MessageFileOutput format
             return _parse_jms_message_file(path), None
@@ -1209,6 +1230,9 @@ class IngestStats:
         self.latest_file_time: datetime | None = None
         self.latest_service: str | None = None
         self.scan_time: datetime = datetime.now(timezone.utc)
+        # Messages parsed by a defer_archive scan, awaiting commit_scan():
+        # (source, delivery, ingest_log entry).
+        self.pending: list[tuple[RawMessageSource, Delivery, dict]] = []
 
     def as_dict(self) -> dict:
         return {
@@ -1224,20 +1248,274 @@ class IngestStats:
         }
 
 
+class MessageDelivery:
+    """
+    A Delivery over a RawMessage: what a broker-backed source hands the driver, and
+    what FolderSource hands over for a record file or a stock-kit file.
+    """
+
+    def __init__(self, message: RawMessage, ref: str | None = None):
+        self.message = message
+        self.name = message.source_name or message.message_id
+        self.ref = ref or self.name
+        self.received_at = message.received_at
+
+    def records(self) -> tuple[list[dict], str | None]:
+        try:
+            return records_from_raw(self.message), None
+        except WithheldMessage:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the reason is what the quarantine records
+            return [], str(exc)
+
+
+class FolderDelivery:
+    """One claimed file of a Kit folder."""
+
+    def __init__(self, path: Path, work: Path, received_at: datetime):
+        self.path = path            # where it was
+        self.work = work            # where it is now: claimed, in .inflight/
+        self.name = path.name
+        self.ref = str(path)
+        self.received_at = received_at   # the file's write time; a record file states its own
+
+    def records(self) -> tuple[list[dict], str | None]:
+        if self.work.suffix.lower() != ENVELOPE_EXTENSION:
+            return _parse_file(self.work)
+        try:
+            message = message_from_envelope(self.work.read_text(encoding="utf-8"), self.name)
+        except (OSError, ValueError) as exc:
+            return [], f"unreadable record: {exc}"
+        # The edge stamped the arrival; never later than now, whatever the clocks say.
+        self.received_at = min(message.received_at, datetime.now(timezone.utc))
+        return MessageDelivery(message, self.ref).records()
+
+
+def _arrival_order(path: Path) -> tuple[int, str]:
+    """The kit names each file with its arrival time in epoch millis, so the name orders them without
+    a stat per file; requeue_<millis> files sort by their original arrival, and a name with no such
+    number sorts last."""
+    match = _ARRIVAL_MILLIS.search(path.stem)
+    return (int(match.group(1)) if match else 0, path.name)
+
+
+class FolderSource:
+    """
+    A RawMessageSource over a folder of message files: the Kit's output folder.
+
+    Everything that is about files lives here -- discovery, the already-handled check
+    by name, claiming (one scanner per file), and the move to processed/ or failed/.
+    Nothing below this class knows a message arrived as a file.
+    """
+
+    def __init__(self, source_dir: Path, processed_dir: Path, failed_dir: Path):
+        self.source_dir = source_dir
+        self.processed_dir = processed_dir
+        self.failed_dir = failed_dir
+
+    def poll(self, max_messages: int) -> PollBatch:
+        _release_stale_claims(self.source_dir)
+        all_candidates = message_files(self.source_dir)
+        already_processed = _get_already_processed([f.name for f in all_candidates])
+
+        unprocessed = [f for f in all_candidates if f.name not in already_processed]
+        # Cap files per scan so a backlog doesn't pin the pipeline for minutes, and take the
+        # newest first so the live picture stays current.
+        by_arrival = sorted(((_arrival_order(f), f) for f in unprocessed), key=lambda kf: kf[0], reverse=True)
+        candidates = [f for _, f in by_arrival[:max_messages]]
+        # How far the backlog is from the janitor, which deletes by age: the oldest message still waiting.
+        stamped = [key[0] for key, _ in by_arrival if key[0]]
+        SWIM_FOLDER_BACKLOG.set(len(unprocessed))
+        SWIM_FOLDER_OLDEST_WAITING_SECONDS.set(max(0.0, time.time() - min(stamped) / 1000) if stamped else 0.0)
+        excess_backlog = len(unprocessed) - len(candidates)
+        if excess_backlog > 0:
+            _log.warning(
+                "swim_ingest_backlog_cap_exceeded",
+                extra={
+                    "unprocessed_count": len(unprocessed),
+                    "max_files": max_messages,
+                    "deferred_count": excess_backlog,
+                },
+            )
+        batch = PollBatch(
+            planned=len(candidates),
+            detected=len(all_candidates),
+            skipped=(len(all_candidates) - len(unprocessed)) + excess_backlog,
+        )
+        batch.deliveries = self._claim_each(candidates, batch)
+        return batch
+
+    def _claim_each(self, paths: list[Path], batch: PollBatch) -> Iterator[FolderDelivery]:
+        """Claim lazily, so a scan stopped part way leaves the rest in the folder, not stranded in .inflight/."""
+        for path in paths:
+            received_at = _receipt_time(path)  # before the claim, which re-stamps the file's mtime
+            work = _claim(path)
+            if work is None:
+                batch.skipped += 1             # another scanner took it
+                continue
+            yield FolderDelivery(path, work, received_at)
+
+    def commit(self, delivery: FolderDelivery) -> None:
+        _archive_to_processed(delivery.work, delivery.path, self.processed_dir)
+
+    def quarantine(self, delivery: FolderDelivery, reason: str) -> None:
+        _move_to_failed(delivery.work, reason, self.failed_dir)
+
+
+def ingest_batch(
+    source: RawMessageSource,
+    max_messages: int = 500,
+    data_origin: str = "live",
+    defer_commit: bool = False,
+) -> tuple[list[NASEvent], IngestStats]:
+    """
+    Take what `source` has, parse it, and return NASEvents for the validation + alert
+    pipeline. The one driver for every source: it commits a message to the source when
+    its events are ready (or, with defer_commit, when the caller says they are stored:
+    commit_scan) and quarantines one that can never succeed. The ingest_log table gets
+    an entry for every message touched.
+    """
+    stats = IngestStats()
+    all_events: list[NASEvent] = []
+    batch = source.poll(max_messages)
+    stats.files_detected = batch.detected
+
+    log_entries: list[dict] = []  # written once, after the loop
+    for delivery in batch.deliveries:
+        if _shutdown_requested.is_set():
+            _log.warning(
+                "swim_ingest_shutdown_drain",
+                extra={
+                    "files_processed": stats.files_processed,
+                    "files_remaining": batch.planned - stats.files_processed - stats.files_failed,
+                },
+            )
+            break
+
+        _log.info("swim_ingest_processing_file", extra={"file_name": delivery.name})
+        try:
+            raw_records, parse_error = delivery.records()
+        except WithheldMessage as withheld:
+            # Committed like any other message, so it is not delivered again; nothing
+            # from it reaches the pipeline.
+            source.commit(delivery)
+            log_entries.append({
+                "file": delivery.name,
+                "status": "withheld",
+                "event_count": 0,
+                "error": str(withheld),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            stats.files_withheld += 1
+            SWIM_MESSAGES_WITHHELD.inc()
+            _log.warning(
+                "swim_ingest_message_withheld",
+                extra={"file_name": delivery.name, "reason": str(withheld)},
+            )
+            continue
+
+        if parse_error and not raw_records:
+            source.quarantine(delivery, parse_error)
+            log_entries.append({
+                "file": delivery.name,
+                "status": "failed",
+                "error": parse_error,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            stats.files_failed += 1
+            continue
+
+        events: list[NASEvent] = []
+        errors: list[str] = []
+        for record_index, raw in enumerate(raw_records):
+            # One malformed record fails its own message, never the scan: an
+            # exception escaping here used to abort the scan, and in
+            # watch mode that crash-looped the whole nas-sentinel container.
+            try:
+                event, err = _normalise_record(
+                    raw, delivery.ref, index=record_index, data_origin=data_origin,
+                    received_at=delivery.received_at)
+            except Exception as exc:  # noqa: BLE001
+                event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
+            if event:
+                events.append(event)
+                if event.service_name:
+                    stats.latest_service = event.service_name
+            else:
+                errors.append(err or "Unknown normalisation error")
+
+        if not events and errors:
+            source.quarantine(delivery, "; ".join(errors))
+            log_entries.append({
+                "file": delivery.name,
+                "status": "failed",
+                "error": "; ".join(errors[:3]),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            stats.files_failed += 1
+            continue
+
+        services = list({e.service_name for e in events if e.service_name})
+        entry = {
+            "file": delivery.name,
+            "status": "processed",
+            "event_count": len(events),
+            "services": services,
+            "parse_errors": len(errors),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if defer_commit:
+            stats.pending.append((source, delivery, entry))
+        else:
+            source.commit(delivery)
+            log_entries.append(entry)
+
+        stats.files_processed += 1
+        stats.events_parsed += len(events)
+        stats.latest_file_time = datetime.now(timezone.utc)
+        all_events.extend(events)
+        _log.info(
+            "swim_ingest_file_success",
+            extra={
+                "file_name": delivery.name,
+                "event_count": len(events),
+                "parse_errors": len(errors),
+            },
+        )
+
+    stats.files_skipped = batch.skipped       # final: includes claims another scanner won
+    _append_log_entries(log_entries)
+    if stats.files_detected == 0:
+        _log.debug("swim_ingest_no_new_files")
+    else:
+        _log.info("swim_ingest_scan_complete", extra=stats.as_dict())
+
+    return all_events, stats
+
+
 def scan_swim_folder(
     source_dir: Path | None = None,
     max_files: int = 500,
     processed_dir: Path | None = None,
     failed_dir: Path | None = None,
     data_origin: str = "live",
+    defer_archive: bool = False,
 ) -> tuple[list[NASEvent], IngestStats]:
     """
     Scan source_dir for new STDDS message files, parse them, and return
-    NASEvents ready for the validation + alert pipeline.
+    NASEvents ready for the validation + alert pipeline. This is ingest_batch()
+    over a FolderSource.
 
     Files are moved to processed_dir on success or failed_dir on error.
     The ingest_log table is updated with every file touched.
     Already-processed files (tracked by name in ingest_log) are skipped.
+
+    With defer_archive, a file that parsed is NOT archived or logged here: it
+    stays claimed in .inflight/ until the caller has stored its events and calls
+    commit_scan(stats). The events exist only in memory until then, so archiving
+    first meant a failure in between (database down, a crash) left the file
+    marked processed with nothing stored. A file left claimed is released after
+    CLAIM_TIMEOUT_SECONDS and scanned again; stable event ids make that safe.
 
     processed_dir/failed_dir default to the module-level PROCESSED_DIR and
     FAILED_DIR (i.e. data/processed and data/failed). They are parameters
@@ -1253,158 +1531,9 @@ def scan_swim_folder(
     failed_dir = failed_dir or FAILED_DIR
     processed_dir.mkdir(parents=True, exist_ok=True)
     failed_dir.mkdir(parents=True, exist_ok=True)
-
-    stats = IngestStats()
-    all_events: list[NASEvent] = []
-    _release_stale_claims(source_dir)
-
-    all_candidates = message_files(source_dir)
-    stats.files_detected = len(all_candidates)
-
-    already_processed = _get_already_processed([f.name for f in all_candidates])
-
-    # Separate already-processed files and account for them in skipped stats
-    unprocessed = [f for f in all_candidates if f.name not in already_processed]
-    stats.files_skipped = len(all_candidates) - len(unprocessed)
-
-    # Cap files per scan so a backlog doesn't pin the pipeline for minutes, and
-    # take the newest first so the live picture stays current. The kit names
-    # each file with its arrival time in epoch millis, so the name orders them
-    # without a stat per file (see above); requeue_<millis> files sort by their
-    # original arrival, and a name with no such number sorts last.
-    def _arrival(p: Path) -> tuple[int, str]:
-        match = _ARRIVAL_MILLIS.search(p.stem)
-        return (int(match.group(1)) if match else 0, p.name)
-
-    candidate_files = sorted(unprocessed, key=_arrival, reverse=True)[:max_files]
-    
-    # Account for files deferred due to the max_files backlog cap
-    excess_backlog = len(unprocessed) - len(candidate_files)
-    stats.files_skipped += excess_backlog
-
-    if excess_backlog > 0:
-        _log.warning(
-            "swim_ingest_backlog_cap_exceeded",
-            extra={
-                "unprocessed_count": len(unprocessed),
-                "max_files": max_files,
-                "deferred_count": excess_backlog,
-            },
-        )
-
-    log_entries: list[dict] = []  # written once, after the loop
-    for path in candidate_files:
-        if _shutdown_requested.is_set():
-            _log.warning(
-                "swim_ingest_shutdown_drain",
-                extra={
-                    "files_processed": stats.files_processed,
-                    "files_remaining": len(candidate_files) - stats.files_processed - stats.files_failed,
-                },
-            )
-            break
-
-        received_at = _receipt_time(path)  # before the claim, which re-stamps the file's mtime
-        work = _claim(path)
-        if work is None:
-            stats.files_skipped += 1
-            continue
-
-        _log.info("swim_ingest_processing_file", extra={"file_name": path.name})
-        try:
-            raw_records, parse_error = _parse_file(work)
-        except WithheldMessage as withheld:
-            # Archived like any other file, so it is not rescanned; nothing
-            # from it reaches the pipeline.
-            _archive_to_processed(work, path, processed_dir)
-            log_entries.append({
-                "file": path.name,
-                "status": "withheld",
-                "event_count": 0,
-                "error": str(withheld),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            stats.files_withheld += 1
-            SWIM_MESSAGES_WITHHELD.inc()
-            _log.warning(
-                "swim_ingest_message_withheld",
-                extra={"file_name": path.name, "reason": str(withheld)},
-            )
-            continue
-
-        if parse_error and not raw_records:
-            _move_to_failed(work, parse_error, failed_dir)
-            log_entries.append({
-                "file": path.name,
-                "status": "failed",
-                "error": parse_error,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            stats.files_failed += 1
-            continue
-
-        events: list[NASEvent] = []
-        errors: list[str] = []
-        for record_index, raw in enumerate(raw_records):
-            # One malformed record fails its own file, never the scan: an
-            # exception escaping here used to abort scan_swim_folder(), and in
-            # watch mode that crash-looped the whole nas-sentinel container.
-            try:
-                event, err = _normalise_record(
-                    raw, str(path), index=record_index, data_origin=data_origin, received_at=received_at)
-            except Exception as exc:  # noqa: BLE001
-                event, err = None, f"{type(exc).__name__} while normalising record: {exc}"
-            if event:
-                events.append(event)
-                if event.service_name:
-                    stats.latest_service = event.service_name
-            else:
-                errors.append(err or "Unknown normalisation error")
-
-        if not events and errors:
-            _move_to_failed(work, "; ".join(errors), failed_dir)
-            log_entries.append({
-                "file": path.name,
-                "status": "failed",
-                "error": "; ".join(errors[:3]),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            stats.files_failed += 1
-            continue
-
-        _archive_to_processed(work, path, processed_dir)
-
-        services = list({e.service_name for e in events if e.service_name})
-        log_entries.append({
-            "file": path.name,
-            "status": "processed",
-            "event_count": len(events),
-            "services": services,
-            "parse_errors": len(errors),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-
-        stats.files_processed += 1
-        stats.events_parsed += len(events)
-        stats.latest_file_time = datetime.now(timezone.utc)
-        all_events.extend(events)
-        _log.info(
-        "swim_ingest_file_success",
-        extra={
-            "file_name": path.name,
-            "event_count": len(events),
-            "parse_errors": len(errors),
-            },
-        )
-
-    _append_log_entries(log_entries)
-    if stats.files_detected == 0:
-        _log.debug("swim_ingest_no_new_files", extra={"source_dir": str(source_dir)})
-    else:
-        _log.info("swim_ingest_scan_complete", extra=stats.as_dict())
-
-    return all_events, stats
-
+    return ingest_batch(
+        FolderSource(source_dir, processed_dir, failed_dir),
+        max_messages=max_files, data_origin=data_origin, defer_commit=defer_archive)
 
 class _NewFileHandler(FileSystemEventHandler):
     """Sets a threading.Event on any file arriving in the watched folder.
@@ -1447,7 +1576,10 @@ def watch_swim_folder(
     scan pass that ingested at least one event -- this is how the caller
     hooks the downstream validate/alert/critic/HITL pipeline in without this
     module needing to import main.py (scan_swim_folder() only parses, moves,
-    and logs files; it doesn't run that pipeline itself).
+    and logs files; it doesn't run that pipeline itself). The files of a pass
+    are archived and logged only after on_events returns: if it raises, they
+    stay claimed, the failure is logged, the watcher keeps running, and the
+    files are released and scanned again after CLAIM_TIMEOUT_SECONDS.
 
     Runs until request_shutdown() is called (installed as the SIGTERM/SIGINT
     handler in main.py) or the process is interrupted. A single in-process
@@ -1470,9 +1602,15 @@ def watch_swim_folder(
             return 0
         try:
             (_log.debug if reason == "poll" else _log.info)("swim_watch_scan_triggered", extra={"reason": reason})
-            events, stats = scan_swim_folder(source_dir, max_files=max_files)
+            events, stats = scan_swim_folder(source_dir, max_files=max_files, defer_archive=True)
             if events and on_events is not None:
-                on_events(events, stats)
+                try:
+                    on_events(events, stats)
+                except Exception:  # noqa: BLE001 -- the events were not stored; keep watching
+                    _log.exception("swim_pipeline_failed_files_left_claimed",
+                                   extra={"files": len(stats.pending), "events": len(events)})
+                    return 0
+            commit_scan(stats)
             return stats.files_processed + stats.files_failed
         finally:
             scan_lock.release()
@@ -1552,6 +1690,19 @@ def message_files(source_dir: Path) -> list[Path]:
             and not e.name.startswith(".")
             and Path(e.name).suffix.lower() in SCAN_EXTENSIONS
         ]
+
+
+def commit_scan(stats: IngestStats) -> int:
+    """
+    Archive and log the files a defer_archive scan parsed, now that their events
+    are stored. Returns how many were committed. Call it only after the pipeline
+    has succeeded; on failure leave the files claimed and they are scanned again.
+    """
+    pending, stats.pending = stats.pending, []
+    for source, delivery, _entry in pending:
+        source.commit(delivery)
+    _append_log_entries([entry for *_rest, entry in pending])
+    return len(pending)
 
 
 def read_ingest_log(limit: int = 100) -> list[dict]:

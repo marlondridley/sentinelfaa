@@ -1,0 +1,71 @@
+# Declarative SPIRE registration entries -- the SPIFFE-side equivalent of
+# terraform/main.tf's Vault roles, applied by scripts/spire-entries-apply.py
+# (register-if-missing + prune, not blind-create -- see that script's header).
+#
+# There is no maintained official Terraform provider for SPIRE registration
+# entries (unlike Vault, which has one) -- this checked-in manifest plus an
+# idempotent apply script is the practical equivalent: the manifest is the
+# single source of truth, and a dry-run diff here is the same kind of proof
+# `terraform plan` gives on the Vault side.
+#
+# Identity model: one SPIFFE ID per service, and one Vault cert-auth role
+# bound to exactly that ID (terraform/main.tf's `workloads`, the same six
+# names -- instraclustr/tests pins that they match). Vault's audit log then
+# names the service that read a secret. What a service may READ is set by
+# its class's policy (vault-policies/): sentinel-app for the long-running
+# services, sentinel-migrate for the schema jobs.
+#
+# dns_names: Vault's cert auth names a login's identity alias after the
+# certificate's Subject CN, and an X.509-SVID has a CN only when its entry has
+# a DNS name (SPIRE uses the first). So each gets one under .invalid -- the
+# TLD reserved never to resolve (RFC 6761), and the only DNS names the SPIRE
+# upstream CA's name constraints permit (certs/policy/signing.cnf) -- which
+# Vault then also requires (terraform/main.tf, allowed_common_names).
+#
+# Selector: it is each service's spiffe-helper SIDECAR that calls the
+# Workload API and is attested (nas-feedops-sentinel/docker-compose.yml);
+# the application container never talks to SPIRE or Vault at all, it only
+# reads the file its Vault Agent sidecar renders. Each sidecar carries one
+# label, `com.sentinelfaa.identity=<name>`, set on its own compose service;
+# that label is the only thing selectors key on. Setting a label needs the
+# Docker API, which is root-equivalent on this host anyway -- see "Threat
+# model" in instraclustr/README.md.
+#
+# parent_id is a STABLE alias for spire-agent's node identity, not the
+# join-token-derived id itself (spiffe://.../spire/agent/join_token/<token>
+# -- real, but a different literal string every time the agent's data_dir
+# is wiped and it re-attests with a fresh token). Generate the join token
+# for this host with an explicit -spiffeID so the server creates that alias
+# automatically:
+#   docker compose exec spire-server /opt/spire/bin/spire-server token generate \
+#     -spiffeID spiffe://sentinelfaa.internal/agent/nas-host \
+#     -socketPath /tmp/spire-server/private/api.sock
+# then pass THAT value (not the join-token-derived one) to
+# spire-entries-apply.py's --parent-id, exactly as below.
+parent_id: spiffe://sentinelfaa.internal/agent/nas-host
+
+entries:
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/api
+    dns_names: [api.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:api
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/dashboard
+    dns_names: [dashboard.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:dashboard
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/sentinel
+    dns_names: [sentinel.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:sentinel
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/temporal-worker
+    dns_names: [temporal-worker.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:temporal-worker
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/migrate
+    dns_names: [migrate.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:migrate
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/proof
+    dns_names: [proof.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:proof

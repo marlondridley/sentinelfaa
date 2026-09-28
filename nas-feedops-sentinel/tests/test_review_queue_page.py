@@ -87,3 +87,17 @@ def test_the_console_offers_no_deploy_or_developer_menu():
     import tomllib
     config = tomllib.loads((PAGE.parent.parent.parent / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
     assert config["client"]["toolbarMode"] == "minimal"
+
+
+async def test_a_link_that_names_a_review_opens_it(db):
+    [alert] = [_rvr("KBWI")]
+    await db.save_alerts([alert])
+    review = await stage_critical_alert(alert)
+
+    at = AppTest.from_file(str(PAGE), default_timeout=60)
+    at.query_params["review"] = review.action_id
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(m.value.startswith("**AI summary:**") for m in at.markdown), "the review drawer opened"
+    assert "review" not in at.query_params, "once: closing the drawer must not reopen it"

@@ -30,11 +30,26 @@ storage "raft" {
   node_id = "vault-1"
 }
 
+# TLS only. Every secret Vault returns, and every credential presented to it,
+# is encrypted in transit (NIST 800-53 SC-8; OMB M-22-09 asks for internal
+# HTTP traffic to be encrypted too). The certificate is issued by the offline
+# workload-identity root (instraclustr/certs/README.md); every client
+# verifies it against certs/trust/root-ca.crt.
+#
+# Client certificates are requested but not required at the listener: the
+# cert auth method (instraclustr/terraform/) is what verifies an application
+# sidecar's X.509-SVID -- its chain to the root and its exact spiffe:// ID --
+# while the bootstrap jobs (vault-unseal, litellm-bootstrap) authenticate
+# with their AppRole over the same encrypted connection.
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = true
+  address                            = "0.0.0.0:8200"
+  tls_cert_file                      = "/vault/tls/vault.crt"
+  tls_key_file                       = "/vault/tls/vault.key"
+  tls_min_version                    = "tls12"
+  tls_require_and_verify_client_cert = false
+  tls_disable_client_certs           = false
 }
 
-api_addr     = "http://vault:8200"
-cluster_addr = "http://vault:8201"
+api_addr     = "https://vault:8200"
+cluster_addr = "https://vault:8201"
 ui           = true

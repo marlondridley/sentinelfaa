@@ -107,7 +107,8 @@ class EventsRepository:
         for alert in alerts:
             await self.save_alert(alert)
 
-    async def get_recent_events(self, limit: int = 500) -> list[dict]:
+    async def get_recent_events(self, limit: int = 500, *, data_origin: str | None = None) -> list[dict]:
+        """The newest events, of every origin or only of `data_origin`."""
         # NOTE: column list mirrors the full nas_events schema (see schema.py) so the
         # query is an explicit contract rather than SELECT *. If dashboard/metrics callers
         # are confirmed not to need validation_errors (JSONB) or raw_message_path, drop them
@@ -121,19 +122,22 @@ class EventsRepository:
                       flight_phase, flight_rules, beacon_code,
                       feed_status, validation_status, validation_errors, raw_message_path,
                       status_code, data_origin
-               FROM nas_events ORDER BY received_time_utc DESC LIMIT $1""",
-            limit,
+               FROM nas_events WHERE ($2::text IS NULL OR data_origin = $2)
+               ORDER BY received_time_utc DESC LIMIT $1""",
+            limit, data_origin,
         )
         return [dict(r) for r in rows]
 
-    async def get_recent_alerts(self, limit: int = 200) -> list[dict]:
+    async def get_recent_alerts(self, limit: int = 200, *, data_origin: str | None = None) -> list[dict]:
+        """The newest alerts, of every origin or only of `data_origin`."""
         # NOTE: column list mirrors the full alert_events schema; no JSON blobs on this table,
         # so this is purely about making the read an explicit contract rather than SELECT *.
         rows = await self._pool.fetch(
             """SELECT alert_id, alert_type, severity, airport_code, service_name,
                       description, triggered_at, event_id, data_origin
-               FROM alert_events ORDER BY triggered_at DESC LIMIT $1""",
-            limit,
+               FROM alert_events WHERE ($2::text IS NULL OR data_origin = $2)
+               ORDER BY triggered_at DESC LIMIT $1""",
+            limit, data_origin,
         )
         return [dict(r) for r in rows]
 
@@ -146,6 +150,17 @@ class EventsRepository:
             window_minutes,
         )
         return {r["data_origin"]: r["n"] for r in rows}
+
+    async def get_last_seen_by_feed(self, since: datetime) -> dict[tuple[str | None, str | None], datetime]:
+        """The last message stored for each live (airport, service) feed seen since `since`."""
+        rows = await self._pool.fetch(
+            """SELECT airport_code, service_name, max(received_time_utc) AS last_seen
+               FROM nas_events
+               WHERE data_origin = 'live' AND received_time_utc >= $1
+               GROUP BY airport_code, service_name""",
+            since,
+        )
+        return {(r["airport_code"], r["service_name"]): r["last_seen"] for r in rows}
 
     async def get_latest_rvr(self) -> list[dict]:
         query = """
@@ -189,15 +204,20 @@ class EventsRepository:
         rows = await self._pool.fetch(query)
         return [dict(r) for r in rows]
 
-    async def get_validation_summary(self) -> dict:
+    async def get_validation_summary(
+        self, since: datetime | None = None, *, data_origin: str | None = None,
+    ) -> dict:
+        """Validation counts over everything stored, or only events received since `since` / of `data_origin`."""
         query = """
             SELECT
                 COUNT(*) AS total,
                 COALESCE(SUM(CASE WHEN validation_status = 'PASSED' THEN 1 ELSE 0 END), 0) AS passed,
                 COALESCE(SUM(CASE WHEN validation_status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed
             FROM nas_events
+            WHERE ($1::timestamptz IS NULL OR received_time_utc >= $1)
+              AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query)
+        row = await self._pool.fetchrow(query, since, data_origin)
         return dict(row) if row else {"total": 0, "passed": 0, "failed": 0}
 
     async def get_events_for_critic(
@@ -301,7 +321,8 @@ class EventsRepository:
         rows = await self._pool.fetch(query, cutoff)
         return [dict(r) for r in rows]
 
-    async def get_latency_stats(self) -> dict:
+    async def get_latency_stats(self, since: datetime | None = None, *, data_origin: str | None = None) -> dict:
+        """Latency over everything stored, or only events received since `since` / of `data_origin`."""
         query = """
             SELECT
                 AVG(latency_ms) AS avg_ms,
@@ -309,6 +330,8 @@ class EventsRepository:
                 MAX(latency_ms) AS max_ms
             FROM nas_events
             WHERE latency_ms IS NOT NULL
+              AND ($1::timestamptz IS NULL OR received_time_utc >= $1)
+              AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query)
+        row = await self._pool.fetchrow(query, since, data_origin)
         return dict(row) if row else {"avg_ms": None, "min_ms": None, "max_ms": None}
