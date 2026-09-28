@@ -65,10 +65,26 @@ trap 'exit 130' INT TERM
 
 cd /terraform
 terraform init -input=false -no-color >/dev/null
+# Identities that existed before Terraform owned this Vault, created by
+# hand-rolled bootstrap code, and retired since: nothing in terraform/ knows
+# about them, so nothing there can remove them. Listed here, removed on apply,
+# reported (not changed) on plan. `vault delete` of an absent role succeeds.
+RETIRED_APPROLE_ROLES="sentinel-app sentinel-migrate"
+retired_present=""
+for role in $RETIRED_APPROLE_ROLES; do
+    if vault read "auth/approle/role/$role" >/dev/null 2>&1; then
+        retired_present="$retired_present $role"
+    fi
+done
+
 case "$MODE" in
     plan)
         status=0
         terraform plan -input=false -detailed-exitcode || status=$?
+        if [ -n "$retired_present" ]; then
+            echo "Retired AppRole roles still present (apply removes them):$retired_present"
+            [ "$status" -eq 0 ] && status=2
+        fi
         exit "$status" ;;
     apply)
         # Interactive by default: the operator reads the plan and types yes.
@@ -77,5 +93,9 @@ case "$MODE" in
             terraform apply -input=false -auto-approve
         else
             terraform apply
-        fi ;;
+        fi
+        for role in $retired_present; do
+            vault delete "auth/approle/role/$role" >/dev/null
+            echo "Removed retired AppRole role: $role (its secret-ids are invalid from now on)"
+        done ;;
 esac

@@ -80,7 +80,7 @@ jobs:
             -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=5432 \
             -e POSTGRES_USER=sentinel_ci -e POSTGRES_PASSWORD=ci-only-not-a-secret \
             -e POSTGRES_DB=sentinel_ci -e DATABASE_URL= \
-            -e VAULT_ADDR= -e VAULT_TOKEN= -e CRITIC_ENABLED=0 \
+            -e VAULT_AGENT_ENV_FILE= -e CRITIC_ENABLED=0 \
             -e COVERAGE_FILE=/tmp/.coverage \
             nas-feedops-sentinel:test sh -c '
               python -m pytest -p no:cacheprovider -q \

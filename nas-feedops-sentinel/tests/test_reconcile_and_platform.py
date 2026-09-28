@@ -1,10 +1,10 @@
 """
-The escalation-integrity reconciler, Vault AppRole login, and the edge TLS
-certificate.
+The escalation-integrity reconciler and the edge TLS certificate. (How
+services get their secrets -- no AppRole, no token -- is pinned by
+tests/test_vault_agent_file_source.py and instraclustr/tests.)
 """
 from __future__ import annotations
 
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -70,42 +70,6 @@ async def test_reconciler_leaves_already_staged_alerts_alone(db):
     await db.save_alerts([alert])
     await stage_critical_alert(alert)
     assert (await reconcile_unstaged())["staged_pending"] == 0
-
-
-# ── Vault AppRole ─────────────────────────────────────────────────────────────
-
-def test_services_log_in_with_approle_not_a_token(tmp_path: Path, monkeypatch):
-    import src.vault_config as vault_config
-
-    (tmp_path / "role_id").write_text("role-123\n")
-    (tmp_path / "secret_id").write_text("secret-456\n")
-    logins, clients = [], []
-
-    class FakeClient:
-        def __init__(self, url, token=None):
-            clients.append(token)
-            self.auth = types.SimpleNamespace(approle=types.SimpleNamespace(
-                login=lambda role_id, secret_id: logins.append((role_id, secret_id))))
-            self.secrets = types.SimpleNamespace(kv=types.SimpleNamespace(v2=types.SimpleNamespace(
-                read_secret_version=lambda path: {"data": {"data": {
-                    "postgres/app": {"username": "sentinel_app", "password": "p", "database": "sentinel_db"},
-                    "sentinel/config": {"LITELLM_API_KEY": "sk-sentinel-virtual"},
-                }.get(path, {})}})))
-
-    monkeypatch.setattr(vault_config, "hvac", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setenv("VAULT_ADDR", "http://vault:8200")
-    monkeypatch.delenv("VAULT_TOKEN", raising=False)
-    monkeypatch.setenv("VAULT_APPROLE_DIR", str(tmp_path))
-    monkeypatch.setenv("VAULT_POSTGRES_SECRET_PATH", "postgres/app")
-    monkeypatch.delenv("POSTGRES_DB", raising=False)
-
-    import src.config
-    values = vault_config.VaultSettingsSource(src.config.Settings)()
-    assert logins == [("role-123", "secret-456")]
-    assert clients == [None], "an AppRole service must not carry a token of its own"
-    assert values["POSTGRES_USER"] == "sentinel_app"
-    assert values["LITELLM_API_KEY"] == "sk-sentinel-virtual"
-    assert "GEMINI_API_KEY" not in values and "LITELLM_MASTER_KEY" not in values
 
 
 # ── Edge TLS certificate ──────────────────────────────────────────────────────

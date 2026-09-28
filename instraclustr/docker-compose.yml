@@ -414,8 +414,8 @@ services:
     entrypoint: ["/bin/sh", "/scripts/litellm-db-init.sh"]
 
   # One-shot: the application's scoped virtual key, stored in Vault
-  # (litellm-bootstrap.sh). The application services read it with their
-  # AppRole; the master key stays with the proxy.
+  # (litellm-bootstrap.sh). The application services receive it through their
+  # Vault Agent sidecars; the master key stays with the proxy.
   litellm-bootstrap:
     image: hashicorp/vault:1.15.2
     container_name: litellm-bootstrap

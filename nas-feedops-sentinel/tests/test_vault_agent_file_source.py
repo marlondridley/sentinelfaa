@@ -1,10 +1,9 @@
 """
-VaultAgentFileSettingsSource reads secrets Vault Agent already rendered to
-disk via SPIFFE-based auto-auth (see instraclustr/vault-agent/*.hcl) -- it
-performs no Vault authentication of its own, unlike VaultSettingsSource
-(test_vault_retry.py), which it sits alongside until every consumer's
-compose service has the sidecars (Phase 4's cutover, not yet done -- see
-that class's docstring in src/vault_config.py).
+VaultAgentFileSettingsSource reads the secrets this container's Vault Agent
+sidecar rendered, after logging in to Vault with the service's own SPIFFE
+X.509-SVID (instraclustr/vault-agent/*.hcl). It performs no Vault
+authentication of its own; it is the only way a deployed service gets a
+credential.
 
 The only retry here is for the file-not-rendered-yet race at container
 startup: Agent's own auto_auth + template loop can take a beat after its
@@ -32,7 +31,7 @@ def _write(path, **kv):
 
 def test_missing_env_file_setting_disables_the_source(monkeypatch):
     # VAULT_AGENT_ENV_FILE deliberately unset (the autouse fixture already
-    # delenv's it) -- this container's compose service has no sidecars yet.
+    # delenv's it): tests and local runs, where the environment rules.
     values = VaultAgentFileSettingsSource(src.config.Settings)()
 
     assert values == {}

@@ -189,3 +189,23 @@ def test_spire_agent_needs_no_shell_and_trusts_the_root_from_first_boot():
     conf = (INFRA / "spire" / "agent.conf").read_text(encoding="utf-8")
     assert "insecure_bootstrap" not in conf.split("plugins")[0].replace("no insecure_bootstrap", "")
     assert 'trust_bundle_path = "/opt/spire/conf/trust/root-ca.crt"' in conf
+
+
+# -- The AppRole path is gone, and stays gone --------------------------------
+
+def test_the_bootstrap_identity_can_touch_nothing_but_its_own_secret_id():
+    policy = (INFRA / "vault-policies" / "vault-bootstrap.hcl").read_text(encoding="utf-8")
+    rules = [line for line in policy.splitlines() if line.startswith("path ")]
+    approle_paths = [r.split('"')[1] for r in rules if "auth/" in r]
+    assert approle_paths and all(p.startswith("auth/approle/role/vault-bootstrap/") for p in approle_paths)
+    assert not any("sys/" in r for r in rules), "no sys/ path: not root-equivalent"
+
+
+def test_no_application_approle_is_created_or_rotated_any_more():
+    seed = (INFRA / "vault-unseal-and-seed.bash").read_text(encoding="utf-8")
+    code = "\n".join(line for line in seed.splitlines() if not line.lstrip().startswith("#"))
+    assert "sentinel-app" not in code and "sentinel-migrate" not in code
+    assert 'rm -rf "$INIT_DIR/approle"' in code, "the retired secret-id files are removed from disk"
+    ceremony = (INFRA / "terraform" / "ceremony.sh").read_text(encoding="utf-8")
+    assert 'RETIRED_APPROLE_ROLES="sentinel-app sentinel-migrate"' in ceremony
+    assert not (INFRA / "vault-migrate-to-scoped-bootstrap.bash").exists()
