@@ -43,13 +43,23 @@ if ($Command -ne "root-init") {
     $mounts += @("-v", "$((Resolve-Path $certs).Path):/certs")
 }
 
-$args_ = switch ($Command) {
-    "root-init" { @("root-init", "/root-ca") }
-    "sign"      { @("sign", "/root-ca", "/certs") }
-    default     { @($Command, "/certs") }
+$step = switch ($Command) {
+    "root-init" { "/root-ca" }
+    "sign"      { "/root-ca", "/certs" }
+    default     { "/certs" }
 }
 
-# -it: root-init and sign prompt for the passphrase on this terminal.
-$tty = if ($Command -in @("root-init", "sign")) { @("-it") } else { @() }
-docker run --rm @tty --network none @mounts $image sh /pki/scripts/pki.sh @args_
+# One explicit argument list, built by appending. Windows PowerShell 5.1
+# turns a one-element array returned from `if` into a plain string, and
+# splatting a string passes it one character at a time: "-it" reached docker
+# as "- i t" ("invalid reference format").
+$dockerArgs = @("run", "--rm")
+if ($Command -in @("root-init", "sign")) {
+    $dockerArgs += "-it"            # root-init and sign prompt for the passphrase here
+}
+$dockerArgs += @("--network", "none")
+$dockerArgs += $mounts
+$dockerArgs += @($image, "sh", "/pki/scripts/pki.sh", $Command)
+$dockerArgs += $step
+docker @dockerArgs
 exit $LASTEXITCODE
