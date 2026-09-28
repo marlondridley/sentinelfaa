@@ -4,7 +4,8 @@ Cloudflare tunnel can reach must stay exactly the dashboard and Keycloak's
 sign-in pages. These tests pin the configuration that guarantees it, so an
 edit that would widen it fails CI instead of reaching the internet:
 
-  * the tunnel container: opt-in (profile), no port, locked down, pinned
+  * the tunnel container: opt-in (profile), no port, locked down, pinned,
+    verifying the edge with the local authority's certificate only
   * the edge's two tunnel listeners: never published on the host; the
     dashboard one proxies only the dashboard, the sign-in one only the
     nas-sentinel realm's pages and assets -- admin console, master realm,
@@ -69,6 +70,17 @@ def test_the_tunnel_is_opt_in_unpublished_and_locked_down():
     assert svc["environment"]["TUNNEL_TOKEN"] == "${CLOUDFLARE_TUNNEL_TOKEN:-}", "the token comes from an env file, never the file"
     assert svc["depends_on"]["edge"]["condition"] == "service_healthy"
     assert svc["healthcheck"]["test"][-1] == "ready"
+
+
+def test_the_tunnel_verifies_the_edge_with_the_authoritys_certificate_only():
+    # Routes use CA Pool /etc/cloudflared/trust/edge-ca.crt, not noTLSVerify;
+    # the tunnel gets the public certificate and never the edge's key.
+    assert _compose()["services"]["cloudflared"]["volumes"] == ["./tls/trust:/etc/cloudflared/trust:ro"]
+    doc = (APP / "docs" / "public-access.md").read_text(encoding="utf-8")
+    assert "/etc/cloudflared/trust/edge-ca.crt" in doc
+    probe = (INFRA.parent / "scripts" / "smoke" / "05_public_exposure_probe.sh").read_text(encoding="utf-8")
+    assert "check_hostname = False" not in probe and 'server_hostname="localhost"' in probe
+    assert "noTLSVerify" in probe, "the live probe fails a route that skips verification"
 
 
 def test_the_tunnel_listeners_are_never_published_on_the_host():
