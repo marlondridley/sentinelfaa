@@ -38,7 +38,13 @@
 #   run still rotates it (rotate_secret_id, below) right after using it,
 #   which is what actually bounds how long any one secret-id value stays
 #   valid (about one restart cycle) -- the ttl is slack for how long the
-#   stack can go without a restart at all, not a replay window.
+#   stack can go without a restart at all, not a replay window. A stack
+#   down for longer than the ttl finds the secret-id expired; this script
+#   then re-issues it itself (reissue_bootstrap_secret_id: a root token from
+#   the shares it already holds, used for that alone, revoked at once) and
+#   says so, instead of failing every start until someone intervenes. A
+#   corrupted role_id is answered by Vault the same way and repaired the
+#   same way; any other login failure still stops the run with Vault's error.
 #
 # States handled:
 #   uninitialized          -> init 3/2, distribute shares, set up, revoke root
@@ -165,6 +171,39 @@ revoke_root() {
     echo "root token revoked; none is stored (regenerate from 2 shares if ever needed)"
 }
 
+# json_field <key>: a string field from JSON on stdin (no temp file).
+json_field() { tr -d '\n\t ' | grep -o "\"$1\":\"[^\"]*\"" | head -1 | sed -E 's/.*"([^"]+)"$/\1/'; }
+
+# reissue_bootstrap_secret_id: vault-bootstrap's secret-id lives 24h and is
+# re-issued only by a successful run of this script, so a stack that has not
+# started for a day cannot log in as vault-bootstrap at all ("invalid role or
+# secret ID") -- which is what the first start after the SPIFFE cutover hit.
+# This container already holds unseal shares 1 and 2, i.e. it can already
+# generate a root token; recovery uses exactly that, for exactly one thing --
+# a fresh vault-bootstrap secret-id -- and revokes it at once. No new power.
+reissue_bootstrap_secret_id() {
+    vault operator generate-root -cancel >/dev/null 2>&1 || true
+    gr_init=$(vault operator generate-root -init -format=json) \
+        || { echo "ERROR: could not start generate-root" >&2; exit 1; }
+    gr_nonce=$(printf '%s' "$gr_init" | json_field nonce)
+    gr_otp=$(printf '%s' "$gr_init" | json_field otp)
+    # Shares on stdin ("-"), never argv.
+    vault operator generate-root -nonce="$gr_nonce" -format=json - < "$SHARE1" >/dev/null
+    gr_encoded=$(vault operator generate-root -nonce="$gr_nonce" -format=json - < "$SHARE2" | json_field encoded_token)
+    [ -n "$gr_encoded" ] || { vault operator generate-root -cancel >/dev/null 2>&1 || true
+                              echo "ERROR: shares 1 and 2 did not complete generate-root" >&2; exit 1; }
+    VAULT_TOKEN=$(vault operator generate-root -decode="$gr_encoded" -otp="$gr_otp"); export VAULT_TOKEN
+    unset gr_init gr_nonce gr_otp gr_encoded
+    rotate_secret_id vault-bootstrap "$BOOT_DIR"
+    revoke_root
+}
+
+# bootstrap_login: prints a vault-bootstrap token; Vault's error in /tmp/login.err.
+bootstrap_login() {
+    vault write -field=token auth/approle/login \
+        role_id="$(cat "$BOOT_DIR/role_id")" secret_id="$(cat "$BOOT_DIR/secret_id")" 2>/tmp/login.err
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 # Guarded so a script can dot-source this file for its functions
 # (write_secret_file, rotate_secret_id, root_setup, revoke_root) without
@@ -219,8 +258,18 @@ else
 fi
 
 # ── Every run: authenticate as vault-bootstrap ───────────────────────────────
-VAULT_TOKEN=$(vault write -field=token auth/approle/login \
-    role_id="$(cat "$BOOT_DIR/role_id")" secret_id="$(cat "$BOOT_DIR/secret_id")")
+if ! VAULT_TOKEN=$(bootstrap_login); then
+    if grep -q "invalid role or secret ID" /tmp/login.err; then
+        echo "=== vault-bootstrap's secret-id has expired (no successful start for over 24h):"
+        echo "    re-issuing it with a root token from shares 1 and 2, revoked at once ==="
+        reissue_bootstrap_secret_id
+        VAULT_TOKEN=$(bootstrap_login) || { cat /tmp/login.err >&2; exit 1; }
+    else
+        cat /tmp/login.err >&2
+        exit 1
+    fi
+fi
+rm -f /tmp/login.err
 export VAULT_TOKEN
 echo "=== Authenticated as vault-bootstrap ==="
 
