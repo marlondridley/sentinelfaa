@@ -40,7 +40,7 @@ No application container holds a credential, a Vault token, or a route to Vault.
 
 ## First-time setup
 
-In this order (PowerShell, repository root):
+Scripted step by step, with a record sheet, in [`../ceremony/`](../ceremony/README.md). The same, by hand, in this order (PowerShell, repository root):
 
 1. **Certificates.** Run the root ceremony: [`certs/README.md`](certs/README.md).
 2. **Infrastructure.** Start it, which initializes, unseals and seeds Vault:

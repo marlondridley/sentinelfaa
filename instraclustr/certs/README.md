@@ -39,7 +39,7 @@ So even a compromised SPIRE server can't mint a certificate that any client woul
 
 ## The ceremony
 
-Commands are PowerShell from the repository root. Each step runs in a throwaway `postgres:16` container (already in the stack, ships OpenSSL 3) with **no network**. `E:\sentinelfaa-root` stands for the root's folder on the USB drive.
+The first cutover is scripted, step by step, in [`../../ceremony/`](../../ceremony/README.md); what follows is the same, with the underlying commands. Commands are PowerShell from the repository root. `root-init` and `sign`, the steps that touch the root's USB, run natively with Git for Windows' OpenSSL 3. Docker Desktop does not share removable drives, and a folder on an unshared drive is silently swapped for an empty one on Docker's own disk. `request`, `install` and `check` run in a throwaway `postgres:16` container (already in the stack, ships OpenSSL 3) with **no network**. `E:\sentinelfaa-root` stands for the root's folder on the USB drive.
 
 ### First time
 
