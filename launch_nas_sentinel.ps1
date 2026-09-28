@@ -198,7 +198,14 @@ if (-not (Test-Path $appEnv)) {
 }
 
 Write-Host "Building and launching application stack from '$appDir'..." -ForegroundColor Yellow
-docker compose -f $appCompose --env-file $appEnv up --build -d
+# Both env files, infrastructure first: a secret the application stack's
+# own services need (API key, Grafana, Keycloak, Temporal) may live in either,
+# and a value in the application's file wins. Compose substitutes only the
+# variables the application's compose file names -- the infrastructure's
+# other secrets reach no application container. (Database passwords reach
+# the application only through Vault Agent, never an env file.)
+$appEnvFiles = @("--env-file", $infraEnv, "--env-file", $appEnv)
+docker compose -f $appCompose @appEnvFiles up --build -d
 if ($LASTEXITCODE -ne 0) {
     Write-Host "CRITICAL ERROR: Application stack failed to build or start. Halting." -ForegroundColor Red
     Write-Host "  A service waiting on secrets: docker logs nas-<service>-vault-agent (and nas-<service>-spiffe)" -ForegroundColor Red
@@ -208,7 +215,7 @@ if ($LASTEXITCODE -ne 0) {
 # The migrate job has finished (`up` waits for it before starting anything
 # else). Its sidecars hold the schema owner's Vault token and identity; a
 # one-shot job's credentials should not outlive the job.
-docker compose -f $appCompose --env-file $appEnv stop migrate-vault-agent migrate-spiffe | Out-Null
+docker compose -f $appCompose @appEnvFiles stop migrate-vault-agent migrate-spiffe | Out-Null
 Write-Host "  [+] migrate finished; its identity sidecars stopped." -ForegroundColor Green
 
 # 5. Optional: live FAA SWIM feed (native, not containerized)
