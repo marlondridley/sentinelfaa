@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from src.airports import tracon_of
-from src.vault_config import VaultAgentFileSettingsSource, VaultSettingsSource
+from src.vault_config import VaultAgentFileSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 
@@ -40,18 +40,18 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 #      Only the current_database() check in src/storage/test_support.py kept
 #      a full-suite run from TRUNCATE-ing production data, audit trail
 #      included.
-#   2. For the same reason `-e VAULT_ADDR= -e VAULT_TOKEN=` could not turn
-#      the Vault settings source off. VaultSettingsSource short-circuits on
-#      an empty address or token (src/vault_config.py), but both variables
-#      were deleted before it ever ran, so .env's values were used and Vault
-#      kept injecting POSTGRES_* above the environment.
+#   2. For the same reason an empty override could not turn the Vault
+#      settings source off, so .env's values were used and Vault kept
+#      injecting POSTGRES_* above the environment. (That source is gone: the
+#      one in its place reads VAULT_AGENT_ENV_FILE, which only a deployed
+#      container sets, and takes credentials only, never POSTGRES_DB.)
 #   3. It mutated global process state as an import side effect, across every
 #      variable in the environment -- including ones this application does
 #      not own (NO_PROXY="", PYTHONWARNINGS="", ...) and that other libraries
 #      in the same process read.
 #
 # So: empty means empty. Both places where that matters already handle it --
-# VaultSettingsSource returns {} on an empty address or token, and
+# VaultAgentFileSettingsSource returns {} on an empty VAULT_AGENT_ENV_FILE, and
 # _defaults() below rebuilds DATABASE_URL from the POSTGRES_* settings
 # whenever DATABASE_URL is empty.
 
@@ -370,10 +370,6 @@ class Settings(BaseSettings):
         ]
     )
 
-    # ── Vault ────────────────────────────────────────────────────────────────
-    VAULT_ADDR: str = "http://localhost:8200"
-    VAULT_TOKEN: str = ""
-
     @classmethod
     def settings_customise_sources(
         cls,
@@ -383,17 +379,10 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # VAULT_AGENT_ENV_FILE set: this container's compose service has the
-        # spiffe-helper + Vault Agent sidecars (Phase 4's cutover) -- read
-        # Agent's already-rendered file, never talk to Vault directly.
-        # Not set: today's still-live AppRole path, unchanged. See
-        # VaultAgentFileSettingsSource's docstring in src/vault_config.py for
-        # why both exist right now instead of one replacing the other.
-        vault_source: PydanticBaseSettingsSource = (
-            VaultAgentFileSettingsSource(settings_cls)
-            if os.getenv("VAULT_AGENT_ENV_FILE")
-            else VaultSettingsSource(settings_cls)
-        )
+        # The credentials this container's Vault Agent sidecar rendered
+        # (src/vault_config.py); off when VAULT_AGENT_ENV_FILE is unset or
+        # empty, as in tests and local runs.
+        vault_source = VaultAgentFileSettingsSource(settings_cls)
         # Priority: Init args > Vault > Environment Variables > .env file
         return (
             init_settings,

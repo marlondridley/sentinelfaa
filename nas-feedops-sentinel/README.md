@@ -76,12 +76,12 @@ Python 3.12. The suite needs a real Postgres, and it truncates every table befor
 pip install --require-hashes -r requirements-dev.lock
 export POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_DB=sentinel_test \
        POSTGRES_USER=... POSTGRES_PASSWORD=...
-export DATABASE_URL= VAULT_ADDR= VAULT_TOKEN= CRITIC_ENABLED=0   # empty values are deliberate
+export DATABASE_URL= VAULT_AGENT_ENV_FILE= CRITIC_ENABLED=0   # empty values are deliberate
 python -m pytest
 ruff check src tests scripts dashboard
 ```
 
-Each empty value switches something off: `DATABASE_URL` so the `POSTGRES_*` settings are used, the Vault settings so Vault cannot redirect the connection to the live database, and `CRITIC_ENABLED` so no test calls a model. `src/storage/test_support.py` explains the guard. CI runs the same suite, plus `scripts/e2e_proof.py`, in the image's `test` stage against Postgres 16; `.github/workflows/pyapp-ci.yml` is the reference invocation.
+Each empty value switches something off: `DATABASE_URL` so the `POSTGRES_*` settings are used, `VAULT_AGENT_ENV_FILE` so a deployed service's Vault-rendered credentials cannot replace the ones given here, and `CRITIC_ENABLED` so no test calls a model. `src/storage/test_support.py` explains the guard. CI runs the same suite, plus `scripts/e2e_proof.py`, in the image's `test` stage against Postgres 16; `.github/workflows/pyapp-ci.yml` is the reference invocation.
 
 ## Dependencies
 

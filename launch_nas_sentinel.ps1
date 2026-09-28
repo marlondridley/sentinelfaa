@@ -157,7 +157,7 @@ foreach ($svc in $infraServices) {
     }
 }
 
-# 3b. Bootstrap jobs must have succeeded: Vault seeding + AppRoles, LiteLLM's
+# 3b. Bootstrap jobs must have succeeded: Vault unseal and seeding, LiteLLM's
 #     database, and the application's scoped LiteLLM key. A failure here would
 #     otherwise surface later as application services that cannot start.
 foreach ($job in @("vault-unseal", "litellm-db-init", "litellm-bootstrap")) {

@@ -11,58 +11,34 @@
 #
 # No root token on disk. The root token exists only in memory, at first
 # initialization (or at the one-time migration from the old layout), long
-# enough to create the vault-bootstrap AppRole, write every sentinel-*
-# policy and AppRole role, and revoke itself -- see root_setup(). Every
-# later run authenticates as vault-bootstrap, which can do exactly two
-# things: read/write the KV secrets this project seeds, and rotate a
-# sentinel-* role's secret-id (mint a fresh one, destroy the old accessor).
-# It cannot write a policy, reconfigure a role's own token_policies, unseal,
-# seal, mount engines or generate a root token -- so it is not root-
-# equivalent: there is no policy it can write and bind a role to, the way
-# the old wide grant (sys/policies/acl/sentinel-*, plus create/update on
-# the bare auth/approle/role/sentinel-* path) allowed. See
-# instraclustr/vault-migrate-to-scoped-bootstrap.bash for the one-time,
-# root-token-authenticated migration this ran through on an existing
-# deployment, and for the red-team check that proves it.
+# enough to enable the KV engine and AppRole, create the vault-bootstrap
+# identity, and revoke itself -- see root_setup(). Every later run
+# authenticates as vault-bootstrap, which can do exactly two things: write
+# the KV secrets this project seeds, and rotate its own secret-id. It cannot
+# write a policy, configure an auth method or role, unseal, seal, mount
+# engines or generate a root token, so it is not root-equivalent.
 #
-# Trade-off, unchanged from before: a policy change, or adding a new
-# sentinel-* role, needs the break-glass root token now, not just a
-# bootstrap re-run. Regenerate one from two shares:
-# `vault operator generate-root`.
+# The application's identities are not here at all. Each application service
+# logs in with its own SPIFFE X.509-SVID over mutual TLS (instraclustr/
+# README.md, "Workload identity"); what each may read, and the cert auth
+# method itself, are Terraform's (instraclustr/terraform/), applied only in
+# the root ceremony -- a root token from shares 1 and 2, one terraform run,
+# revoked. So is any policy change, vault-bootstrap's own included: this
+# script writes that policy once, at first init, from the same file.
 #
-# secret_id_ttl / secret_id_num_uses, set once per role in root_setup():
-#   vault-bootstrap: 24h, num_uses=0 (unlimited uses within the ttl). Not
-#     num_uses=1: this identity has TWO one-shot consumers sharing the SAME
-#     on-disk secret-id every boot cycle -- this script, and
-#     litellm-bootstrap.sh, which docker-compose.yml orders strictly after
-#     this one finishes (depends_on: vault-unseal: condition:
-#     service_completed_successfully) and which reads the very file this
-#     script just rotated. num_uses=1 would let this script's own login
-#     succeed, hand litellm-bootstrap.sh a working secret-id for THIS cycle,
-#     and leave nothing for THIS SCRIPT's own next invocation -- breaking
-#     the bootstrap chain after exactly one restart, silently, since nothing
-#     rotates it again until this script itself next runs. Every run still
-#     rotates it (rotate_secret_id, below) right after using it, which is
-#     what actually bounds how long any one secret-id value stays valid
-#     (about one restart cycle) -- the ttl is slack for how long the stack
-#     can go without a restart at all, not a replay window.
-#   sentinel-app / sentinel-migrate: 1h, num_uses=0 (unlimited within the
-#     ttl). NOT num_uses=1: each of these is read by MULTIPLE independent
-#     containers sharing the one on-disk file, not one -- confirmed by
-#     grepping docker-compose.yml, not assumed: sentinel-app is mounted into
-#     api, dashboard, sentinel AND temporal-worker (four); sentinel-migrate
-#     into migrate AND temporal-worker (two). Each container does log in
-#     exactly once, at its own process startup (src/vault_config.py), never
-#     re-reading the file after -- but num_uses=1 counts logins against the
-#     FILE, not the reader, so with several readers of the same file the
-#     first to start succeeds and every other one gets "invalid role or
-#     secret ID". This broke every consumer of sentinel-app but one, live,
-#     before it was caught: dashboard and sentinel started first and got the
-#     one use; api and temporal-worker did not. An hour of ttl is still
-#     slack for the documented bring-up order (vault-unseal, then the app
-#     containers) to complete before the credential ages out; rotation on
-#     every vault-unseal run is what bounds a given secret-id's real
-#     lifetime to about one restart cycle.
+# vault-bootstrap's secret_id_ttl / secret_id_num_uses, set in root_setup():
+#   24h, num_uses=0 (unlimited uses within the ttl). Not num_uses=1: this
+#   identity has TWO one-shot consumers sharing the SAME on-disk secret-id
+#   every boot cycle -- this script, and litellm-bootstrap.sh, which
+#   docker-compose.yml orders strictly after this one finishes and which
+#   reads the very file this script just rotated. num_uses=1 would let this
+#   script's own login succeed, hand litellm-bootstrap.sh a working secret-id
+#   for THIS cycle, and leave nothing for THIS SCRIPT's own next invocation --
+#   breaking the bootstrap chain after exactly one restart, silently. Every
+#   run still rotates it (rotate_secret_id, below) right after using it,
+#   which is what actually bounds how long any one secret-id value stays
+#   valid (about one restart cycle) -- the ttl is slack for how long the
+#   stack can go without a restart at all, not a replay window.
 #
 # States handled:
 #   uninitialized          -> init 3/2, distribute shares, set up, revoke root
@@ -70,7 +46,7 @@
 #                             set up with the old root token, revoke it, and
 #                             delete init.json
 #   normal                 -> unseal with shares 1+2 if sealed, log in as
-#                             vault-bootstrap, seed and rotate secret-ids
+#                             vault-bootstrap, seed, rotate its secret-id
 set -eu
 
 : "${VAULT_ADDR:?Missing VAULT_ADDR}"
@@ -106,32 +82,22 @@ write_secret_file() {  # write_secret_file <path> <value> [mode]  (default 600, 
     chmod "$mode" "$1"
 }
 
-# rotate_secret_id <role> <dir> [mode]: mint a fresh secret-id for <role> into
-# <dir>/secret_id (mode, default 600/owner-only), destroying every existing
-# accessor first. Used for all three roles -- vault-bootstrap included, right
-# after it logs in with the one it just used, so the file on disk is always a
-# not-yet-used secret-id, and the one that was just read is never valid again
-# regardless of its own num_uses/ttl.
-#
-# mode matters here specifically: vault-bootstrap's files are read only by
-# this script, litellm-bootstrap.sh and the migration script -- all the
-# hashicorp/vault image, always root, so 600 (the default) is right and has
-# always worked. sentinel-app/sentinel-migrate's files are read by THIS
-# PROJECT's OWN application image, running as its own dedicated non-root user
-# (sentinel, uid 999 in the current build) -- a different UID we have no way
-# to coordinate with from this script, in a different image entirely. 600
-# there is unreadable by that user, full stop: proven live, not theorized --
-# api/sentinel/migrate all failed at the Vault login step itself (the file
-# could not even be read) the first time this ran with 600 for those two.
+# rotate_secret_id <role> <dir>: mint a fresh secret-id for <role> into
+# <dir>/secret_id (owner-only), destroying every existing accessor first.
+# vault-bootstrap rotates its own right after logging in with the one it just
+# used, so the file on disk is always a not-yet-used secret-id, and the one
+# that was just read is never valid again regardless of its num_uses/ttl.
+# Its readers -- this script and litellm-bootstrap.sh -- both run as root in
+# the hashicorp/vault image, so 600 is right.
 rotate_secret_id() {
     # set -e does not fire on a command that fails inside a $(...) used as
     # someone else's argument, so a denied/failed `vault` call here would
     # otherwise write an EMPTY secret file and let the script report success.
     # Capture the value and check the exit status explicitly instead.
-    role="$1"; dir="$2"; mode="${3:-600}"
+    role="$1"; dir="$2"
     role_id=$(vault read -field=role_id "auth/approle/role/$role/role-id") \
         || { echo "ERROR: could not read role-id for $role" >&2; exit 1; }
-    write_secret_file "$dir/role_id" "$role_id" "$mode"
+    write_secret_file "$dir/role_id" "$role_id"
     # Accessors are UUIDs; with none issued yet `vault list` prints "{}".
     for accessor in $(vault list -format=json "auth/approle/role/$role/secret-id" 2>/dev/null \
                       | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'); do
@@ -140,7 +106,7 @@ rotate_secret_id() {
     done
     secret_id=$(vault write -f -field=secret_id "auth/approle/role/$role/secret-id") \
         || { echo "ERROR: could not mint a secret-id for $role" >&2; exit 1; }
-    write_secret_file "$dir/secret_id" "$secret_id" "$mode"
+    write_secret_file "$dir/secret_id" "$secret_id"
 }
 
 store_shares() {  # store_shares <file listing base64 shares, one per line>
@@ -172,11 +138,10 @@ unseal_with() {  # unseal_with <key>...
 }
 
 # ── Setup that needs root (first init, or migration). Root is in VAULT_TOKEN. ─
-# Everything that WRITES A POLICY, or reconfigures a role's own token_policies/
-# ttls, lives here and only here -- never in the every-run section below, which
-# runs as vault-bootstrap. That is the whole fix: a caller with only the every-
-# run identity cannot write a policy and bind a role to it, because writing a
-# policy is not a capability vault-bootstrap's own policy grants itself.
+# The bootstrap identity only: everything that WRITES A POLICY or configures a
+# role lives here, under root, never in the every-run section below, which runs
+# as vault-bootstrap. The application's identities, policies and auth method
+# are Terraform's (instraclustr/terraform/), applied in the root ceremony.
 root_setup() {
     vault secrets list -format=json | grep -q '"secret/":' || vault secrets enable -path=secret kv-v2
     vault auth list -format=json | grep -q '"approle/":' || vault auth enable approle
@@ -188,22 +153,10 @@ root_setup() {
     vault write auth/approle/role/vault-bootstrap token_policies=vault-bootstrap \
         token_ttl=15m token_max_ttl=30m secret_id_ttl=24h secret_id_num_uses=0 >/dev/null
 
-    # ── Service AppRoles: policy and role config, authored once, under root ──
-    vault policy write sentinel-app "$POLICY_DIR/sentinel-app.hcl" >/dev/null
-    vault policy write sentinel-migrate "$POLICY_DIR/sentinel-migrate.hcl" >/dev/null
-
-    for role in sentinel-app sentinel-migrate; do
-        vault write "auth/approle/role/$role" token_policies="$role" \
-            token_ttl=1h token_max_ttl=4h secret_id_ttl=1h secret_id_num_uses=0 >/dev/null
-    done
-
-    # The very first secret-id for each role -- the every-run section below only
-    # rotates one that already exists, and vault-bootstrap needs its own to log
-    # in on the run right after this one.
+    # Its very first secret-id: the every-run section below logs in with it,
+    # and only ever rotates one that already exists.
     rotate_secret_id vault-bootstrap "$BOOT_DIR"
-    rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app" 644
-    rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate" 644
-    echo "vault-bootstrap and sentinel-* AppRoles ready"
+    echo "vault-bootstrap AppRole ready"
 }
 
 revoke_root() {
@@ -213,12 +166,9 @@ revoke_root() {
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-# Guarded so vault-migrate-to-scoped-bootstrap.bash can dot-source this file
-# for its functions (write_secret_file, rotate_secret_id, root_setup,
-# revoke_root) without running the init/unseal/every-run state machine below
-# -- an already-initialized, already-unsealed Vault needs none of that, and
-# the migration script drives root_setup()/revoke_root() itself against a
-# root token the operator supplies.
+# Guarded so a script can dot-source this file for its functions
+# (write_secret_file, rotate_secret_id, root_setup, revoke_root) without
+# running the init/unseal/every-run state machine below.
 if [ "${VAULT_BOOTSTRAP_SOURCED:-0}" != "1" ]; then
 
 : "${POSTGRES_USER:?Missing POSTGRES_USER}"
@@ -291,11 +241,14 @@ vault kv put secret/litellm \
 # a scoped virtual key, not the master key.
 echo "secrets seeded"
 
-# ── Service AppRoles: secret-ids only. Policy and role config are root_setup()'s
-# job now (see above); vault-bootstrap's policy does not grant it either. ──────
-rotate_secret_id sentinel-app "$INIT_DIR/approle/sentinel-app" 644
-rotate_secret_id sentinel-migrate "$INIT_DIR/approle/sentinel-migrate" 644
-echo "approle sentinel-app, sentinel-migrate: secret_id rotated"
+# ── Retired: the application's AppRole secret-id files ───────────────────────
+# Services log in with their SPIFFE identities now. The sentinel-* roles are
+# deleted in the root ceremony (terraform/ceremony.sh), which invalidates these
+# files; they are removed here so no credential-shaped file lingers on disk.
+if [ -d "$INIT_DIR/approle" ]; then
+    rm -rf "$INIT_DIR/approle"
+    echo "removed the retired $INIT_DIR/approle secret-id files"
+fi
 
 echo "=== Vault bootstrap complete ==="
 
