@@ -40,9 +40,15 @@ class Identity:
     """What an entry hands the workload its selectors match."""
     spiffe_id: str
     dns_names: tuple[str, ...] = ()
+    # SVID lifetime in seconds; 0 is the server default (spire/server.conf).
+    # Compared like the rest, so a lifetime left changed -- the rotation
+    # probe shortens api's for a few minutes -- shows up as drift.
+    x509_svid_ttl: int = 0
 
     def __str__(self) -> str:
-        return self.spiffe_id + (f" dns={list(self.dns_names)}" if self.dns_names else "")
+        return (self.spiffe_id
+                + (f" dns={list(self.dns_names)}" if self.dns_names else "")
+                + (f" ttl={self.x509_svid_ttl}s" if self.x509_svid_ttl else ""))
 
 
 def sh(prefix: str, args: list[str]) -> subprocess.CompletedProcess:
@@ -68,7 +74,8 @@ def load_manifest(path: str) -> tuple[str, dict[Key, Identity]]:
         if key in desired:
             raise ValueError(f"duplicate selector set in manifest: {sorted(key)}")
         # Order matters: SPIRE makes the FIRST DNS name the SVID's CN.
-        desired[key] = Identity(entry["spiffe_id"], tuple(entry.get("dns_names") or ()))
+        desired[key] = Identity(entry["spiffe_id"], tuple(entry.get("dns_names") or ()),
+                                int(entry.get("x509_svid_ttl") or 0))
     return parent_id, desired
 
 
@@ -85,7 +92,8 @@ def load_live(exec_prefix: str, socket_path: str, parent_id: str) -> dict[Key, t
         if spiffe_id_str(e["parent_id"]) != parent_id:
             continue  # not ours to manage (e.g. the node's own alias entries)
         live[selector_key(e["selectors"])] = (
-            e["id"], Identity(spiffe_id_str(e["spiffe_id"]), tuple(e.get("dns_names") or ())))
+            e["id"], Identity(spiffe_id_str(e["spiffe_id"]), tuple(e.get("dns_names") or ()),
+                              int(e.get("x509_svid_ttl") or 0)))
     return live
 
 
@@ -184,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
             selector_args += ["-selector", sel]
         for dns in identity.dns_names:
             selector_args += ["-dns", dns]
+        if identity.x509_svid_ttl:
+            selector_args += ["-x509SVIDTTL", str(identity.x509_svid_ttl)]
         proc = sh(args.exec_prefix, [
             "/opt/spire/bin/spire-server", "entry", "create",
             "-socketPath", args.socket_path,

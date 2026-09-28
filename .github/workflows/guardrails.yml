@@ -13,6 +13,9 @@ name: Guardrails
 #              plan is empty (no perpetual diff). Drift against the REAL Vault
 #              is `vault-ceremony plan` on the host -- CI cannot and must not
 #              reach it.
+#   spire      a real spire-server on the committed config under a throwaway
+#              root: the registration drift engine applies spire-entries.yaml,
+#              converges, and catches a changed SVID lifetime
 # Not yet here: a Joern CPG scan of the Java JMS edge (deferred).
 
 on:
@@ -62,6 +65,57 @@ jobs:
               --config p/python --config p/secrets --config p/java --config .semgrep/ \
               nas-feedops-sentinel/src nas-feedops-sentinel/dashboard nas-feedops-sentinel/scripts \
               nas-feedops-sentinel/jumpstart/src instraclustr/scripts scripts
+
+  spire:
+    name: SPIRE registrations apply and converge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A real spire-server on the committed server.conf, under a throwaway root
+    # (which also proves SPIRE accepts the name-constrained upstream CA): the
+    # drift engine must see an empty server as drift, apply the manifest, then
+    # find no drift -- and must catch a changed SVID lifetime, the change the
+    # rotation probe makes for a few minutes.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Throwaway PKI (the real root never leaves its USB)
+        run: |
+          export PKI_ROOT_PASS=env:CI_ROOT_PASS CI_ROOT_PASS="ci-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+          sh instraclustr/scripts/pki.sh root-init "$RUNNER_TEMP/usb"
+          sh instraclustr/scripts/pki.sh request "$RUNNER_TEMP/certs"
+          sh instraclustr/scripts/pki.sh sign "$RUNNER_TEMP/usb" "$RUNNER_TEMP/certs"
+          sh instraclustr/scripts/pki.sh install "$RUNNER_TEMP/certs"
+      - name: spire-server on the committed configuration
+        run: |
+          docker run -d --name ci-spire \
+            -v "$PWD/instraclustr/spire/server.conf:/opt/spire/conf/server/server.conf:ro" \
+            -v "$RUNNER_TEMP/certs/spire:/opt/spire/conf/upstream/spire:ro" \
+            -v "$RUNNER_TEMP/certs/trust:/opt/spire/conf/upstream/trust:ro" \
+            ghcr.io/spiffe/spire-server@sha256:59a0b92b39773515e25e68a46c40d3b931b9c1860bc445a79ceb45a805cab8b4 \
+            -config /opt/spire/conf/server/server.conf
+          for i in $(seq 1 30); do
+            docker exec ci-spire /opt/spire/bin/spire-server healthcheck \
+              -socketPath /tmp/spire-server/private/api.sock >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          docker logs ci-spire; exit 1
+      - name: Empty server is drift; apply; then no drift; a changed lifetime is drift again
+        working-directory: instraclustr
+        run: |
+          python3 -m pip install --quiet pyyaml
+          apply() { python3 scripts/spire-entries-apply.py spire-entries.yaml --exec-prefix "docker exec -i ci-spire" "$@"; }
+          status=0; apply --check || status=$?
+          [ "$status" -eq 1 ] || { echo "expected drift (exit 1) on an empty server, got $status"; exit 1; }
+          apply --yes
+          apply --check
+          id=$(docker exec ci-spire /opt/spire/bin/spire-server entry show -socketPath /tmp/spire-server/private/api.sock \
+                 -spiffeID spiffe://sentinelfaa.internal/workload/api -output json | tr -d '\n ' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          docker exec ci-spire /opt/spire/bin/spire-server entry update -socketPath /tmp/spire-server/private/api.sock \
+            -entryID "$id" -parentID spiffe://sentinelfaa.internal/agent/nas-host \
+            -spiffeID spiffe://sentinelfaa.internal/workload/api \
+            -selector docker:label:com.sentinelfaa.identity:api -dns api.sentinelfaa.invalid -x509SVIDTTL 90
+          status=0; apply --check || status=$?
+          [ "$status" -eq 1 ] || { echo "a changed SVID lifetime was not reported as drift (exit $status)"; exit 1; }
+          echo "drift engine: empty -> applied -> converged; changed lifetime caught"
 
   terraform:
     name: Vault as code applies and converges
