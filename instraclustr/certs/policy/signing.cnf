@@ -1,0 +1,62 @@
+# What the root signs, and nothing else. `pki.sh sign` applies these
+# extensions itself and never copies the ones a CSR asks for, so a request
+# can choose its key but not its powers. The [req_*] sections are the
+# requests `pki.sh request` makes on the host, where each key stays.
+
+# -- SPIRE upstream CA -------------------------------------------------------
+# spire-server's UpstreamAuthority "disk": it signs spire-server's own CA,
+# which spire-server rotates every week. Vault's cert auth trusts the ROOT, so
+# that rotation never needs a Vault change.
+#
+# Name constraints (RFC 5280 4.2.1.10, critical), inherited by everything
+# SPIRE issues:
+#   permitted URI  sentinelfaa.internal  -- only spiffe://sentinelfaa.internal/...
+#   permitted DNS  invalid               -- the reserved TLD (RFC 6761): no real
+#                                           host name can appear
+#   excluded  IP   every v4 and v6 address
+# So a compromised SPIRE server can mint workload identities in its own trust
+# domain, but never a certificate a Vault client would accept as Vault.
+# ("Exclude every DNS name" is an empty dNSName, which OpenSSL's config
+# syntax cannot express; permitting only .invalid has the same effect.)
+# The trust domain here must match instraclustr/spire/*.conf's trust_domain
+# (instraclustr/tests/test_pki.py pins that).
+
+[ req_spire ]
+prompt             = no
+distinguished_name = spire_dn
+default_md         = sha384
+string_mask        = utf8only
+
+[ spire_dn ]
+O  = sentinelfaa
+CN = sentinelfaa SPIRE Upstream CA
+
+[ spire_upstream_ext ]
+basicConstraints       = critical, CA:true, pathlen:1
+keyUsage               = critical, keyCertSign, cRLSign, digitalSignature
+nameConstraints        = critical, permitted;URI:sentinelfaa.internal, permitted;DNS:invalid, excluded;IP:0.0.0.0/0.0.0.0, excluded;IP:::/::
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always
+
+# -- Vault server certificate ------------------------------------------------
+# vault: the name every client on nas-network uses. localhost and 127.0.0.1:
+# the operator on the host (published on 127.0.0.1:8200) and Vault's own
+# health check.
+
+[ req_vault ]
+prompt             = no
+distinguished_name = vault_dn
+default_md         = sha256
+string_mask        = utf8only
+
+[ vault_dn ]
+O  = sentinelfaa
+CN = vault
+
+[ vault_server_ext ]
+basicConstraints       = critical, CA:false
+keyUsage               = critical, digitalSignature
+extendedKeyUsage       = serverAuth
+subjectAltName         = DNS:vault, DNS:localhost, IP:127.0.0.1
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always

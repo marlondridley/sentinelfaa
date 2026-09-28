@@ -1,0 +1,69 @@
+# Project invariants, enforced by the Semgrep gate (.github/workflows/guardrails.yml)
+# alongside the registry rulesets. Each rule is something this codebase
+# decided, with the reason, so a regression fails CI instead of review.
+rules:
+  - id: sentinel-secret-read-outside-settings
+    message: >-
+      A secret read straight from the process environment. Deployed services
+      get credentials only through Settings, whose Vault source reads the file
+      the service's Vault Agent sidecar renders (src/vault_config.py) -- the
+      environment of an application container holds none (docker-compose.yml).
+      Add a Settings field and read it there.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["nas-feedops-sentinel/src/", "nas-feedops-sentinel/dashboard/", "nas-feedops-sentinel/scripts/"]
+    patterns:
+      - pattern-either:
+          - pattern: os.getenv("$KEY", ...)
+          - pattern: os.environ.get("$KEY", ...)
+          - pattern: os.environ["$KEY"]
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i).*(password|secret|token|api_key|private_key).*
+
+  - id: sentinel-xml-from-the-feed-must-be-defused
+    message: >-
+      Feed files come from an external broker. Parse XML with defusedxml
+      (DTDs, entities and external references refused), as
+      src/swim_file_ingest.py does -- not the stdlib parser's defaults.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["nas-feedops-sentinel/src/", "nas-feedops-sentinel/scripts/"]
+    pattern-either:
+      - pattern: xml.etree.ElementTree.parse(...)
+      - pattern: xml.etree.ElementTree.fromstring(...)
+      - pattern: xml.etree.ElementTree.iterparse(...)
+      - pattern: xml.etree.ElementTree.XMLParser(...)
+      - pattern: xml.dom.minidom.parse(...)
+      - pattern: xml.dom.minidom.parseString(...)
+      - pattern: xml.sax.parse(...)
+
+  - id: sentinel-no-direct-vault-client
+    message: >-
+      The application never talks to Vault: its Vault Agent sidecar does, with
+      the service's SPIFFE identity. A Vault client here would need a
+      credential in the container, which is exactly what was removed.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["nas-feedops-sentinel/"]
+    pattern-either:
+      - pattern: import hvac
+      - pattern: from hvac import $X
+      - pattern: hvac.Client(...)
+
+  - id: sentinel-tls-verification-disabled
+    message: >-
+      TLS verification turned off. Every service here verifies its peer
+      (Keycloak, Vault, the edge) against a named authority; pass the CA
+      instead.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: requests.$M(..., verify=False, ...)
+      - pattern: httpx.$M(..., verify=False, ...)
+      - pattern: httpx.Client(..., verify=False, ...)
+      - pattern: httpx.AsyncClient(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)

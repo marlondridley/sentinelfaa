@@ -13,7 +13,8 @@ import os
 from pathlib import Path
 from typing import Annotated, Any
 
-from src.vault_config import VaultSettingsSource
+from src.airports import tracon_of
+from src.vault_config import VaultAgentFileSettingsSource
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict, PydanticBaseSettingsSource
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 
@@ -39,18 +40,18 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 #      Only the current_database() check in src/storage/test_support.py kept
 #      a full-suite run from TRUNCATE-ing production data, audit trail
 #      included.
-#   2. For the same reason `-e VAULT_ADDR= -e VAULT_TOKEN=` could not turn
-#      the Vault settings source off. VaultSettingsSource short-circuits on
-#      an empty address or token (src/vault_config.py), but both variables
-#      were deleted before it ever ran, so .env's values were used and Vault
-#      kept injecting POSTGRES_* above the environment.
+#   2. For the same reason an empty override could not turn the Vault
+#      settings source off, so .env's values were used and Vault kept
+#      injecting POSTGRES_* above the environment. (That source is gone: the
+#      one in its place reads VAULT_AGENT_ENV_FILE, which only a deployed
+#      container sets, and takes credentials only, never POSTGRES_DB.)
 #   3. It mutated global process state as an import side effect, across every
 #      variable in the environment -- including ones this application does
 #      not own (NO_PROXY="", PYTHONWARNINGS="", ...) and that other libraries
 #      in the same process read.
 #
 # So: empty means empty. Both places where that matters already handle it --
-# VaultSettingsSource returns {} on an empty address or token, and
+# VaultAgentFileSettingsSource returns {} on an empty VAULT_AGENT_ENV_FILE, and
 # _defaults() below rebuilds DATABASE_URL from the POSTGRES_* settings
 # whenever DATABASE_URL is empty.
 
@@ -102,6 +103,12 @@ class Settings(BaseSettings):
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str | None = None
     POSTGRES_DB: str | None = None
+    # The application login role the migrate job creates and grants
+    # (src/storage/migrate.py). Its password reaches the job the same way the
+    # owner's does -- the migrate Vault Agent sidecar's rendered file -- so
+    # the job's environment holds no password at all.
+    APP_DB_USER: str = "sentinel_app"
+    APP_DB_PASSWORD: str | None = None
     DB_USER: str | None = None
     DB_PASSWORD: str | None = None
     DB_NAME: str | None = None
@@ -129,6 +136,8 @@ class Settings(BaseSettings):
         }
     )
 
+    # The deployment's TRACON: the default for a record that names none. Scope is the airports above and the
+    # TRACONs they belong to (SUPPORTED_TRACONS); src/airports.py holds where each airport is and whose it is.
     SUPPORTED_TRACON: str = "PCT"
 
     SUPPORTED_SERVICES: Annotated[set[str], NoDecode] = Field(
@@ -190,6 +199,9 @@ class Settings(BaseSettings):
     #
     LATENCY_ALERT_MS: int = 30000
     STALE_FEED_SECONDS: int = 300
+    # How far back a feed must have last been seen to be judged for staleness: a
+    # feed that stopped longer ago than this is treated as decommissioned, not silent.
+    STALE_FEED_LOOKBACK_SECONDS: int = 3600
     SURFACE_SPIKE_COUNT: int = 10
     SURFACE_SPIKE_WINDOW_SECONDS: int = 60
     RVR_LOW_THRESHOLD_FT: int = 1200
@@ -358,10 +370,6 @@ class Settings(BaseSettings):
         ]
     )
 
-    # ── Vault ────────────────────────────────────────────────────────────────
-    VAULT_ADDR: str = "http://localhost:8200"
-    VAULT_TOKEN: str = ""
-
     @classmethod
     def settings_customise_sources(
         cls,
@@ -371,10 +379,14 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # The credentials this container's Vault Agent sidecar rendered
+        # (src/vault_config.py); off when VAULT_AGENT_ENV_FILE is unset or
+        # empty, as in tests and local runs.
+        vault_source = VaultAgentFileSettingsSource(settings_cls)
         # Priority: Init args > Vault > Environment Variables > .env file
         return (
             init_settings,
-            VaultSettingsSource(settings_cls),
+            vault_source,
             env_settings,
             dotenv_settings,
         )
@@ -470,6 +482,11 @@ class Settings(BaseSettings):
             )
 
         return self
+
+    @property
+    def SUPPORTED_TRACONS(self) -> set[str]:
+        """The deployment's TRACON plus the TRACON of every supported airport the registry knows."""
+        return {self.SUPPORTED_TRACON} | {t for a in self.SUPPORTED_AIRPORTS if (t := tracon_of(a))}
 
 
 settings = Settings()

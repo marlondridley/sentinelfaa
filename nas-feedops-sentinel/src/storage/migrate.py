@@ -19,7 +19,6 @@ triggers a convention rather than a control.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 
 import asyncpg
@@ -88,8 +87,10 @@ async def migrate(app_role: str | None, app_password: str | None) -> None:
 
 def main() -> None:
     configure_logging()
-    role = os.getenv("APP_DB_USER", "sentinel_app")
-    asyncio.run(migrate(role, os.getenv("APP_DB_PASSWORD") or None))
+    # Through Settings, not os.getenv: deployed, both come from the migrate
+    # Vault Agent sidecar's file (instraclustr/vault-agent/migrate.hcl),
+    # which the settings sources read; the environment is the local fallback.
+    asyncio.run(migrate(settings.APP_DB_USER, settings.APP_DB_PASSWORD or None))
     _log.info("migrate_complete")
 
 

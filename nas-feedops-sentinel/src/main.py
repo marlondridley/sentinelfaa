@@ -15,7 +15,7 @@ from src.metrics import start_metrics_server
 from src.models import NASEvent
 from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
-from src.swim_file_ingest import request_shutdown, scan_swim_folder, watch_swim_folder
+from src.swim_file_ingest import commit_scan, request_shutdown, scan_swim_folder, watch_swim_folder
 
 _log = get_logger(__name__)
 
@@ -133,7 +133,7 @@ def main() -> None:
         # scan_swim_folder returns (events, stats); this used to bind the whole
         # tuple to `events`, which is never falsy, so the directory fallback
         # below could not run and the pipeline was handed a 2-tuple.
-        events, _stats = scan_swim_folder(target_path)
+        events, stats = scan_swim_folder(target_path, defer_archive=True)
         if not events:
             _log.info("replay_scan_empty_directory_fallback", extra={"target_path": str(target_path)})
             events, parse_errors = replay_from_directory(target_path)
@@ -144,6 +144,7 @@ def main() -> None:
                 )
         if events:
             _run_pipeline(events, "REPLAY")
+            commit_scan(stats)      # archived and logged only now that the events are stored
         else:
             _log.warning("replay_scan_no_events_found", extra={"target_path": str(target_path)})
     elif args.mode == "eval":

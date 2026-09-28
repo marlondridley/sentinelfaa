@@ -6,10 +6,11 @@ top-level question -- "does PCT TRACON have a trustworthy aircraft
 movement picture right now, and what should the duty manager do about
 it?" -- and it answers it in a deliberate order:
 
-  1. A deterministic verdict. GREEN/AMBER/RED is computed from three
-     measured facts (schema conformance, ingest lag, open CRITICAL
-     alerts) by rules in `_verdict()` below. No model is consulted. This
-     is the line an operator is entitled to act on.
+  1. A deterministic verdict. GREEN/AMBER/RED is computed from measured
+     facts about the last hour (schema conformance, ingest lag, reviews of
+     CRITICAL alerts still awaiting a decision) and from whether each
+     airport's feed is current, by rules in `_verdict()` below. No model is
+     consulted. This is the line an operator is entitled to act on.
   2. The numbers that produced it, as a ranked KPI strip. Every tile is
      a link into the page that explains it: the alert count opens a
      pre-filtered Alert Log, the lag figure opens the latency view. A
@@ -37,6 +38,7 @@ Run with:
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Allow `from src import ...` and `from lib import ...` regardless of which
@@ -52,13 +54,13 @@ import streamlit as st
 
 from lib import agent_eval, theme
 from lib.data import (
-    PCT_AIRPORTS,
+    AIRPORTS,
     bucket_counts,
     format_ts,
     reconstruct_nas_events,
 )
 from lib.page_setup import bootstrap_page
-from lib.ticker import render_ticker
+from lib.attention import render_attention
 from src import storage
 from src.async_bridge import run_async as run
 from src.evaluation import load_gate_config
@@ -69,18 +71,27 @@ from src.watch_officer_agent import build_watch_officer_context, generate_watch_
 
 bootstrap_page(page_title="PCT TAIS FeedOps Sentinel", page_icon="✈")
 
-render_ticker()
-
 # ── Data ──────────────────────────────────────────────────────────────────────
-val_summary = run(storage.get_validation_summary())
-lat_stats = run(storage.get_latency_stats())
-alerts_raw = run(storage.get_recent_alerts(limit=500))
-events_raw = run(storage.get_recent_events(limit=1000))
+# The verdict is about the feed now, so its aggregates cover the last hour: a
+# lifetime figure never notices the feed has gone quiet, and an old bad day
+# would hold it AMBER for good. And it is about the LIVE feed: a replay lands in
+# the same tables with a fresh receipt time, so counting it would let a dead feed
+# read GREEN off replayed captures, or a replayed fault read RED over a healthy one.
+# The provenance banner says when non-live data is around; the verdict ignores it.
+WINDOW = timedelta(minutes=60)
+_since = datetime.now(timezone.utc) - WINDOW
+val_summary = run(storage.get_validation_summary(_since, data_origin="live"))
+lat_stats = run(storage.get_latency_stats(_since, data_origin="live"))
+alerts_raw = run(storage.get_recent_alerts(limit=500, data_origin="live"))
+events_raw = run(storage.get_recent_events(limit=1000, data_origin="live"))
+not_live_counts = {k: v for k, v in run(storage.get_origin_counts(window_minutes=60)).items() if k != "live" and v}
 active_aircraft = run(storage.get_active_aircraft(window_minutes=5, limit=500))
 phase_counts = run(storage.get_flight_phase_counts(window_minutes=15))
 
 live_events = reconstruct_nas_events(events_raw)
 health = compute_feed_health(live_events[:500]) if live_events else {"airport_status": {}}
+
+render_attention(health.get("airport_status", {}), alerts_raw)
 
 total_validated = val_summary.get("total", 0) or 0
 passed = val_summary.get("passed", 0) or 0
@@ -88,7 +99,8 @@ failed = val_summary.get("failed", 0) or 0
 pass_rate = (passed / total_validated * 100) if total_validated else None
 avg_lat_ms = lat_stats.get("avg_ms")
 
-critical_alerts = sum(1 for a in alerts_raw if a.get("severity") == "CRITICAL")
+# A CRITICAL alert is open while the review that covers it awaits a decision.
+critical_alerts = len(run(storage.get_pending_staged_actions(data_origin="live")))
 warning_alerts = sum(1 for a in alerts_raw if a.get("severity") == "WARNING")
 total_alerts = len(alerts_raw)
 
@@ -106,29 +118,40 @@ def _verdict() -> tuple[str, str, str, str]:
     prepared to defend.
     """
     if total_validated == 0:
+        elsewhere = ", ".join(f"{n:,} {origin}" for origin, n in sorted(not_live_counts.items()))
         return (
             "NO DATA",
             "neutral",
-            "nothing ingested",
-            "No SWIM messages have been ingested, so no claim can be made about the "
-            "aircraft movement picture. Start the watcher or replay a capture from "
-            "Ingest & Replay.",
+            "no live messages in the last hour",
+            "No live SWIM messages were ingested in the last hour, so no claim can be made about the "
+            "aircraft movement picture."
+            + (f" {elsewhere} event(s) from other sources arrived in that time and are not counted here."
+               if elsewhere else "")
+            + " Start the watcher; a replay does not change this verdict.",
         )
-    if critical_alerts > 0 or (pass_rate is not None and pass_rate < 70):
+    # The same feed statuses the attention strip acts on: a feed that is down is an
+    # action, one that is stale or degraded is attention.
+    airport_status = health.get("airport_status", {})
+    feed_down = sorted(a for a, s in airport_status.items() if s in ("UNAVAILABLE", "DISCONNECTED"))
+    feed_quiet = sorted(a for a, s in airport_status.items() if s in ("STALE", "DEGRADED"))
+    if critical_alerts > 0 or feed_down or (pass_rate is not None and pass_rate < 70):
         return (
             "RED",
             "bad",
             "do not rely on feed",
-            f"{critical_alerts} CRITICAL alert(s) open and schema conformance at "
-            f"{pass_rate:.0f}%. Validate against a secondary source before using feed "
-            "data for operational decisions.",
+            f"{critical_alerts} CRITICAL review(s) awaiting a decision, "
+            + (f"feed down at {', '.join(feed_down)}, " if feed_down else "")
+            + f"schema conformance at {pass_rate:.0f}% over the last hour. Validate against a "
+            "secondary source before using feed data for operational decisions.",
         )
-    if (pass_rate is not None and pass_rate < 95) or (avg_lat_ms or 0) >= 5_000:
+    if feed_quiet or (pass_rate is not None and pass_rate < 95) or (avg_lat_ms or 0) >= 5_000:
         return (
             "AMBER",
             "warn",
             "degraded but usable",
-            "The feed is delivering, but either conformance is below the 95% target or "
+            "The feed is delivering, but "
+            + (f"the {', '.join(feed_quiet)} feed is stale or degraded, or " if feed_quiet else "either ")
+            + "conformance is below the 95% target or "
             "messages are arriving too late to be treated as real time. Usable for "
             "trend and situational awareness; corroborate before acting on a single "
             "aircraft.",
@@ -137,8 +160,9 @@ def _verdict() -> tuple[str, str, str, str]:
         "GREEN",
         "ok",
         "feed trustworthy",
-        "Conformance at target, ingest lag inside the 5-second real-time budget, and no "
-        "CRITICAL alerts open. Safe to rely on the feed for live operational decisions.",
+        "Every airport feed is current, conformance is at target, ingest lag is inside the "
+        "5-second real-time budget, and no CRITICAL review awaits a decision. Safe to rely "
+        "on the feed for live operational decisions.",
     )
 
 
@@ -150,7 +174,7 @@ st.markdown(
     f'letter-spacing:-0.01em;">PCT TAIS FeedOps Sentinel</span>'
     f'<span style="font-size:12.5px;color:{theme.GRAY1};">'
     f"Can PCT TRACON trust the current aircraft movement picture across "
-    f"<b>KDCA &middot; KIAD &middot; KBWI &middot; KADW</b>?</span></div>",
+    f"<b>{' &middot; '.join(AIRPORTS)}</b>?</span></div>",
     unsafe_allow_html=True,
 )
 
@@ -160,9 +184,9 @@ theme.posture_banner(
     tone=verdict_tone,
     subtitle=verdict_sub,
     meta=[
-        f"{total_validated:,} messages evaluated",
+        f"{total_validated:,} messages evaluated in the last hour",
         f"{len(active_aircraft)} aircraft in the last 5 min",
-        f"{critical_alerts} critical / {total_alerts} open alerts",
+        f"{critical_alerts} critical review(s) / {total_alerts} recent alerts",
         "Deterministic rules — no model involved",
     ],
 )
@@ -209,7 +233,7 @@ theme.kpi_row(
             "Open alerts",
             f"{total_alerts:,}",
             tone="bad" if critical_alerts else ("warn" if total_alerts > 10 else "ok"),
-            foot=f"{critical_alerts} critical · {warning_alerts} warning",
+            foot=f"{sum(1 for a in alerts_raw if a.get('severity') == 'CRITICAL')} critical · {warning_alerts} warning",
             href=theme.drill_href("alerts"),
             drill="TRIAGE →",
             spark=alerts_per_hour,
@@ -218,8 +242,8 @@ theme.kpi_row(
             "Critical now",
             f"{critical_alerts:,}",
             tone="bad" if critical_alerts else "ok",
-            foot="Requires supervisor action" if critical_alerts else "None open",
-            href=theme.drill_href("alerts", severity="CRITICAL"),
+            foot="Reviews awaiting a decision" if critical_alerts else "None open",
+            href=theme.drill_href("critic"),
             drill="OPEN →",
             spark=crit_per_hour,
         ),
@@ -228,7 +252,7 @@ theme.kpi_row(
             f"{pass_rate:.1f}" if pass_rate is not None else "—",
             unit="%" if pass_rate is not None else "",
             tone=conf_tone,
-            foot=f"{failed:,} failed of {total_validated:,} · target ≥ 95%",
+            foot=f"{failed:,} failed of {total_validated:,} in the last hour · target ≥ 95%",
             href=theme.drill_href("health", focus="validation"),
             drill="BREAKDOWN →",
         ),
@@ -253,7 +277,7 @@ theme.kpi_row(
             "Messages ingested",
             f"{total_validated:,}",
             tone="info" if total_validated else "neutral",
-            foot="All SWIM events in the store",
+            foot="SWIM events in the last hour",
             href=theme.drill_href("health", focus="volume"),
             drill="VOLUME →",
             spark=events_per_hour,
@@ -270,7 +294,7 @@ theme.section(
 )
 
 _cards = []
-for _code, _info in PCT_AIRPORTS.items():
+for _code, _info in AIRPORTS.items():
     _status = health.get("airport_status", {}).get(_code, "NO DATA")
     _tone = theme.STATUS_TONE.get(str(_status).upper(), "neutral")
     _fg, _border, _wash = theme.TONES[_tone]
@@ -485,7 +509,7 @@ _MISSION_ROWS = [
      "Determines whether the airspace view is operationally reliable",
      theme.drill_href("airspace")),
     ("Which airport is driving the traffic load?",
-     "KDCA, KIAD, KBWI, KADW departure / arrival / en route counts",
+     f"{', '.join(AIRPORTS)} departure / arrival / en route counts",
      "Helps prioritize airport-level monitoring",
      theme.drill_href("airspace")),
     ("What phase of flight is most active?",

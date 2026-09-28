@@ -99,7 +99,8 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 | Stack | Service | Role |
 |---|---|---|
 | `instraclustr/` | `postgres`, `pgbouncer` | the database, pooled |
-| | `vault` (+ `vault-unseal` job) | secrets; one AppRole per service; unseal key split 2-of-3; no stored root token |
+| | `vault` (+ `vault-unseal` job) | secrets; TLS only; unseal key split 2-of-3; no stored root token; policy as code (Terraform), applied in a root ceremony |
+| | `spire-server`, `spire-agent` | workload identity: each application service gets its own short-lived X.509-SVID, chained to an offline root, and uses it to log in to Vault over mutual TLS |
 | | `litellm` (+ `litellm-db-init`, `litellm-bootstrap` jobs) | the model gateway; the application holds a scoped, budgeted key |
 | `nas-feedops-sentinel/` | `migrate` | one-shot schema owner job; everything else runs as a restricted role |
 | | `sentinel` | the live SWIM folder watcher and the reconciler |
@@ -118,7 +119,7 @@ Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit
 
 Requires Windows with Docker Desktop and PowerShell. The live feed also needs Java 25 and a SWIFT-authorized SCDS subscription; everything else runs without one.
 
-1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys belong in `instraclustr/.env`; `APP_DB_PASSWORD` must match in both.
+1. Copy `instraclustr/.env.example` to `instraclustr/.env` and `nas-feedops-sentinel/.env.example` to `nas-feedops-sentinel/.env`, and fill them in. Model provider keys and the Sentinel database's passwords (`POSTGRES_*`, `APP_DB_*`) belong in `instraclustr/.env`: the application gets its database identity only from Vault. The application stack's own service secrets (`API_KEY`, Grafana, Keycloak, Temporal) may live in either file; the launcher reads both, the application's winning. First time only: the certificate ceremony, Vault's workload auth and SPIRE's first boot, in the order in [instraclustr/README.md](instraclustr/README.md#first-time-setup).
 2. From the repository root:
    ```powershell
    .\launch_nas_sentinel.ps1                # infrastructure, then the application
@@ -235,7 +236,7 @@ Production agentic systems are judged less by model quality than by how they hol
 ## Known limits
 
 - **RVR encoding.** APDS reports runway visual range as a coded value. The ×100-to-feet scale is corroborated against KBWI weather observations but not confirmed against the non-public APDS interface document; implausible readings are refused rather than stored. `ALERT_LOW_RVR` depends on it.
-- **Transport.** The Jumpstart Kit writes one file per message. That is fine for PCT volumes on one host (a janitor keeps the folder scannable), but a production deployment would consume the Solace broker directly.
+- **Transport.** JMS is the only authorized SCDS API, so a JVM (the Jumpstart Kit) is the edge. It writes one durable record per message and stops rather than acknowledge one it could not write; Python reads the folder through a small source interface. That is fine for PCT volumes on one host (a janitor keeps the folder scannable). A broker such as Kafka would be a second implementation of that interface, and is deferred until a second consumer or a second feed (TFMS, TBFM) appears. What the broker does after the JVM halts has not been observed against a real broker here.
 - **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
 - **Decisions.** One approver per action; there is no four-eyes workflow.
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.

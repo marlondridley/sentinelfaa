@@ -22,8 +22,10 @@ RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements-dev.lock
 # Stage 2: runtime image
 FROM python:3.12-slim AS runtime
 
-# Non-root user
-RUN groupadd -r sentinel && useradd -r -g sentinel -d /app -s /sbin/nologin sentinel
+# Non-root user, uid/gid 999 pinned: the Vault Agent and spiffe-helper
+# sidecars run as this same uid and share memory-only volumes with the
+# service, owner-only (docker-compose.yml, x-secret-tmpfs).
+RUN groupadd -r -g 999 sentinel && useradd -r -u 999 -g sentinel -d /app -s /sbin/nologin sentinel
 
 WORKDIR /app
 
@@ -78,10 +80,14 @@ COPY tests/ ./tests/
 COPY pytest.ini ./
 COPY scripts/ ./scripts/
 # Deployment files the tests pin (Keycloak serves HTTPS only; the realm fits
-# Keycloak's columns). Test stage only; not in the shipped image.
+# Keycloak's columns; docs/operations.md and the launcher/edge source are
+# checked by tests/test_swim_launcher.py -- see .dockerignore for what of
+# jumpstart/ actually reaches this COPY). Test stage only; not in the shipped image.
 COPY docker-compose.yml ./
 COPY keycloak/realm-nas-sentinel.json ./keycloak/
 COPY .streamlit/secrets.toml.example .streamlit/config.toml ./.streamlit/
+COPY docs/ ./docs/
+COPY jumpstart/ ./jumpstart/
 RUN chown -R sentinel:sentinel /app/tests /app/scripts
 USER sentinel
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-q"]

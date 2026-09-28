@@ -7,6 +7,9 @@ a list of AlertEvents for persistence and dashboard display.
 Alert types and their operational meaning:
   ALERT_FEED_DISCONNECTED   — A feed link has gone fully offline.
   ALERT_FEED_STALE          — No message received in 5 minutes; possible silent failure.
+                              Raised by the reconciler from the last message stored for each
+                              live feed (stale_feed_alerts), not from a batch: a silent feed
+                              sends no batch, so a per-batch rule can never see it.
   ALERT_HIGH_LATENCY        — Message delivery exceeded the 30-second threshold.
   ALERT_SCHEMA_VALIDATION_FAILED — A message failed structural/business-rule validation.
   ALERT_LOW_RVR             — Runway visual range fell below 1,200 ft; ops impact likely.
@@ -32,7 +35,6 @@ def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
     for event in events:
         alerts.extend(_per_event_alerts(event))
 
-    alerts.extend(_stale_feed_alerts(events, now))
     alerts.extend(_surface_spike_alerts(events, now))
 
     return [_with_origin(_with_stable_id(a, now), events) for a in alerts]
@@ -162,21 +164,26 @@ def _per_event_alerts(event: NASEvent) -> list[AlertEvent]:
 
 # ── Batch-level rules ─────────────────────────────────────────────────────────
 
-def _stale_feed_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent]:
-    """ALERT_FEED_STALE — no message received within STALE_FEED_SECONDS."""
-    latest: dict[tuple, datetime] = {}
-    for event in events:
-        key = (event.airport_code, event.service_name)
-        ts = event.received_time_utc
-        if key not in latest or ts > latest[key]:
-            latest[key] = ts
+def stale_feed_alerts(
+    last_seen: dict[tuple[str | None, str | None], datetime], now: datetime | None = None,
+) -> list[AlertEvent]:
+    """
+    ALERT_FEED_STALE — no message received within STALE_FEED_SECONDS.
 
+    `last_seen` maps each live (airport, service) feed to the time of the last
+    message stored for it, so a feed that has gone quiet is judged against the
+    clock rather than against whatever the current batch happens to contain.
+    The alerts are of the live feed by definition, and their identity is the
+    feed and the evaluation window, so re-evaluating every minute upserts one
+    alert per window instead of one per pass.
+    """
+    now = now or datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(seconds=config.STALE_FEED_SECONDS)
     alerts: list[AlertEvent] = []
-    for (airport, service), last_seen in latest.items():
-        if last_seen < stale_cutoff:
-            age_s = (now - last_seen).total_seconds()
-            alerts.append(AlertEvent(
+    for (airport, service), seen in last_seen.items():
+        if seen < stale_cutoff:
+            age_s = (now - seen).total_seconds()
+            alert = AlertEvent(
                 alert_type="ALERT_FEED_STALE",
                 severity="WARNING",
                 airport_code=airport,
@@ -185,7 +192,8 @@ def _stale_feed_alerts(events: list[NASEvent], now: datetime) -> list[AlertEvent
                     f"Feed STALE: no message from {service} at {airport} "
                     f"for {age_s:.0f} s (threshold {config.STALE_FEED_SECONDS} s)."
                 ),
-            ))
+            )
+            alerts.append(_with_stable_id(alert, now).model_copy(update={"data_origin": "live"}))
     return alerts
 
 

@@ -81,7 +81,7 @@ def render_card(ev: Any, *, sla_s: float | None, budget_usd: float | None) -> No
         st.caption("No investigation recorded yet. CRITICAL alerts are investigated when they are staged.")
         return
     status = overall(ev)
-    review = theme.drill_href("critic")
+    review = theme.drill_href("critic", review=ev.action_id)
     evaluation = theme.drill_href("evaluation")
     grounded = ev.grounding
     quality_tone = ("neutral" if grounded is None else "ok" if grounded >= 0.95

@@ -32,6 +32,8 @@ P=sentinel-smoke
 OLD_PG=sentinel-smoke-md5-postgres
 PG_IMAGE=pgvector/pgvector:pg16          # the image instraclustr's postgres service runs
 created_network=0
+created_socket_volume=0
+SOCKET_VOLUME=nas-spire-agent-socket   # external, like nas-network; launch_nas_sentinel.ps1 creates both
 
 infra() { docker compose -p "$P-infra" -f "$ROOT/instraclustr/docker-compose.yml" --env-file "$INFRA_ENV" "$@"; }
 app() { docker compose -p "$P-app" -f "$ROOT/nas-feedops-sentinel/docker-compose.yml" --env-file "$APP_ENV" "$@"; }
@@ -61,6 +63,7 @@ cleanup() {
   app down -v --remove-orphans >/dev/null 2>&1 || true
   infra down -v --remove-orphans >/dev/null 2>&1 || true
   [ "$created_network" = 1 ] && docker network rm nas-network >/dev/null 2>&1 || true
+  [ "$created_socket_volume" = 1 ] && docker volume rm "$SOCKET_VOLUME" >/dev/null 2>&1 || true
   exit "$code"
 }
 
@@ -75,6 +78,13 @@ trap cleanup EXIT
 if ! docker network inspect nas-network >/dev/null 2>&1; then
   docker network create nas-network >/dev/null
   created_network=1
+fi
+# spire-agent's Workload API socket, shared by both stacks: every application
+# service's spiffe-helper sidecar mounts it, so creating the app's containers
+# needs it to exist, as the launcher makes sure on a real host.
+if ! docker volume inspect "$SOCKET_VOLUME" >/dev/null 2>&1; then
+  docker volume create "$SOCKET_VOLUME" >/dev/null
+  created_socket_volume=1
 fi
 
 PG_USER="$(envval "$INFRA_ENV" POSTGRES_USER)"

@@ -28,13 +28,39 @@ from lib import theme
 from lib.data import KIT_LOG_PATH
 from lib.page_setup import bootstrap_page
 from src import config
+from src.auth import Decision, can_decide
+from src.config import settings
 from src.async_bridge import run_async as run
 from src.maintenance import purge_old_kit_files
 from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
-from src.swim_file_ingest import message_files, read_failure_reasons, read_ingest_log, scan_swim_folder
+from src.swim_file_ingest import (
+    commit_scan,
+    message_files,
+    read_failure_reasons,
+    read_ingest_log,
+    scan_swim_folder,
+)
 
-bootstrap_page(page_title="Ingest & Replay — PCT FeedOps Sentinel", page_icon="📥")
+_principal = bootstrap_page(page_title="Ingest & Replay — PCT FeedOps Sentinel", page_icon="📥")
+
+# Replay and Scan stage reviews and Clean deletes Kit messages, so they are for the
+# people who operate the console: a signed-in watch_officer or supervisor. An auditor
+# reads, and a visitor with no verified identity does not change anything here.
+_MAY_OPERATE = can_decide(_principal, Decision.MONITOR, allow_unverified=settings.ALLOW_UNVERIFIED_DECISIONS)
+_OPERATORS_ONLY = "Requires the watch_officer or supervisor role and a verified sign-in."
+
+
+def _operate(label: str, **kwargs) -> bool:
+    """
+    A button that only an operator's click counts for. Anyone else sees it
+    disabled with the reason, and a click that reaches the server anyway does nothing.
+    """
+    kwargs["disabled"] = bool(kwargs.get("disabled")) or not _MAY_OPERATE
+    if not _MAY_OPERATE:
+        kwargs["help"] = _OPERATORS_ONLY
+    return st.button(label, **kwargs) and _MAY_OPERATE
+
 
 st.title("📥 Ingest & Replay")
 st.caption(
@@ -49,8 +75,8 @@ with st.sidebar:
     st.subheader("Replay")
     replay_files = list(config.RAW_DIR.glob("*.json")) if config.RAW_DIR.exists() else []
     st.caption(f"{len(replay_files)} file(s) in data/raw/")
-    if st.button("Run Replay from data/raw", use_container_width=True,
-                 disabled=len(replay_files) == 0):
+    if _operate("Run Replay from data/raw", use_container_width=True,
+                disabled=len(replay_files) == 0):
         with st.spinner("Replaying …"):
             r_events, r_errors = replay_from_directory()
             summary = run(run_pipeline(r_events, label="REPLAY")) if r_events else None
@@ -70,7 +96,8 @@ with st.sidebar:
         "Purge files older than (minutes)",
         min_value=1, max_value=60, value=5, step=1,
     )
-    if st.button("Clean Kit log now", use_container_width=True):
+    st.caption("Deletes Kit messages older than this that the watcher has not ingested. Operators only.")
+    if _operate("Clean Kit log now", use_container_width=True):
         removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
         st.success(f"Removed {removed} file(s). {remaining} remain in Kit log.")
 
@@ -82,10 +109,8 @@ with st.sidebar:
     # it would raise AttributeError the moment this line rendered.)
     st.caption(f"DB: `{config.POSTGRES_HOST}:{config.POSTGRES_PORT}/{config.POSTGRES_DB or '—'}`")
     st.caption(f"Refreshed: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
-    if st.button("Refresh dashboard (auto-cleanup)", use_container_width=True, type="primary"):
-        removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
-        if removed > 0:
-            st.toast(f"Cleaned {removed} Kit file(s) older than {cleanup_minutes} min")
+    # A refresh only refreshes: deleting Kit files is the explicit button above.
+    if st.button("Refresh dashboard", use_container_width=True, type="primary"):
         st.rerun()
 
 # ── Replay Test Results Panel ─────────────────────────────────────────────────
@@ -139,11 +164,12 @@ else:
 
 col_ingest, col_hint = st.columns([1, 2])
 with col_ingest:
-    if st.button("Scan swim_live/ Now", use_container_width=True,
-                 disabled=len(pending_files) == 0):
+    if _operate("Scan swim_live/ Now", use_container_width=True,
+                disabled=len(pending_files) == 0):
         with st.spinner("Scanning swim_live/ ..."):
-            sw_events, sw_stats = scan_swim_folder(swim_live_dir)
+            sw_events, sw_stats = scan_swim_folder(swim_live_dir, defer_archive=True)
             summary = run(run_pipeline(sw_events, label="SWIM_SCAN")) if sw_events else None
+            commit_scan(sw_stats)   # archived and logged only now that the events are stored
         st.session_state["swim_scan_result"] = (
             f"Ingested {sw_stats.events_parsed} events from "
             f"{sw_stats.files_processed} file(s). "

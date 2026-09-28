@@ -360,7 +360,9 @@ def _gates(inv: Investigation, ev: InvestigationEvaluation, *, calls: list[dict]
              "the action was staged by the alert rules for a person to decide" if created
              else "no audit record of how the action was staged", "Sentinel-specific (audit log)"))
     later = audit[1:]
-    automated = [a for a in later if a.get("actor") == "system"]
+    # A merge is housekeeping (a duplicate review folded into its survivor), not a
+    # decision about the alert, so it is not an automated decision.
+    automated = [a for a in later if a.get("actor") == "system" and a.get("new_status") != "MERGED"]
     add(Gate("Safety", "No automated decision", PASS if not automated else FAIL,
              "every change after staging was made by a named person" if not automated
              else f"{len(automated)} change(s) by the system after staging", "Sentinel-specific (audit log)"))
