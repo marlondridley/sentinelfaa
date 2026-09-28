@@ -84,6 +84,7 @@ SHARE1="$INIT_DIR/unseal/share-1"
 SHARE2="$SHARE2_DIR/share-2"
 SHARE3="$RECOVERY_DIR/share-3"
 BOOT_DIR="$INIT_DIR/bootstrap"
+POLICY_DIR="${POLICY_DIR:-/vault-policies}"
 
 flat() { tr -d '\n\t ' < "$1"; }
 json_str() { flat "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | sed -E 's/.*"([^"]+)"$/\1/'; }
@@ -180,47 +181,16 @@ root_setup() {
     vault secrets list -format=json | grep -q '"secret/":' || vault secrets enable -path=secret kv-v2
     vault auth list -format=json | grep -q '"approle/":' || vault auth enable approle
 
-    vault policy write vault-bootstrap - <<'POLICY'
-# The bootstrap job (this script). Seed this project's secrets and rotate the
-# sentinel-* AppRoles' secret-ids; nothing that authors a policy or reconfigures
-# a role. No sys/seal, sys/mounts, sys/policies/acl writes, sys/generate-root,
-# other auth methods, or auth/approle/role/<name> (the bare path -- role
-# config) writes. This is why it is not root-equivalent: it can rotate a
-# credential for a role someone else already defined, never define one itself.
-#
-# Each role is named explicitly rather than "sentinel-*": Vault's ACL glob only
-# matches a trailing "*" against the REST of the path, not "*" followed by more
-# literal path (auth/approle/role/sentinel-*/role-id does not match
-# auth/approle/role/sentinel-app/role-id) -- confirmed the hard way, against a
-# real Vault, before this was caught as a silent 403 rather than a policy typo.
-path "secret/data/*"                                 { capabilities = ["create", "update", "read"] }
-path "secret/metadata/*"                             { capabilities = ["read", "list"] }
-path "auth/approle/role/vault-bootstrap/secret-id"                  { capabilities = ["create", "update"] }
-path "auth/approle/role/vault-bootstrap/secret-id-accessor/destroy" { capabilities = ["create", "update"] }
-path "auth/approle/role/vault-bootstrap/role-id"                    { capabilities = ["read"] }
-path "auth/approle/role/sentinel-app/secret-id"                     { capabilities = ["create", "update"] }
-path "auth/approle/role/sentinel-app/secret-id-accessor/destroy"    { capabilities = ["create", "update"] }
-path "auth/approle/role/sentinel-app/role-id"                       { capabilities = ["read"] }
-path "auth/approle/role/sentinel-migrate/secret-id"                 { capabilities = ["create", "update"] }
-path "auth/approle/role/sentinel-migrate/secret-id-accessor/destroy" { capabilities = ["create", "update"] }
-path "auth/approle/role/sentinel-migrate/role-id"                   { capabilities = ["read"] }
-POLICY
+    # Policy text lives in instraclustr/vault-policies/, the one copy both this
+    # first-init path and Terraform (instraclustr/terraform/, which owns it
+    # from the first ceremony on and catches drift) write it from.
+    vault policy write vault-bootstrap "$POLICY_DIR/vault-bootstrap.hcl" >/dev/null
     vault write auth/approle/role/vault-bootstrap token_policies=vault-bootstrap \
         token_ttl=15m token_max_ttl=30m secret_id_ttl=24h secret_id_num_uses=0 >/dev/null
 
     # ── Service AppRoles: policy and role config, authored once, under root ──
-    vault policy write sentinel-app - <<'POLICY'
-# Application services: their database identity and LiteLLM key, nothing else.
-path "secret/data/postgres/app"    { capabilities = ["read"] }
-path "secret/data/sentinel/config" { capabilities = ["read"] }
-POLICY
-
-    vault policy write sentinel-migrate - <<'POLICY'
-# Schema job: the owner identity plus what it grants to the application role.
-path "secret/data/postgres/credentials" { capabilities = ["read"] }
-path "secret/data/postgres/app"         { capabilities = ["read"] }
-path "secret/data/sentinel/config"      { capabilities = ["read"] }
-POLICY
+    vault policy write sentinel-app "$POLICY_DIR/sentinel-app.hcl" >/dev/null
+    vault policy write sentinel-migrate "$POLICY_DIR/sentinel-migrate.hcl" >/dev/null
 
     for role in sentinel-app sentinel-migrate; do
         vault write "auth/approle/role/$role" token_policies="$role" \
