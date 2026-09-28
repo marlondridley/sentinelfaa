@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str | None = None
     POSTGRES_DB: str | None = None
+    # The application login role the migrate job creates and grants
+    # (src/storage/migrate.py). Its password reaches the job the same way the
+    # owner's does -- the migrate Vault Agent sidecar's rendered file -- so
+    # the job's environment holds no password at all.
+    APP_DB_USER: str = "sentinel_app"
+    APP_DB_PASSWORD: str | None = None
     DB_USER: str | None = None
     DB_PASSWORD: str | None = None
     DB_NAME: str | None = None

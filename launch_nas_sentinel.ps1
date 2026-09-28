@@ -59,6 +59,34 @@ if ($existingNetwork -eq $networkName) {
     docker network create $networkName
 }
 
+# External, like the network above: the socket spire-agent serves and every
+# application container's spiffe-helper sidecar reads (see
+# instraclustr/spire-entries.yaml and nas-feedops-sentinel/docker-compose.yml)
+# has to be one real volume shared across both compose projects.
+$spireSocketVolume = "nas-spire-agent-socket"
+$existingSpireVolume = docker volume ls --filter "name=$spireSocketVolume" --format "{{.Name}}"
+if ($existingSpireVolume -eq $spireSocketVolume) {
+    Write-Host "Docker volume '$spireSocketVolume' already exists." -ForegroundColor Green
+} else {
+    Write-Host "Creating Docker volume '$spireSocketVolume'..." -ForegroundColor Yellow
+    docker volume create $spireSocketVolume
+}
+
+# 1b. Workload-identity PKI: Vault serves TLS only, and SPIRE signs under the
+#     offline root, so nothing can start without these certificates. They come
+#     from the root ceremony (instraclustr/certs/README.md), never from here.
+$pkiScript = Join-Path $scriptDir "instraclustr\scripts\pki.ps1"
+& $pkiScript check
+switch ($LASTEXITCODE) {
+    0 { Write-Host "  [+] Workload-identity certificates are current." -ForegroundColor Green }
+    1 { Write-Host "  [!] A workload-identity certificate is due for renewal (above). Plan the ceremony: instraclustr\certs\README.md" -ForegroundColor Yellow }
+    default {
+        Write-Host "CRITICAL ERROR: workload-identity certificates missing or invalid (above)." -ForegroundColor Red
+        Write-Host "  Run the root ceremony first: instraclustr\certs\README.md" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # 2. Start Infrastructure Stack (Postgres, PgBouncer, Vault, LiteLLM)
 #    Kafka/Connect/Cassandra/Elasticsearch/Kibana were never wired into this
 #    application and are commented out in instraclustr/docker-compose.yml.
@@ -142,6 +170,19 @@ foreach ($job in @("vault-unseal", "litellm-db-init", "litellm-bootstrap")) {
     Write-Host "  [+] $job completed." -ForegroundColor Green
 }
 
+# 3c. Workload identity: every application service gets its secrets through
+#     an SVID from spire-agent. An agent that has never joined (first boot) or
+#     lost its data volume exits at once, and every service would then wait on
+#     its Vault Agent sidecar forever.
+$agentState = docker inspect spire-agent --format '{{.State.Status}}' 2>$null
+if ($agentState -ne "running") {
+    Write-Host "CRITICAL ERROR: spire-agent is not running (state=$agentState)." -ForegroundColor Red
+    Write-Host "  First boot, or its data volume was reset: instraclustr\scripts\spire-first-boot.ps1" -ForegroundColor Red
+    Write-Host "  Then Vault's cert auth, if never applied: the root ceremony in instraclustr\README.md" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  [+] spire-agent is running." -ForegroundColor Green
+
 # 4. Build and Launch Application Stack
 $appDir = Join-Path $scriptDir "nas-feedops-sentinel"
 $appEnv = Join-Path $appDir ".env"
@@ -160,8 +201,15 @@ Write-Host "Building and launching application stack from '$appDir'..." -Foregro
 docker compose -f $appCompose --env-file $appEnv up --build -d
 if ($LASTEXITCODE -ne 0) {
     Write-Host "CRITICAL ERROR: Application stack failed to build or start. Halting." -ForegroundColor Red
+    Write-Host "  A service waiting on secrets: docker logs nas-<service>-vault-agent (and nas-<service>-spiffe)" -ForegroundColor Red
     exit 1
 }
+
+# The migrate job has finished (`up` waits for it before starting anything
+# else). Its sidecars hold the schema owner's Vault token and identity; a
+# one-shot job's credentials should not outlive the job.
+docker compose -f $appCompose --env-file $appEnv stop migrate-vault-agent migrate-spiffe | Out-Null
+Write-Host "  [+] migrate finished; its identity sidecars stopped." -ForegroundColor Green
 
 # 5. Optional: live FAA SWIM feed (native, not containerized)
 $feedStarted = $false

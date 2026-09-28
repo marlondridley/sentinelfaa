@@ -9,9 +9,19 @@
 # dashboard's sign-in, server to server). Nothing in the stack speaks plain
 # HTTP to the identity service.
 #
-# Vault: services authenticate with their own AppRole (credentials written by
-# ../instraclustr/vault-unseal-and-seed.bash, one directory per role, mounted
-# read-only). No service receives a Vault token.
+# Secrets: no application container holds a credential, a Vault token, or a
+# way to reach Vault. Each service has two sidecars (section 9 below):
+#   <service>-spiffe       spiffe-helper, labelled com.sentinelfaa.identity=
+#                          <service>: spire-agent attests it and issues this
+#                          service's own X.509-SVID (spiffe://sentinelfaa.internal/
+#                          workload/<service>; one hour, rotated)
+#   <service>-vault-agent  Vault Agent: logs in to Vault over mutual TLS with
+#                          that SVID (cert auth, ../instraclustr/terraform/) and
+#                          renders what the service's policy allows into
+#                          /vault/secrets/app-config.env
+# They share memory-only volumes with the service; nothing lands on disk. The
+# service reads that file (VAULT_AGENT_ENV_FILE, src/vault_config.py) and
+# starts only once it exists. See ../instraclustr/README.md.
 #
 # Database identities:
 #   migrate      -- one-shot, runs as the schema owner (Vault postgres/credentials):
@@ -45,13 +55,11 @@ x-app-env: &app-env
   POSTGRES_HOST: nas-pgbouncer
   POSTGRES_PORT: "6432"
   POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
-  POSTGRES_USER: ${APP_DB_USER:-sentinel_app}
-  POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
   DATABASE_URL: ""
   RUN_MIGRATIONS_ON_CONNECT: "false"
-  VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
-  VAULT_APPROLE_DIR: /run/vault-approle
-  VAULT_POSTGRES_SECRET_PATH: postgres/app
+  # The database identity and LiteLLM key: rendered by this service's Vault
+  # Agent sidecar (see the header). No password in this environment.
+  VAULT_AGENT_ENV_FILE: /vault/secrets/app-config.env
   # Models: proxy aliases only (instraclustr/litellm-config.yaml).
   LLM_BASE_URL: ${LLM_BASE_URL:-http://nas-litellm:4000/v1}
   LLM_MODEL: ${LLM_MODEL:-primary-model}
@@ -75,6 +83,35 @@ x-after-migrate: &after-migrate
   migrate:
     condition: service_completed_successfully
 
+# The two sidecars every service gets (see the header). Both run as the
+# application image's own user (uid/gid 999, pinned in docker/Dockerfile), so
+# the files they share with it are owner-only.
+x-spiffe-helper: &spiffe-helper
+  image: ghcr.io/spiffe/spiffe-helper:0.10.0@sha256:95f5000aa1e0aadbfde20d66f1ad25733034162825aa51cc922ac78365bb8ee8
+  user: "999:999"
+  restart: unless-stopped
+  command: ["-config", "/etc/spiffe-helper/spiffe-helper.conf"]
+
+x-vault-agent: &vault-agent
+  image: hashicorp/vault:1.15.2@sha256:6b4e5dadf082cb3587930ced09b52851c5ae9f8d1c7df31ed39f0085a3029f63
+  user: "999:999"
+  restart: unless-stopped
+  healthcheck:
+    # Healthy once the service's secrets are rendered: the service waits for this.
+    test: ["CMD-SHELL", "test -s /vault/secrets/app-config.env"]
+    interval: 3s
+    timeout: 3s
+    start_period: 5s
+    retries: 60
+
+# A memory-only volume, readable by uid 999 alone.
+x-secret-tmpfs: &secret-tmpfs
+  driver: local
+  driver_opts:
+    type: tmpfs
+    device: tmpfs
+    o: "uid=999,gid=999,mode=0700"
+
 services:
   # 0. Schema owner job: runs to completion before anything else starts.
   migrate:
@@ -84,16 +121,16 @@ services:
     restart: "no"
     environment:
       <<: *app-env
-      # Direct to Postgres as the schema owner, not through the pooler.
+      # Direct to Postgres as the schema owner, not through the pooler. The
+      # owner's identity and the application role's password come from
+      # migrate-vault-agent (../instraclustr/vault-agent/migrate.hcl).
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      VAULT_POSTGRES_SECRET_PATH: postgres/credentials
-      APP_DB_USER: ${APP_DB_USER:-sentinel_app}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
     volumes:
-      - ../instraclustr/vault-init-data/approle/sentinel-migrate:/run/vault-approle:ro
+      - migrate-secrets:/vault/secrets:ro
+    depends_on:
+      migrate-vault-agent:
+        condition: service_healthy
     healthcheck:
       disable: true
 
@@ -113,14 +150,14 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: sentinel_test
-      POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      VAULT_POSTGRES_SECRET_PATH: postgres/credentials
       RUN_MIGRATIONS_ON_CONNECT: "true"
       MAX_CRITIC_PER_PASS: "1"
       MAX_LLM_INVESTIGATIONS_PER_PASS: "1"
     volumes:
-      - ../instraclustr/vault-init-data/approle/sentinel-migrate:/run/vault-approle:ro
+      - proof-secrets:/vault/secrets:ro
+    depends_on:
+      proof-vault-agent:
+        condition: service_healthy
     healthcheck:
       disable: true
 
@@ -134,9 +171,11 @@ services:
     environment: *app-env
     volumes:
       - ./data:/app/data
-      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+      - temporal-worker-secrets:/vault/secrets:ro
     depends_on:
       <<: *after-migrate
+      temporal-worker-vault-agent:
+        condition: service_healthy
       temporal:
         condition: service_started
     healthcheck:
@@ -160,9 +199,11 @@ services:
       API_KEY: ${API_KEY:?API_KEY is required -- /v1/ingest refuses every call without one}
       API_KEYS: ${API_KEYS:-}
     volumes:
-      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+      - api-secrets:/vault/secrets:ro
     depends_on:
       <<: *after-migrate
+      api-vault-agent:
+        condition: service_healthy
       temporal:
         condition: service_started
     healthcheck:
@@ -180,8 +221,11 @@ services:
     environment: *app-env
     volumes:
       - ./data:/app/data
-      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
-    depends_on: *after-migrate
+      - sentinel-secrets:/vault/secrets:ro
+    depends_on:
+      <<: *after-migrate
+      sentinel-vault-agent:
+        condition: service_healthy
 
   # 4. Operator dashboard (Streamlit).
   dashboard:
@@ -197,7 +241,7 @@ services:
       PROMETHEUS_PUBLIC_URL: https://localhost:8447
     volumes:
       - ./data:/app/data
-      - ../instraclustr/vault-init-data/approle/sentinel-app:/run/vault-approle:ro
+      - dashboard-secrets:/vault/secrets:ro
       # Keycloak client settings (secrets.toml) and theme; read-only, never baked in.
       - ./.streamlit:/app/.streamlit:ro
       # The authority's public certificate only (tls/trust/edge-ca.crt). A
@@ -205,6 +249,8 @@ services:
       - ./tls/trust:/run/tls:ro
     depends_on:
       <<: *after-migrate
+      dashboard-vault-agent:
+        condition: service_healthy
       api:
         condition: service_started
       edge-certs:
@@ -403,6 +449,144 @@ services:
       timeout: 5s
       retries: 5
 
+  # 9. Workload identity sidecars (see the header): a spiffe-helper and a
+  # Vault Agent per service. The label is the service's identity
+  # (../instraclustr/spire-entries.yaml); the Agent config is its class's
+  # (app.hcl: the sentinel-app policy; migrate.hcl: sentinel-migrate).
+  migrate-spiffe:
+    <<: *spiffe-helper
+    container_name: nas-migrate-spiffe
+    labels:
+      com.sentinelfaa.identity: migrate
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - migrate-svid:/run/spiffe
+
+  migrate-vault-agent:
+    <<: *vault-agent
+    container_name: nas-migrate-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/migrate.hcl"]
+    depends_on:
+      - migrate-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - migrate-svid:/run/spiffe:ro
+      - migrate-secrets:/vault/secrets
+
+  proof-spiffe:
+    <<: *spiffe-helper
+    profiles: ["proof"]
+    container_name: nas-proof-spiffe
+    labels:
+      com.sentinelfaa.identity: proof
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - proof-svid:/run/spiffe
+
+  proof-vault-agent:
+    <<: *vault-agent
+    profiles: ["proof"]
+    container_name: nas-proof-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/migrate.hcl"]
+    depends_on:
+      - proof-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - proof-svid:/run/spiffe:ro
+      - proof-secrets:/vault/secrets
+
+  temporal-worker-spiffe:
+    <<: *spiffe-helper
+    container_name: nas-temporal-worker-spiffe
+    labels:
+      com.sentinelfaa.identity: temporal-worker
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - temporal-worker-svid:/run/spiffe
+
+  temporal-worker-vault-agent:
+    <<: *vault-agent
+    container_name: nas-temporal-worker-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/app.hcl"]
+    depends_on:
+      - temporal-worker-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - temporal-worker-svid:/run/spiffe:ro
+      - temporal-worker-secrets:/vault/secrets
+
+  api-spiffe:
+    <<: *spiffe-helper
+    container_name: nas-api-spiffe
+    labels:
+      com.sentinelfaa.identity: api
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - api-svid:/run/spiffe
+
+  api-vault-agent:
+    <<: *vault-agent
+    container_name: nas-api-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/app.hcl"]
+    depends_on:
+      - api-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - api-svid:/run/spiffe:ro
+      - api-secrets:/vault/secrets
+
+  sentinel-spiffe:
+    <<: *spiffe-helper
+    container_name: nas-sentinel-spiffe
+    labels:
+      com.sentinelfaa.identity: sentinel
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - sentinel-svid:/run/spiffe
+
+  sentinel-vault-agent:
+    <<: *vault-agent
+    container_name: nas-sentinel-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/app.hcl"]
+    depends_on:
+      - sentinel-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - sentinel-svid:/run/spiffe:ro
+      - sentinel-secrets:/vault/secrets
+
+  dashboard-spiffe:
+    <<: *spiffe-helper
+    container_name: nas-dashboard-spiffe
+    labels:
+      com.sentinelfaa.identity: dashboard
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ../instraclustr/vault-agent:/etc/spiffe-helper:ro
+      - dashboard-svid:/run/spiffe
+
+  dashboard-vault-agent:
+    <<: *vault-agent
+    container_name: nas-dashboard-vault-agent
+    entrypoint: ["vault", "agent", "-config=/vault/agent/app.hcl"]
+    depends_on:
+      - dashboard-spiffe
+    volumes:
+      - ../instraclustr/vault-agent:/vault/agent:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
+      - dashboard-svid:/run/spiffe:ro
+      - dashboard-secrets:/vault/secrets
+
   # The FAA SWIM Jumpstart kit is not containerized; see docs/operations.md.
 
 volumes:
@@ -410,6 +594,23 @@ volumes:
   grafana-data:
   temporal-postgres-data:
   keycloak-postgres-data:
+  # Workload identity (SVID) and rendered secrets, per service: memory only.
+  migrate-svid: *secret-tmpfs
+  migrate-secrets: *secret-tmpfs
+  proof-svid: *secret-tmpfs
+  proof-secrets: *secret-tmpfs
+  temporal-worker-svid: *secret-tmpfs
+  temporal-worker-secrets: *secret-tmpfs
+  api-svid: *secret-tmpfs
+  api-secrets: *secret-tmpfs
+  sentinel-svid: *secret-tmpfs
+  sentinel-secrets: *secret-tmpfs
+  dashboard-svid: *secret-tmpfs
+  dashboard-secrets: *secret-tmpfs
+  # spire-agent's Workload API socket, shared with ../instraclustr (external,
+  # created by launch_nas_sentinel.ps1).
+  nas-spire-agent-socket:
+    external: true
 
 networks:
   default:
