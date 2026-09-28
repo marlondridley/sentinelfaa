@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+import defusedxml.ElementTree as SafeET
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -170,8 +171,13 @@ def _parse_xml_file(path: Path) -> list[dict]:
     Best-effort extraction from FIXM/AIXM-style XML.
     Maps known tag names to NASEvent field names.
     Returns at least one record even if most fields are absent.
+
+    Parsed with defusedxml: these files come from an external broker, so a
+    DTD, entity declaration or external reference is refused outright (the
+    file is quarantined with that reason) rather than left to the stdlib
+    parser's defaults to bound.
     """
-    tree = ET.parse(path)
+    tree = SafeET.parse(path, forbid_dtd=True)
     root = tree.getroot()
 
     # Collect all repeating message elements, or treat the whole doc as one

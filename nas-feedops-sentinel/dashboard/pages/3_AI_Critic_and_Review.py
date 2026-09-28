@@ -427,7 +427,7 @@ else:
         _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True,
         # A selection is only meaningful for the rows it was made on: a decision
         # or a filter that changes them starts a fresh table (and selection).
-        key="q_table_" + hashlib.sha1("|".join(_view["action_id"]).encode()).hexdigest()[:12],
+        key="q_table_" + hashlib.sha256("|".join(_view["action_id"]).encode()).hexdigest()[:12],
         on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
         column_config={
             "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
