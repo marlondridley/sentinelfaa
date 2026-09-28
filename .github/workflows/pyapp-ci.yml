@@ -88,6 +88,16 @@ jobs:
               echo "src/ coverage (floor 84%):" &&
               coverage report --include="src/*" --fail-under=84 --format=total'
 
+      - name: Infrastructure tests (PKI ceremony, identity wiring, SPIRE drift engine)
+        # instraclustr/tests, in the same image (pytest, cryptography, OpenSSL 3):
+        # the offline-root ceremony run for real with a throwaway root, real TLS
+        # handshakes against its name constraints, the SPIRE registration drift
+        # engine, and the wiring SPIRE, Terraform, compose and the Dockerfile
+        # must agree on. Read-only checkout: the tests write only to tmp.
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo/instraclustr nas-feedops-sentinel:test \
+            python -m pytest -p no:cacheprovider -q -o addopts= tests
+
   audit:
     name: Dependency CVE audit
     runs-on: ubuntu-latest

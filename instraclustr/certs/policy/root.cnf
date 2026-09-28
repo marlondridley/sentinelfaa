@@ -1,0 +1,22 @@
+# sentinelfaa workload-identity root CA: the policy for its one self-signed
+# certificate. Used OFFLINE, once, by `pki.sh root-init` -- see
+# instraclustr/certs/README.md for the ceremony and who holds what.
+#
+# path length 2: root -> SPIRE upstream CA -> SPIRE's own rotating CA -> SVID.
+# The root signs exactly two things (signing.cnf), once a year.
+
+[ req ]
+prompt             = no
+distinguished_name = root_dn
+x509_extensions    = root_ext
+default_md         = sha384
+string_mask        = utf8only
+
+[ root_dn ]
+O  = sentinelfaa
+CN = sentinelfaa Root CA
+
+[ root_ext ]
+basicConstraints     = critical, CA:true, pathlen:2
+keyUsage             = critical, keyCertSign, cRLSign, digitalSignature
+subjectKeyIdentifier = hash
