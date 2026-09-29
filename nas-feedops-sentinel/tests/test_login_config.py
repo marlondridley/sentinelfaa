@@ -143,8 +143,8 @@ def test_no_realm_is_shown_rather_than_a_wrong_or_insecure_one(get):
     assert login._issuer(GOOD["keycloak"]["server_metadata_url"], True, get) == ""
 
 
-def _render(monkeypatch, realm: str) -> str:
-    """render_login with a stand-in Streamlit; returns every piece of HTML it drew."""
+def _render(monkeypatch, realm: str, signed_in_claims: dict | None = None) -> str:
+    """render_login with a stand-in Streamlit; returns every piece of HTML it drew, and [button: label]s."""
     class Auth(dict):
         def to_dict(self):
             return dict(self)
@@ -163,12 +163,18 @@ def _render(monkeypatch, realm: str) -> str:
         raise Stopped
 
     drawn: list[str] = []
+
+    def button(label, *args, **kwargs):
+        drawn.append(f"[button: {label}]")
+        return False
+
     monkeypatch.setattr(login, "st", SimpleNamespace(
         secrets=SimpleNamespace(get=lambda key: Auth(GOOD)),
+        user=SimpleNamespace(is_logged_in=signed_in_claims is not None, to_dict=lambda: dict(signed_in_claims or {})),
         markdown=lambda html, **kwargs: drawn.append(html),
         columns=lambda spec: (Block(), Block(), Block()),
         container=lambda **kwargs: Block(),
-        button=lambda *args, **kwargs: False,
+        button=button,
         stop=stop,
     ))
     monkeypatch.setattr(login, "_realm_address", lambda url, verify: realm)
@@ -186,6 +192,37 @@ def test_the_sign_in_page_names_the_public_realm_never_the_internal_address(monk
 def test_the_sign_in_page_leaves_the_realm_out_when_it_is_unknown(monkeypatch):
     page = _render(monkeypatch, "")
     assert "Realm:" not in page and "keycloak:8443" not in page
+
+
+def test_the_sign_in_page_shows_the_use_notice_before_anyone_signs_in(monkeypatch):
+    page = _render(monkeypatch, "")
+    assert login.USE_NOTICE in page and "[button: Sign in with Keycloak]" in page
+    assert "invited users only" in login.USE_NOTICE.lower() and "recorded" in login.USE_NOTICE
+    assert "government" not in login.USE_NOTICE.lower(), "a company demo must not claim to be a government system"
+
+
+EXPIRED = {"preferred_username": "guest1", "auth_time": 4_000_000_000, "sentinel_expires_on": "2020-01-31",
+           "realm_access": {"roles": ["watch_officer"]}}
+
+
+def test_a_login_past_its_last_day_is_told_so_and_offered_only_sign_out(monkeypatch):
+    page = _render(monkeypatch, "", signed_in_claims=EXPIRED)
+    assert "Your access ended after 2020-01-31 (UTC)" in page
+    assert "[button: Sign out]" in page and "[button: Sign in with Keycloak]" not in page
+
+
+def test_a_login_past_its_last_day_is_nobody(monkeypatch):
+    """Its cookie is valid and carries a decision role; it still decides nothing."""
+    class Auth(dict):
+        def to_dict(self):
+            return dict(self)
+
+    monkeypatch.setattr(login, "st", SimpleNamespace(
+        secrets=SimpleNamespace(get=lambda key: Auth(GOOD)),
+        user=SimpleNamespace(is_logged_in=True, to_dict=lambda: dict(EXPIRED)),
+        session_state={},
+    ))
+    assert login.current_principal() is None
 
 
 def test_a_properly_configured_sign_in_is_still_honoured(monkeypatch):

@@ -18,6 +18,10 @@
 # makes the user choose their own at first sign-in. Give it to them
 # privately (not in the same email as the link).
 #
+# -Days (default 30, at most 365): the login's last day is today + Days (UTC).
+# After it the dashboard refuses them, and the next launch turns the login off
+# (scripts/Disable-ExpiredLogins.ps1). Running this again renews it.
+#
 # -Disable turns the login off and ends its sessions at once. (If you also
 # run Cloudflare Access in front of the site -- optional, see the runbook --
 # add or remove the guest's email there too.)
@@ -30,12 +34,14 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[a-zA-Z0-9._-]{3,64}$')][string]$Username,
     [string]$Email,
     [ValidateSet('none', 'auditor', 'watch_officer', 'supervisor')][string]$Role = 'none',
+    [ValidateRange(1, 365)][int]$Days = 30,
     [switch]$Disable
 )
 
 $appDir   = Split-Path -Parent $PSScriptRoot
 $envFiles = @((Join-Path $appDir '.env'), (Join-Path (Join-Path (Split-Path -Parent $appDir) 'instraclustr') '.env'))
 $operator = Join-Path $PSScriptRoot 'keycloak-operator.sh'
+$rbac     = Join-Path $PSScriptRoot 'keycloak-rbac.sh'
 
 function Fail([string]$message) { Write-Host "ERROR: $message" -ForegroundColor Red; exit 2 }
 
@@ -67,30 +73,43 @@ if ((docker inspect -f '{{.State.Running}}' nas-keycloak 2>$null) -ne 'true') { 
 if (-not $Disable -and $Email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { Fail "-Email must be the guest's email address" }
 
 docker cp $operator nas-keycloak:/tmp/keycloak-operator.sh | Out-Null
+docker cp $rbac nas-keycloak:/tmp/keycloak-rbac.sh | Out-Null
 $temporary = $null
+$expiresOn = [DateTime]::UtcNow.Date.AddDays($Days).ToString('yyyy-MM-dd')
 try {
     $env:KC_ADMIN_PW = $adminPw
     $env:APP_USERNAME = $Username
+    $code = 0
     if ($Disable) {
         $env:APP_DISABLE = '1'
         docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_DISABLE nas-keycloak bash /tmp/keycloak-operator.sh
     } else {
-        $temporary = New-TemporaryPassword
-        $env:APP_USER_PW = $temporary
-        $env:APP_EMAIL = $Email
-        $env:APP_ROLES = $Role
-        $env:APP_ROLES_EXACT = '1'
-        $env:APP_TEMPORARY_PASSWORD = '1'
-        $env:APP_LAST_NAME = if ($Role -eq 'none') { 'Guest' } else { 'Operator' }
-        docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL -e APP_ROLES -e APP_ROLES_EXACT `
-            -e APP_TEMPORARY_PASSWORD -e APP_LAST_NAME nas-keycloak bash /tmp/keycloak-operator.sh
+        # The realm first: the expiry attribute and its ID-token mapper, the
+        # sign-in audit. PUBLIC_DASHBOARD_URL too, or the run would drop the
+        # public sign-in callback (see keycloak-rbac.sh).
+        $env:PUBLIC_DASHBOARD_URL = Get-EnvValue 'PUBLIC_DASHBOARD_URL'
+        docker exec -e KC_ADMIN_PW -e PUBLIC_DASHBOARD_URL nas-keycloak bash /tmp/keycloak-rbac.sh | Out-Null
+        $code = $LASTEXITCODE
+        if ($code -eq 0) {
+            $temporary = New-TemporaryPassword
+            $env:APP_USER_PW = $temporary
+            $env:APP_EMAIL = $Email
+            $env:APP_ROLES = $Role
+            $env:APP_ROLES_EXACT = '1'
+            $env:APP_TEMPORARY_PASSWORD = '1'
+            $env:APP_LAST_NAME = if ($Role -eq 'none') { 'Guest' } else { 'Operator' }
+            $env:APP_EXPIRES_ON = $expiresOn
+            docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL -e APP_ROLES -e APP_ROLES_EXACT `
+                -e APP_TEMPORARY_PASSWORD -e APP_LAST_NAME -e APP_EXPIRES_ON nas-keycloak bash /tmp/keycloak-operator.sh
+        }
     }
-    $code = $LASTEXITCODE
+    if ($code -eq 0) { $code = $LASTEXITCODE }
 } finally {
     Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL, Env:APP_ROLES, Env:APP_ROLES_EXACT,
-        Env:APP_TEMPORARY_PASSWORD, Env:APP_LAST_NAME, Env:APP_DISABLE -ErrorAction SilentlyContinue
-    # docker cp leaves the file owned by root, so root removes it.
-    docker exec -u 0 nas-keycloak rm -f /tmp/keycloak-operator.sh | Out-Null
+        Env:APP_TEMPORARY_PASSWORD, Env:APP_LAST_NAME, Env:APP_DISABLE, Env:APP_EXPIRES_ON,
+        Env:PUBLIC_DASHBOARD_URL -ErrorAction SilentlyContinue
+    # docker cp leaves the files owned by root, so root removes them.
+    docker exec -u 0 nas-keycloak rm -f /tmp/keycloak-operator.sh /tmp/keycloak-rbac.sh | Out-Null
 }
 if ($code -ne 0) { Fail "Keycloak did not accept the change (exit $code); see above" }
 
@@ -103,6 +122,7 @@ Write-Host ""
 $can = @{ none = 'read-only'; auditor = 'auditor, read-only'; watch_officer = 'watch officer: approve, reject, monitor'
           supervisor = 'supervisor: approve, reject, monitor, override' }[$Role]
 Write-Host "'$Username' ($Email) is ready: $can." -ForegroundColor Green
+Write-Host "  Access ends after $expiresOn (UTC), in $Days day$(if ($Days -ne 1) { 's' }). Run this again to renew." -ForegroundColor Cyan
 Write-Host "  Temporary password (shown once): $temporary" -ForegroundColor Yellow
 Write-Host "  Give it to them privately. They choose their own at first sign-in." -ForegroundColor Yellow
 Write-Host "  They sign in at the public dashboard address (docs/public-access.md)." -ForegroundColor Cyan
