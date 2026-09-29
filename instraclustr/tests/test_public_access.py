@@ -115,6 +115,16 @@ def test_the_public_sign_in_listener_serves_only_the_realm_sign_in_pages():
     assert re.search(r"proxy_ssl_trusted_certificate\s+/etc/nginx/trust/edge-ca\.crt;", block)
 
 
+def test_the_public_listeners_ask_not_to_be_indexed_and_allow_no_devices():
+    blocks = _server_blocks()
+    for port in ("8450", "8451"):
+        assert re.search(r'add_header\s+X-Robots-Tag\s+"noindex, nofollow"\s+always;', blocks[port]), port
+        assert re.search(r'add_header\s+Permissions-Policy\s+"camera=\(\), microphone=\(\), geolocation=\(\)', blocks[port]), port
+    # Keycloak sends its own HSTS and X-Robots-Tag: one of each reaches the browser, ours.
+    for header in ("Strict-Transport-Security", "X-Robots-Tag"):
+        assert re.search(rf"proxy_hide_header\s+{header};", blocks["8451"]), header
+
+
 def test_no_tunnel_listener_reaches_any_other_service():
     blocks = _server_blocks()
     for port in ("8450", "8451"):
@@ -194,7 +204,7 @@ def test_every_realm_update_keeps_the_public_callback():
     # keycloak-rbac.sh rewrites the dashboard client's callbacks on every run;
     # a caller that leaves out PUBLIC_DASHBOARD_URL drops the public one, and
     # sign-in through the public address fails.
-    for name in ("Setup-Keycloak.ps1", "Enable-PublicAccess.ps1"):
+    for name in ("Setup-Keycloak.ps1", "Enable-PublicAccess.ps1", "Add-Guest.ps1"):
         runs = [line for line in (APP / "scripts" / name).read_text(encoding="utf-8").splitlines()
                 if "docker exec" in line and "bash /tmp/keycloak-rbac.sh" in line]
         assert runs, f"{name}: does not run keycloak-rbac.sh"
@@ -202,8 +212,28 @@ def test_every_realm_update_keeps_the_public_callback():
             assert "-e PUBLIC_DASHBOARD_URL" in line, f"{name}: {line.strip()}"
 
 
+def test_logins_expire_unless_renewed():
+    guest = (APP / "scripts" / "Add-Guest.ps1").read_text(encoding="utf-8")
+    assert "[ValidateRange(1, 365)][int]$Days = 30" in guest, "every login from this script has a last day"
+    assert "$env:APP_EXPIRES_ON = $expiresOn" in guest and "-e APP_EXPIRES_ON" in guest
+    launcher = (INFRA.parent / "launch_nas_sentinel.ps1").read_text(encoding="utf-8")
+    assert "'scripts\\Disable-ExpiredLogins.ps1')" in launcher, "every launch turns expired logins off"
+    sweep = (APP / "scripts" / "Disable-ExpiredLogins.ps1").read_text(encoding="utf-8")
+    assert "if (-not $user.enabled -or -not $ends) { continue }" in sweep, "logins without an end date are never touched"
+    assert "if ($ends -match '^\\d{4}-\\d{2}-\\d{2}$' -and $ends -ge $today) { continue }" in sweep, \
+        "still in date: kept; not a date: turned off"
+    assert "$env:APP_DISABLE = '1'" in sweep, "the same path as -Disable: off, and sessions ended"
+
+
+def test_the_keycloak_query_helper_only_reads():
+    helper = (APP / "scripts" / "keycloak-get.sh").read_text(encoding="utf-8")
+    assert "events|admin-events|users|users/profile) ;;" in helper, "a fixed list of read-only queries"
+    calls = re.findall(r"^\s*kc (\w+)", helper, flags=re.M)
+    assert calls == ["config", "config", "get"], "configures kcadm, then one get; never create, update or delete"
+
+
 def test_guest_and_public_scripts_pass_secrets_by_name_only():
-    for name in ("Add-Guest.ps1", "Enable-PublicAccess.ps1"):
+    for name in ("Add-Guest.ps1", "Enable-PublicAccess.ps1", "Get-SignIns.ps1", "Disable-ExpiredLogins.ps1"):
         text = (APP / "scripts" / name).read_text(encoding="utf-8")
         for line in text.splitlines():
             if "docker exec" in line and "-e" in line:

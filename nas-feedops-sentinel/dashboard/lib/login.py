@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from datetime import date
 from typing import Any, NoReturn
 
 import httpx
@@ -27,6 +28,8 @@ from src.auth import Principal
 from src.keycloak_auth import (
     PROVIDER,
     InsecureIdentityEndpoint,
+    access_ended,
+    access_ends_on,
     principal_from_claims,
     require_https,
     session_expired,
@@ -37,6 +40,12 @@ from src.logging_config import get_logger
 from lib import theme
 
 _log = get_logger(__name__)
+
+# Shown before anyone signs in (a system-use notice, NIST 800-53 AC-8). Only
+# what is true: access is by invitation, Keycloak records every sign-in, and
+# every decision is signed in the audit trail. It does not claim to be a
+# government system.
+USE_NOTICE = "For invited users only. Sign-ins and decisions are recorded."
 
 ROLES = [
     "Watch Officer",
@@ -143,6 +152,9 @@ def current_principal() -> Principal | None:
         _log.info("oidc_session_expired", extra={"username": claims.get("preferred_username")})
         st.logout()                      # ends the realm's session too, then returns here signed out
         return None
+    if access_ended(claims):             # past the login's last day: render_login says so
+        _log.info("oidc_access_ended", extra={"username": claims.get("preferred_username")})
+        return None
     return principal_from_claims(claims, st.session_state.get("operator_role", ROLES[0]))
 
 
@@ -184,6 +196,13 @@ def render_login() -> NoReturn:
     auth, unreadable = _load_auth()
     problem = unreadable or (_config_problem(auth) if auth else "Sign-in is not configured.")
     auth = auth or {}
+    # Signed in, but past the login's last day (Add-Guest.ps1 -Days): say so,
+    # rather than offer a sign-in that would only land here again.
+    ended = None
+    if not problem and st.user.is_logged_in:
+        claims = st.user.to_dict()
+        if access_ended(claims):
+            ended = access_ends_on(claims)
     _login_styles()
     _, mid, _ = st.columns([1, 1.15, 1])
     with mid:
@@ -197,6 +216,15 @@ def render_login() -> NoReturn:
             st.markdown('<div class="lg-card-title">Sign in to your account</div>', unsafe_allow_html=True)
             if problem:
                 st.markdown(f'<div class="lg-alert">{theme._esc(problem)}</div>', unsafe_allow_html=True)
+            elif ended is not None:
+                when = f" after {ended.isoformat()} (UTC)" if ended != date.min else ""
+                st.markdown(
+                    f'<div class="lg-alert">Your access ended{theme._esc(when)}. '
+                    "Ask the person who invited you to renew it.</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("Sign out", use_container_width=True, key="auth_ended_sign_out"):
+                    st.logout()
             elif st.button("Sign in with Keycloak", type="primary", use_container_width=True):
                 st.login(PROVIDER)
         provider = auth.get(PROVIDER, {})
@@ -205,7 +233,8 @@ def render_login() -> NoReturn:
             verify = (provider.get("client_kwargs") or {}).get("verify", True)
             realm = _realm_address(str(provider.get("server_metadata_url", "")), verify)
         st.markdown(
-            '<div class="lg-foot">You sign in on the realm\'s own page; this console never sees your password.'
+            f'<div class="lg-foot">{USE_NOTICE}'
+            "<br/>You sign in on the realm's own page; this console never sees your password."
             + (f"<br/>Realm: <code>{theme._esc(realm)}</code>" if realm else "") + "</div>",
             unsafe_allow_html=True,
         )

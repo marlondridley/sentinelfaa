@@ -126,9 +126,21 @@ The mode is kept in the files (Keycloak's address as `KEYCLOAK_BROWSER_URL` in `
 | `supervisor` | those, and override the AI's recommendation or severity |
 
 - **What a login gets:** exactly that role, and a temporary password shown once. Give it to them privately, not in the same message as the link. Keycloak makes them choose their own at first sign-in (12+ characters). Running it again with another role replaces the role.
+- **Every login expires.** `-Days` (default 30, at most 365) sets its last day, in UTC. After that day, the dashboard shows "your access ended" instead of the console, on every page. The next launch also turns the login off at Keycloak (`scripts/Disable-ExpiredLogins.ps1`). Running `Add-Guest.ps1` again renews it.
 - **Decisions are real.** Each one is signed with the person's name in the audit trail and acts on live data. Give each person their own login, never a shared one.
 - **Turning a login off:** `-Disable` does it and ends their sessions immediately.
-- **Your own operator login** (you choose the password) is still `scripts/Setup-Keycloak.ps1`. It keeps the public return address.
+- **Your own operator login** (you choose the password) is still `scripts/Setup-Keycloak.ps1`. It keeps the public return address and doesn't expire.
+
+## 7. Who has looked
+
+```powershell
+.\nas-feedops-sentinel\scripts\Get-SignIns.ps1                         # the last 7 days
+.\nas-feedops-sentinel\scripts\Get-SignIns.ps1 -Days 30 -Username jdoe
+```
+
+The report lists sign-ins, failed attempts (wrong password, locked out, turned off, an unregistered return address) and sign-outs, with the visitor's address as Cloudflare saw it, then a summary. Keycloak keeps these events, and every administrator change (a login created, a role changed, a login turned off), for 90 days. The admin changes are in the admin console, under Events → Admin events.
+
+Before anyone signs in, the sign-in page says the site is for invited users only and that sign-ins and decisions are recorded. Both public hostnames tell search engines not to index them (`X-Robots-Tag: noindex, nofollow`), and allow no camera, microphone, location, payment or USB access (`Permissions-Policy`).
 
 ## Adding Cloudflare Access later (optional)
 

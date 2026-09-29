@@ -236,6 +236,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# 4c. Logins past their last day (Add-Guest.ps1 -Days) are turned off. Not a
+# reason to halt: the dashboard refuses them on every page by itself.
+& (Join-Path $appDir 'scripts\Disable-ExpiredLogins.ps1')
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  [!] Expired logins could not be checked (see above); the dashboard still refuses them." -ForegroundColor Yellow
+}
+
 # 5. Optional: live FAA SWIM feed (native, not containerized)
 $feedStarted = $false
 if ($WithLiveFeed) {
