@@ -15,6 +15,14 @@ Accepted query parameters, all optional and all case-insensitive:
     ?airport=KIAD             one or more, comma-separated
     ?service=TAIS             one or more, comma-separated
     ?type=ALERT_LOW_RVR       one or more, comma-separated
+    ?focus=records            the drill-down: the matching alerts open right
+                              under the Triage tiles, not at the bottom
+    ?focus=newest             the same, led by the newest matching alert
+
+Every tile on this page is itself a drill-down. The Triage tiles narrow to
+their severity, a facility tile to its airport, and both keep the rest of
+the current filter and open the records under the tiles: a click shows the
+alerts behind the number, where the eye already is.
 """
 from __future__ import annotations
 
@@ -119,6 +127,35 @@ if sel_airport:
 if sel_service:
     view = view[view["service_name"].isin(sel_service)]
 
+_focus = str(st.query_params.get("focus") or "").lower()
+_focus = _focus if _focus in ("records", "newest") else ""
+
+
+def _link(**changes: str | None) -> str:
+    """
+    This page with the current filter, some of it changed. Severity is left
+    out when every severity is selected (the default), so links stay short.
+    """
+    params: dict[str, str | None] = {
+        "severity": ",".join(sel_sev) if sel_sev and set(sel_sev) != set(_severities) else None,
+        "type": ",".join(sel_type) or None,
+        "airport": ",".join(sel_airport) or None,
+        "service": ",".join(sel_service) or None,
+    }
+    params.update(changes)
+    return theme.drill_href("alerts", **params)
+
+
+def _describe(frame: pd.DataFrame) -> str:
+    """'110 warning alerts at KBWI', in words, for the drill-down's heading."""
+    sevs = sorted(set(frame["severity"].dropna()))
+    what = (sevs[0].lower() + " " if len(sevs) == 1 else "") + ("alert" if len(frame) == 1 else "alerts")
+    where = sorted(set(frame["airport_code"].dropna()))
+    rules = sorted(set(frame["alert_type"].dropna()))
+    return (f"{len(frame):,} {what}"
+            + (f" at {', '.join(where)}" if 0 < len(where) <= 3 else "")
+            + (f" · {rules[0]}" if len(rules) == 1 else ""))
+
 # ── Shape of the filtered set ─────────────────────────────────────────────────
 n_crit = int((view["severity"] == "CRITICAL").sum())
 n_warn = int((view["severity"] == "WARNING").sum())
@@ -142,18 +179,24 @@ else:
 
 theme.section("Triage", "Everything below reflects the filter above.", tone="bad" if n_crit else "info")
 
+_SHOW = "SHOW ↓"   # the tiles' drill badge: the alerts open right below
 theme.kpi_row(
     [
         theme.kpi("Matching alerts", f"{len(view):,}", tone="info",
-                  foot=f"of {len(df):,} in the store"),
+                  foot=f"of {len(df):,} in the store",
+                  href=_link(focus="records") if len(view) else None, drill=_SHOW),
         theme.kpi("Critical", f"{n_crit:,}", tone="bad" if n_crit else "ok",
-                  foot="Supervisor action required" if n_crit else "None in this view"),
+                  foot="Supervisor action required" if n_crit else "None in this view",
+                  href=_link(severity="CRITICAL", focus="records") if n_crit else None, drill=_SHOW),
         theme.kpi("Warning", f"{n_warn:,}", tone="warn" if n_warn else "ok",
-                  foot="Monitor and corroborate"),
-        theme.kpi("Informational", f"{n_info:,}", tone="neutral", foot="Context only"),
+                  foot="Monitor and corroborate",
+                  href=_link(severity="WARNING", focus="records") if n_warn else None, drill=_SHOW),
+        theme.kpi("Informational", f"{n_info:,}", tone="neutral", foot="Context only",
+                  href=_link(severity="INFO", focus="records") if n_info else None, drill=_SHOW),
         theme.kpi("Newest alert", age_display, unit=age_unit, tone=age_tone,
                   foot="Age of the most recent matching alert",
-                  spark=bucket_counts(view.to_dict("records"), "triggered_at", buckets=12)),
+                  spark=bucket_counts(view.to_dict("records"), "triggered_at", buckets=12),
+                  href=_link(focus="newest") if len(view) else None, drill="OPEN ↓"),
     ],
     columns=5,
 )
@@ -162,6 +205,104 @@ if view.empty:
     st.info("No alerts match this filter. Widen the selection above.")
     theme.back_link()
     st.stop()
+
+
+def _record_card(record: pd.Series) -> None:
+    """One alert in full: what fired, where, when, and where to look next."""
+    _sev = str(record.get("severity") or "UNKNOWN")
+    with st.container(border=True):
+        st.markdown(
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+            + theme.status_chip(_sev)
+            + '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+            + theme._esc(record.get("alert_type")) + "</span>"
+            + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
+            + theme.GRAY1 + ';">'
+            + theme._esc(
+                record["triggered_at"].strftime("%Y-%m-%d %H:%M:%S UTC")
+                if pd.notna(record.get("triggered_at")) else "no timestamp"
+            )
+            + "</span></div>"
+            '<div style="font-size:13.5px;color:' + theme.GRAY5
+            + ';margin-top:10px;line-height:1.55;">'
+            + theme._esc(record.get("description")) + "</div>",
+            unsafe_allow_html=True,
+        )
+        d1, d2, d3 = st.columns(3)
+        d1.markdown(
+            f'<div class="ev-title">Airport</div><div class="mono" style="color:{theme.GRAY5};">'
+            f'{theme._esc(record.get("airport_code") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        d2.markdown(
+            f'<div class="ev-title">Service</div><div class="mono" style="color:{theme.GRAY5};">'
+            f'{theme._esc(record.get("service_name") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        d3.markdown(
+            f'<div class="ev-title">Source event</div><div class="mono" '
+            f'style="color:{theme.GRAY5};font-size:11px;">'
+            f'{theme._esc(record.get("event_id") or "—")}</div>',
+            unsafe_allow_html=True,
+        )
+        if record.get("airport_code"):
+            st.markdown(
+                f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
+                f'target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
+                f'text-decoration:none;font-weight:600;">'
+                f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>',
+                unsafe_allow_html=True,
+            )
+
+
+_COLS = ["Triggered (UTC)", "Severity", "Alert type", "Airport", "Service", "Description"]
+_table = view.copy()
+_table["Triggered (UTC)"] = _table["triggered_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
+_table = _table.rename(columns={"severity": "Severity", "alert_type": "Alert type", "airport_code": "Airport",
+                                "service_name": "Service", "description": "Description"})
+
+
+def _records(title: str, question: str) -> None:
+    """The alert records: select a row to read it in full."""
+    theme.section(title, question, right=f"{len(view):,} shown · newest first")
+    selection = st.dataframe(
+        _table[_COLS],
+        hide_index=True,
+        use_container_width=True,
+        height=380,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "Description": st.column_config.TextColumn(width="large"),
+            "Severity": st.column_config.TextColumn(width="small"),
+        },
+    )
+    rows = selection.get("selection", {}).get("rows", []) if isinstance(selection, dict) else []
+    if rows:
+        # .iloc, not .loc: the row index the selection reports is positional
+        # within the *filtered, re-sorted* view, and the DataFrame still carries
+        # its original labels from the full alert set.
+        _record_card(view.iloc[rows[0]])
+    st.download_button(
+        "Download this view as CSV",
+        data=_table[_COLS].to_csv(index=False).encode("utf-8"),
+        file_name="pct_alert_log.csv",
+        mime="text/csv",
+        help="Exports exactly the filtered rows shown above, for an incident record.",
+    )
+
+
+# ── The drill-down: what was clicked, right under the tiles ───────────────────
+if _focus:
+    if _focus == "newest":
+        theme.section("Newest alert", _describe(view.head(1)), tone="info")
+        _record_card(view.iloc[0])
+    _records("Drill-down: " + _describe(view), "Select a row to read the full description.")
+    st.markdown(
+        f'<a href="{_link()}" target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
+        f'text-decoration:none;font-weight:600;">Close the drill-down &times;</a>',
+        unsafe_allow_html=True,
+    )
 
 # ── Time and type structure ───────────────────────────────────────────────────
 theme.section("Where the alerts cluster", "In time, and by rule.", tone="info")
@@ -213,28 +354,41 @@ with c_right:
     st.markdown(
         f'<div class="ev-title">Which rules are firing</div>'
         f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:4px;">'
-        "Concentration in one rule points at a single root cause."
+        "Alerts per rule in this view. One rule far ahead of the rest points at a single root cause."
         "</div>",
         unsafe_allow_html=True,
     )
+    # Counted here, then plotted as sum(count): each row of type_df is already
+    # a count, so the chart must add them up, not count the rows (which drew
+    # every rule at exactly 1).
     type_df = (
         view.groupby(["alert_type", "severity"], dropna=False)
         .size().reset_index(name="count")
     )
+    totals = view.groupby("alert_type").size().reset_index(name="total")
+    totals["share"] = totals["total"] / max(len(view), 1)
+    order = totals.sort_values("total", ascending=False)["alert_type"].tolist()
+    _y = alt.Y("alert_type:N", sort=order, title=None,
+               axis=alt.Axis(labelColor=theme.GRAY3, labelLimit=220,
+                             domainColor=theme.DARK_GRAY4, tickColor=theme.DARK_GRAY4))
+    bars = alt.Chart(type_df).mark_bar().encode(
+        y=_y,
+        x=alt.X("sum(count):Q", title="alerts",
+                scale=alt.Scale(domain=[0, int(totals["total"].max() * 1.18) + 1]),
+                axis=alt.Axis(grid=True, gridColor=theme.DARK_GRAY2, format="d", tickMinStep=1,
+                              labelColor=theme.GRAY1, titleColor=theme.GRAY1, domainColor=theme.DARK_GRAY4)),
+        color=alt.Color("severity:N", scale=_SEV_SCALE, legend=None),
+        tooltip=["alert_type:N", "severity:N", alt.Tooltip("sum(count):Q", title="alerts")],
+    )
+    counts = alt.Chart(totals).mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
+                                         color=theme.LIGHT_GRAY5).encode(
+        y=_y, x=alt.X("total:Q"), text=alt.Text("total:Q", format=","),
+        tooltip=["alert_type:N", alt.Tooltip("total:Q", title="alerts", format=","),
+                 alt.Tooltip("share:Q", title="share of this view", format=".0%")],
+    )
     type_chart = (
-        alt.Chart(type_df)
-        .mark_bar()
-        .encode(
-            y=alt.Y("alert_type:N", sort="-x", title=None,
-                    axis=alt.Axis(labelColor=theme.GRAY3, labelLimit=220,
-                                  domainColor=theme.DARK_GRAY4, tickColor=theme.DARK_GRAY4)),
-            x=alt.X("count():Q", title=None,
-                    axis=alt.Axis(grid=True, gridColor=theme.DARK_GRAY2,
-                                  labelColor=theme.GRAY1, domainColor=theme.DARK_GRAY4)),
-            color=alt.Color("severity:N", scale=_SEV_SCALE, legend=None),
-            tooltip=["alert_type:N", "severity:N", alt.Tooltip("count:Q", title="alerts")],
-        )
-        .properties(height=230)
+        alt.layer(bars, counts)
+        .properties(height=max(120, 46 * len(order)))
         .configure_view(strokeWidth=0)
         .configure(background="transparent")
     )
@@ -243,7 +397,8 @@ with c_right:
 # ── Per-airport spread ────────────────────────────────────────────────────────
 _ap = view.dropna(subset=["airport_code"])
 if not _ap.empty:
-    theme.section("Spread across facilities", "Isolated, or sector-wide?", tone="info")
+    theme.section("Spread across facilities", "Isolated, or sector-wide? Select a facility to see its alerts.",
+                  tone="info")
     _tiles = []
     for _code, _grp in sorted(_ap.groupby("airport_code")):
         _c = int((_grp["severity"] == "CRITICAL").sum())
@@ -254,103 +409,16 @@ if not _ap.empty:
                 f"{len(_grp):,}",
                 tone="bad" if _c else ("warn" if _w else "info"),
                 foot=f"{_c} critical · {_w} warning",
-                href=theme.drill_href("alerts", airport=str(_code)),
-                drill="ISOLATE →",
+                # This facility's alerts, keeping severity, rule and service:
+                # the drill-down opens under the Triage tiles.
+                href=_link(airport=str(_code), focus="records"),
+                drill=_SHOW,
             )
         )
     theme.kpi_row(_tiles, columns=min(len(_tiles), 4))
 
-# ── The log itself ────────────────────────────────────────────────────────────
-theme.section(
-    "Alert records",
-    "Select a row to read the full description.",
-    right=f"{len(view):,} shown · newest first",
-)
-
-table = view.copy()
-table["Triggered (UTC)"] = table["triggered_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
-table = table.rename(
-    columns={
-        "severity": "Severity",
-        "alert_type": "Alert type",
-        "airport_code": "Airport",
-        "service_name": "Service",
-        "description": "Description",
-    }
-)
-cols = ["Triggered (UTC)", "Severity", "Alert type", "Airport", "Service", "Description"]
-
-selection = st.dataframe(
-    table[cols],
-    hide_index=True,
-    use_container_width=True,
-    height=380,
-    on_select="rerun",
-    selection_mode="single-row",
-    column_config={
-        "Description": st.column_config.TextColumn(width="large"),
-        "Severity": st.column_config.TextColumn(width="small"),
-    },
-)
-
-_rows = selection.get("selection", {}).get("rows", []) if isinstance(selection, dict) else []
-if _rows:
-    # .iloc, not .loc: the row index the selection reports is positional
-    # within the *filtered, re-sorted* view, and the DataFrame still carries
-    # its original labels from the full alert set.
-    record = view.iloc[_rows[0]]
-    _sev = str(record.get("severity") or "UNKNOWN")
-    _tone = theme.STATUS_TONE.get(_sev.upper(), "neutral")
-    with st.container(border=True):
-        st.markdown(
-            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
-            + theme.status_chip(_sev)
-            + '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
-            + theme._esc(record.get("alert_type")) + "</span>"
-            + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
-            + theme.GRAY1 + ';">'
-            + theme._esc(
-                record["triggered_at"].strftime("%Y-%m-%d %H:%M:%S UTC")
-                if pd.notna(record.get("triggered_at")) else "no timestamp"
-            )
-            + "</span></div>"
-            '<div style="font-size:13.5px;color:' + theme.GRAY5
-            + ';margin-top:10px;line-height:1.55;">'
-            + theme._esc(record.get("description")) + "</div>",
-            unsafe_allow_html=True,
-        )
-        d1, d2, d3 = st.columns(3)
-        d1.markdown(
-            f'<div class="ev-title">Airport</div><div class="mono" style="color:{theme.GRAY5};">'
-            f'{theme._esc(record.get("airport_code") or "—")}</div>',
-            unsafe_allow_html=True,
-        )
-        d2.markdown(
-            f'<div class="ev-title">Service</div><div class="mono" style="color:{theme.GRAY5};">'
-            f'{theme._esc(record.get("service_name") or "—")}</div>',
-            unsafe_allow_html=True,
-        )
-        d3.markdown(
-            f'<div class="ev-title">Source event</div><div class="mono" '
-            f'style="color:{theme.GRAY5};font-size:11px;">'
-            f'{theme._esc(record.get("event_id") or "—")}</div>',
-            unsafe_allow_html=True,
-        )
-        if record.get("airport_code"):
-            st.markdown(
-                f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
-                f'target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
-                f'text-decoration:none;font-weight:600;">'
-                f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>',
-                unsafe_allow_html=True,
-            )
-
-st.download_button(
-    "Download this view as CSV",
-    data=table[cols].to_csv(index=False).encode("utf-8"),
-    file_name="pct_alert_log.csv",
-    mime="text/csv",
-    help="Exports exactly the filtered rows shown above, for an incident record.",
-)
+# ── The log itself (already open at the top when drilled into) ────────────────
+if not _focus:
+    _records("Alert records", "Select a row to read the full description.")
 
 theme.back_link()
