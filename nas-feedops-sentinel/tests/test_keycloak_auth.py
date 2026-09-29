@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,57 @@ def test_a_sign_in_whose_start_is_unknown_has_expired(start):
 def test_the_session_bound_is_the_realms_maximum_sso_session():
     """Streamlit's identity cookie lasts 30 days; a sign-in here lasts what the realm allows."""
     assert ka.SESSION_MAX_SECONDS == REALM["ssoSessionMaxLifespan"]
+
+
+# ── When a login's access ends (Add-Guest.ps1 -Days) ──────────────────────────
+
+LAST_DAY = date(2026, 10, 13)
+
+
+def test_a_login_without_an_end_date_never_ends():
+    assert ka.access_ends_on(_claims()) is None
+    assert not ka.access_ended(_claims(), today=date(2099, 1, 1))
+
+
+def test_access_lasts_through_its_last_day_utc_and_ends_the_day_after():
+    claims = _claims(sentinel_expires_on=LAST_DAY.isoformat())
+    assert ka.access_ends_on(claims) == LAST_DAY
+    assert not ka.access_ended(claims, today=LAST_DAY)
+    assert ka.access_ended(claims, today=LAST_DAY + timedelta(days=1))
+
+
+@pytest.mark.parametrize("value", ["13/10/2026", "someday", "2026-13-45", ["2026-10-13", "2027-01-01"]])
+def test_an_end_date_that_cannot_be_read_has_already_passed(value):
+    """An unreadable end date must not become no end date."""
+    assert ka.access_ended(_claims(sentinel_expires_on=value), today=date(2000, 1, 1))
+
+
+def test_a_single_valued_list_claim_is_read():
+    assert ka.access_ends_on(_claims(sentinel_expires_on=["2026-10-13"])) == LAST_DAY
+
+
+def test_the_realm_puts_the_end_date_in_the_id_token_and_records_sign_ins():
+    mapper = next(m for m in CLIENT["protocolMappers"] if m["name"] == "access expiry in ID token")
+    assert mapper["protocolMapper"] == "oidc-usermodel-attribute-mapper"
+    assert mapper["config"]["user.attribute"] == mapper["config"]["claim.name"] == ka.EXPIRY_CLAIM
+    assert mapper["config"]["id.token.claim"] == "true"
+    assert REALM["eventsEnabled"] and REALM["adminEventsEnabled"]
+    assert REALM["eventsExpiration"] == 90 * 24 * 3600
+    assert REALM["adminEventsDetailsEnabled"] is False, "details would copy request bodies into the event store"
+
+
+def test_the_reconcile_script_brings_a_live_realm_to_the_same_expiry_and_audit():
+    script = (APP / "scripts" / "keycloak-rbac.sh").read_text(encoding="utf-8")
+    assert f"EXPIRY_ATTR={ka.EXPIRY_CLAIM}" in script
+    assert '"permissions" : { "view" : [ "admin" ], "edit" : [ "admin" ] }' in script, "the user cannot see or change it"
+    assert "-s eventsEnabled=true -s eventsExpiration=7776000" in script
+    assert "-s adminEventsEnabled=true -s adminEventsDetailsEnabled=false" in script
+    operator = (APP / "scripts" / "keycloak-operator.sh").read_text(encoding="utf-8")
+    assert "Keycloak did not keep the expiry date" in operator, "a dropped attribute fails loudly"
+    # Read back from the whole record: kcadm's `--fields attributes` prints an
+    # empty map, which failed every expiring login on the live stack.
+    assert 'grep -Eq "\\"sentinel_expires_on\\"[[:space:]]*:[[:space:]]*\\[[[:space:]]*\\"$APP_EXPIRES_ON\\""' in operator
+    assert not re.search(r"kc get [^\n]*--fields attributes", operator)
 
 
 def test_an_http_identity_url_is_refused():

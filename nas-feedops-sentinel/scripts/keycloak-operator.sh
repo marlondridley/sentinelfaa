@@ -19,6 +19,8 @@
 #   APP_TEMPORARY_PASSWORD  1: the password is temporary, and Keycloak makes
 #                           the user choose their own at first sign-in.
 #   APP_LAST_NAME           default Operator (Keycloak's profile requires one).
+#   APP_EXPIRES_ON          YYYY-MM-DD (UTC): the login's last day; unset, it
+#                           does not expire. Needs scripts/keycloak-rbac.sh first.
 #   APP_DISABLE             1: turn the login off and end its sessions; only
 #                           KC_ADMIN_PW and APP_USERNAME are needed.
 set -euo pipefail
@@ -65,18 +67,41 @@ if [ "${APP_DISABLE:-0}" = 1 ]; then
 fi
 
 # ── Account ──────────────────────────────────────────────────────────────────
+# APP_EXPIRES_ON (YYYY-MM-DD, UTC): the login's last day, kept in the user
+# attribute sentinel_expires_on (declared by scripts/keycloak-rbac.sh, which
+# must run first). Unset: the login does not expire (operators).
+EXPIRY=()
+if [ -n "${APP_EXPIRES_ON:-}" ]; then
+    case "$APP_EXPIRES_ON" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+        *) echo "ERROR: APP_EXPIRES_ON must be YYYY-MM-DD: $APP_EXPIRES_ON" >&2; exit 1 ;;
+    esac
+    EXPIRY=(-s "attributes.sentinel_expires_on=[\"$APP_EXPIRES_ON\"]")
+fi
 if [ -z "$USER_ID" ]; then
     kc create users -r "$REALM" -s username="$APP_USERNAME" -s enabled=true \
         -s email="$APP_EMAIL" -s emailVerified=true \
-        -s firstName="$APP_USERNAME" -s lastName="$APP_LAST_NAME" >/dev/null
+        -s firstName="$APP_USERNAME" -s lastName="$APP_LAST_NAME" "${EXPIRY[@]}" >/dev/null
     echo "user $APP_USERNAME: created"
 else
     # firstName/lastName are set here as well as on create: Keycloak's default
     # user profile requires them, and a user added through the admin console
     # without them is stopped by a "complete your profile" form at login.
     kc update "users/$USER_ID" -r "$REALM" -s email="$APP_EMAIL" -s emailVerified=true \
-        -s enabled=true -s firstName="$APP_USERNAME" -s lastName="$APP_LAST_NAME"
+        -s enabled=true -s firstName="$APP_USERNAME" -s lastName="$APP_LAST_NAME" "${EXPIRY[@]}"
     echo "user $APP_USERNAME: already existed, profile updated"
+fi
+if [ -n "${APP_EXPIRES_ON:-}" ]; then
+    # Keycloak drops an attribute its user profile does not declare, silently:
+    # read it back, so a login meant to expire never quietly doesn't.
+    # The whole record: kcadm's `--fields attributes` prints an empty map.
+    USER_ID=$(kc get users -r "$REALM" -q username="$APP_USERNAME" -q exact=true --fields id --format csv --noquotes)
+    if ! kc get "users/$USER_ID" -r "$REALM" \
+            | grep -Eq "\"sentinel_expires_on\"[[:space:]]*:[[:space:]]*\[[[:space:]]*\"$APP_EXPIRES_ON\""; then
+        echo "ERROR: Keycloak did not keep the expiry date; run scripts/keycloak-rbac.sh first" >&2
+        exit 1
+    fi
+    echo "user $APP_USERNAME: access ends after $APP_EXPIRES_ON (UTC)"
 fi
 if [ "${APP_TEMPORARY_PASSWORD:-0}" = 1 ]; then
     kc set-password -r "$REALM" --username "$APP_USERNAME" --new-password "$APP_USER_PW" --temporary

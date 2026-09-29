@@ -16,6 +16,10 @@
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
+  "eventsEnabled": true,
+  "eventsExpiration": 7776000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": false,
   "clients": [
     {
       "clientId": "nas-feedops-sentinel",
@@ -53,6 +57,20 @@
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "access expiry in ID token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "sentinel_expires_on",
+            "claim.name": "sentinel_expires_on",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
             "userinfo.token.claim": "true"
           }
         }
