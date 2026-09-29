@@ -157,16 +157,20 @@ class ContextRouter:
         self,
         airport_code: str | None,
         window_minutes: int = 30,
+        as_of: datetime | None = None,
     ) -> dict[str, Any]:
+        """Context for judging an alert; as_of is when it fired (None = now)."""
         recent_events = await storage.get_events_for_critic(
             airport_code=airport_code,
             window_minutes=window_minutes,
             limit=50,
+            as_of=as_of,
         )
         recent_alerts = await storage.get_alerts_for_critic(
             airport_code=airport_code,
             window_minutes=60,
             limit=10,
+            as_of=as_of,
         )
         return {
             "window_minutes": window_minutes,

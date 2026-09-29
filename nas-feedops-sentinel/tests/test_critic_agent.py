@@ -250,6 +250,60 @@ async def test_build_context_with_events(monkeypatch):
     assert ctx["recent_alerts"][0]["alert_type"] == "ALERT_LOW_RVR"
 
 
+async def test_context_is_the_minutes_around_the_alert_not_now():
+    """An old alert judged today must see the feed as it was then, not a silent one."""
+    from datetime import timedelta
+
+    from src.models import NASEvent
+    from src.storage import save_event
+
+    fired = datetime.now(timezone.utc) - timedelta(days=4)
+    for minutes_before in (2, 10):
+        at = fired - timedelta(minutes=minutes_before)
+        await save_event(NASEvent(
+            airport_code="KDCA", tracon="PCT", service_name="APDS_RVR", message_type="rvr_report",
+            event_time_utc=at, received_time_utc=at, latency_ms=400.0, runway="01",
+            rvr_touchdown=600, validation_status="PASSED"))
+
+    router = ContextRouter()
+    now_ctx = await router.build_alert_context(airport_code="KDCA")
+    then_ctx = await router.build_alert_context(airport_code="KDCA", as_of=fired)
+
+    assert now_ctx["total_recent_events"] == 0, "four days later the last 30 minutes are silent"
+    assert then_ctx["total_recent_events"] == 2
+    assert then_ctx["service_summary"]["APDS_RVR"]["count"] == 2
+
+
+async def test_the_critic_reads_the_context_as_of_the_alert(monkeypatch):
+    seen = {}
+
+    async def fake_context(self, airport_code, window_minutes=30, as_of=None):
+        seen["as_of"] = as_of
+        return {"window_minutes": 30, "total_recent_events": 0, "service_summary": {}, "recent_alerts": []}
+
+    monkeypatch.setattr(ContextRouter, "build_alert_context", fake_context)
+    alert = _sample_alert()
+    agent = CriticAgent()
+    monkeypatch.setattr(agent, "_llm", MagicMock())
+    monkeypatch.setattr(agent, "_call_llm", AsyncMock(side_effect=RuntimeError("stop after context")))
+    monkeypatch.setattr("src.critic_agent._router", ContextRouter())
+    await agent.critique(alert)
+    assert seen["as_of"] == alert.triggered_at
+
+
+def test_the_critic_budget_is_spent_per_condition_not_per_reading():
+    from src.pipeline import critic_worklist
+
+    def alert(airport):
+        return _sample_alert(airport_code=airport, alert_id=None) if False else _sample_alert(airport_code=airport)
+
+    readings = [alert("KDCA") for _ in range(6)] + [alert("KBWI"), alert("KIAD")]
+    picked = critic_worklist(readings, budget=5)
+    assert [a.airport_code for a in picked] == ["KDCA", "KBWI", "KIAD"], "every condition, once"
+    assert picked[0] is readings[0], "the first reading of a condition is the one that opens its review"
+    assert len(critic_worklist(readings, budget=2)) == 2
+
+
 # ── Format message test ───────────────────────────────────────────────────────
 
 def test_format_user_message_contains_key_fields():
