@@ -166,7 +166,7 @@ def test_the_story_site_promises_only_what_the_code_does():
         assert claim not in text, f"the site must not claim {claim!r}"
     assert "nothing executes on its own" in text
     # The site presents a streaming-data-pipeline capability: no agency, program or system names.
-    for pattern in (r"faa", r"swim", r"nas", r"national airspace", r"federal aviation"):
+    for pattern in (r"\bfaa\b", r"\bswim\b", r"\bnas\b", r"national airspace", r"federal aviation"):
         assert not re.search(pattern, text), f"the site must not name {pattern!r}"
 
 
