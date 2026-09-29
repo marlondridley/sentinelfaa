@@ -165,7 +165,9 @@ def test_the_story_site_promises_only_what_the_code_does():
                   "cryptographic audit chain"):
         assert claim not in text, f"the site must not claim {claim!r}"
     assert "nothing executes on its own" in text
-    assert "not affiliated with or endorsed by the federal aviation administration" in text
+    # The site presents a streaming-data-pipeline capability: no agency, program or system names.
+    for pattern in (r"faa", r"swim", r"nas", r"national airspace", r"federal aviation"):
+        assert not re.search(pattern, text), f"the site must not name {pattern!r}"
 
 
 def test_no_tunnel_listener_reaches_any_other_service():
