@@ -87,7 +87,7 @@ try {
     }
     $code = $LASTEXITCODE
 } finally {
-    Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL, Env:APP_ROLES,
+    Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL, Env:APP_ROLES, Env:APP_ROLES_EXACT,
         Env:APP_TEMPORARY_PASSWORD, Env:APP_LAST_NAME, Env:APP_DISABLE -ErrorAction SilentlyContinue
     # docker cp leaves the file owned by root, so root removes it.
     docker exec -u 0 nas-keycloak rm -f /tmp/keycloak-operator.sh | Out-Null
