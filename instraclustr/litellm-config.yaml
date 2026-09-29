@@ -44,6 +44,25 @@ model_list:
   #     model: gemini/gemini-3.8-flash
   #     api_key: "os.environ/GEMINI_API_KEY_3"
 
+  # Claude, direct from Anthropic (a service-account key scoped to the
+  # sentinelfaa workspace). Nothing routes here yet: to use it, set
+  # ANTHROPIC_API_KEY in .env and point LLM_MODEL (or a per-agent model) at
+  # "claude-model", or add it to router_settings.fallbacks. Like the other
+  # providers here it is a TEST route, not an authorized boundary for FAA
+  # operational data (see the note at the top).
+  - model_name: claude-model
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  # Haiku 4.5: the cheaper, faster Claude, under its own alias. A separate
+  # model_name, not a second claude-model entry: entries under one alias are
+  # load-balanced, which would send some calls to each model.
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
   - model_name: gemini-flash
     litellm_params:
       model: gemini/gemini-3.8-flash
@@ -53,7 +72,7 @@ model_list:
 # where the proxy does not read them, so a DeepSeek failure had no fallback.
 router_settings:
   fallbacks:
-    - primary-model: ["gemini-backup"]
+    - primary-model: ["gemini-backup","claude-haiku", "claude-model"]
   # One retry: a second key gets a chance, without multiplying calls against
   # a quota that is already gone. A failing key is benched for a minute.
   num_retries: 1

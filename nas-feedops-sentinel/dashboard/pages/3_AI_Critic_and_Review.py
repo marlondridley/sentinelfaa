@@ -115,6 +115,16 @@ def _suggests(action) -> str:
     return "Escalate" if v.get("escalate") else "Don't escalate"
 
 
+def _summary(action) -> str:
+    """The Critic's one-line summary; a verdict with none (older, or the model left it out) shows its verdict and confidence."""
+    v = _verdict.get(action.alert_id) or {}
+    if v.get("bluf"):
+        return v["bluf"]
+    if v.get("confidence") is not None:
+        return f"No written summary for this review. The AI says {_suggests(action).lower()}, {v['confidence']:.0%} confident."
+    return "Not reviewed by the AI yet."
+
+
 def _waited(since: datetime | None) -> str:
     if since is None:
         return "—"
@@ -141,7 +151,7 @@ def _review_detail(action) -> None:
         + theme._esc(_suggests(action).lower()) + (f" · {conf:.0%}" if conf is not None else "") + "</span></div>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"**AI summary:** {verdict.get('bluf') or '_No AI summary yet._'}")
+    st.markdown(f"**AI summary:** {_summary(action)}")
     covered = run(storage.get_covered_alert_ids(action.action_id))
     first, last = action.first_seen_at or action.created_at, action.last_seen_at or action.created_at
     st.markdown(
@@ -398,7 +408,7 @@ else:
         "Readings": a.occurrences,
         "AI suggests": _suggests(a),
         "Confidence": round(100 * c) if (c := (_verdict.get(a.alert_id) or {}).get("confidence")) is not None else None,
-        "AI summary": (_verdict.get(a.alert_id) or {}).get("bluf") or "No AI summary yet",
+        "AI summary": _summary(a),
         "Waiting": _waited(a.first_seen_at or a.created_at),
         "Ticket": _tickets[a.action_id].status if _tickets.get(a.action_id) else "—",
     } for a in _pending_actions]).sort_values("Last reading (UTC)", ascending=False)

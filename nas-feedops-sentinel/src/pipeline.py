@@ -6,7 +6,7 @@ import asyncio
 from src.alert_engine import check_alerts
 from src.config import settings
 from src.critic_agent import CriticAgent
-from src.execution_gate import stage_critical_alert
+from src.execution_gate import condition_key, stage_critical_alert
 from src.feed_health import compute_feed_health
 from src.investigation import investigate_staged
 from src.logging_config import bind_correlation_id, get_logger
@@ -16,6 +16,21 @@ from src.storage import save_alerts, save_critic_result, save_events
 from src.validators import validate_event
 
 _log = get_logger(__name__)
+
+
+
+def critic_worklist(critical_alerts: list, budget: int) -> list:
+    """
+    The alerts the critic reviews this pass: the first reading of each distinct
+    condition, at most `budget`. One review covers a condition however many
+    readings it has, so the budget is spent per condition; taken in list order
+    it went to repeat readings of one condition and left others staged with no
+    verdict.
+    """
+    first_of: dict[str, object] = {}
+    for alert in critical_alerts:
+        first_of.setdefault(condition_key(alert), alert)
+    return list(first_of.values())[:budget]
 
 
 async def run_pipeline(
@@ -57,7 +72,7 @@ async def run_pipeline(
     critical_alerts = [a for a in alerts if a.severity == "CRITICAL"]
     critic_results = {}
     if critical_alerts:
-        to_evaluate = critical_alerts[: settings.MAX_CRITIC_PER_PASS]
+        to_evaluate = critic_worklist(critical_alerts, settings.MAX_CRITIC_PER_PASS)
         skipped = len(critical_alerts) - len(to_evaluate)
         _log.info(
         "critic_evaluation_start",

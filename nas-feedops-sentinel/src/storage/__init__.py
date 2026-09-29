@@ -180,17 +180,19 @@ async def get_validation_summary(since: datetime | None = None, *, data_origin: 
 
 
 async def get_events_for_critic(
-    airport_code: str | None, window_minutes: int = 30, limit: int = 50
+    airport_code: str | None, window_minutes: int = 30, limit: int = 50,
+    as_of: datetime | None = None,
 ) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_events_for_critic(airport_code, window_minutes, limit)
+    return await repo.get_events_for_critic(airport_code, window_minutes, limit, as_of)
 
 
 async def get_alerts_for_critic(
-    airport_code: str | None, window_minutes: int = 60, limit: int = 10
+    airport_code: str | None, window_minutes: int = 60, limit: int = 10,
+    as_of: datetime | None = None,
 ) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_alerts_for_critic(airport_code, window_minutes, limit)
+    return await repo.get_alerts_for_critic(airport_code, window_minutes, limit, as_of)
 
 
 async def get_active_aircraft(window_minutes: int = 5, limit: int = 500) -> list[dict]:
