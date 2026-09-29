@@ -155,6 +155,20 @@ def test_guest_and_public_scripts_pass_secrets_by_name_only():
                 assert not re.search(r"-e\s+[A-Z_]+=", line), f"{name}: a value on the command line: {line.strip()}"
 
 
+def test_turning_public_access_on_restarts_nothing_else():
+    # Starting the tunnel (or restarting keycloak/edge/dashboard for it) must
+    # not bring back the migrate job's sidecars: they hold the schema owner's
+    # credentials and run only during a migration.
+    launcher = (INFRA.parent / "launch_nas_sentinel.ps1").read_text(encoding="utf-8")
+    enable = (APP / "scripts" / "Enable-PublicAccess.ps1").read_text(encoding="utf-8")
+    for name, text in (("launch_nas_sentinel.ps1", launcher), ("Enable-PublicAccess.ps1", enable)):
+        ups = [line for line in text.splitlines() if re.search(r"docker compose .* up -d", line)
+               and re.search(r"\b(cloudflared|keycloak edge dashboard)\b", line)]
+        assert ups, f"{name}: no compose up for the tunnel"
+        for line in ups:
+            assert "--no-deps" in line, f"{name}: {line.strip()}"
+
+
 def test_the_public_callback_must_be_https():
     rbac = (APP / "scripts" / "keycloak-rbac.sh").read_text(encoding="utf-8")
     assert "https://*[!/]) ;;" in rbac, "PUBLIC_DASHBOARD_URL must be https://host"

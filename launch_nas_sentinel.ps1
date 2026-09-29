@@ -234,7 +234,9 @@ if ($Public) {
         Write-Host "CRITICAL ERROR: -Public needs CLOUDFLARE_TUNNEL_TOKEN in an env file (nas-feedops-sentinel\docs\public-access.md)." -ForegroundColor Red
         exit 1
     }
-    docker compose -f $appCompose @appEnvFiles --profile public up -d --wait cloudflared
+    # --no-deps: the stack is already up; without it compose would restart the
+    # migrate sidecars stopped above.
+    docker compose -f $appCompose @appEnvFiles --profile public up -d --wait --no-deps cloudflared
     if ($LASTEXITCODE -ne 0) {
         Write-Host "CRITICAL ERROR: the Cloudflare tunnel did not connect: docker logs nas-cloudflared" -ForegroundColor Red
         exit 1
