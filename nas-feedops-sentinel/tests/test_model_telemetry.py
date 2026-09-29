@@ -83,6 +83,22 @@ async def test_an_answered_call_records_outcome_tokens_cost_model_and_policy(mon
     assert row["latency_ms"] >= 0 and row["error_type"] is None
 
 
+async def test_json_wrapped_in_a_code_fence_is_read_as_the_answer(monkeypatch):
+    """Claude wraps its JSON object in a ```json fence; that is still the model's answer."""
+    fenced = _response(_COMPLETE)
+    fenced.choices[0].message.content = "```json\n" + json.dumps(_COMPLETE, indent=2) + "\n```"
+    result, _ = await _call(monkeypatch, fenced)
+    assert result == _COMPLETE
+    assert (await _only_row())["outcome"] == "ok"
+
+
+async def test_prose_around_the_json_is_still_not_an_answer(monkeypatch):
+    prose = _response(_COMPLETE)
+    prose.choices[0].message.content = "Here you go: " + json.dumps(_COMPLETE)
+    result, _ = await _call(monkeypatch, prose)
+    assert isinstance(result, llm.LLMError) and "non-JSON" in str(result)
+
+
 async def test_the_repair_request_is_part_of_the_same_call(monkeypatch):
     await _call(monkeypatch, _response({"confidence": 0.8}), _response(_COMPLETE, prompt=150, completion=25))
     row = await _only_row()

@@ -150,6 +150,18 @@ class EventsRepository:
         )
         return [dict(r) for r in rows]
 
+    async def get_alerts_by_ids(self, alert_ids: list[str]) -> list[dict]:
+        """These alerts, however old: get_recent_alerts only reaches back `limit` rows."""
+        if not alert_ids:
+            return []
+        rows = await self._pool.fetch(
+            """SELECT alert_id, alert_type, severity, airport_code, service_name,
+                      description, triggered_at, event_id, data_origin
+               FROM alert_events WHERE alert_id = ANY($1::text[])""",
+            list(alert_ids),
+        )
+        return [dict(r) for r in rows]
+
     async def get_origin_counts(self, window_minutes: int = 60) -> dict[str, int]:
         """Events received in the window, by data_origin (for the dashboard's provenance banner)."""
         rows = await self._pool.fetch(

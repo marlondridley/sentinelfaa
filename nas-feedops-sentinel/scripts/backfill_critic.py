@@ -33,7 +33,8 @@ async def _wanted() -> list[tuple[object, dict]]:
     verdicts: dict[str, dict] = {}
     for v in await storage.get_critic_verdicts_for_alerts(alert_ids):
         verdicts.setdefault(v["alert_id"], v)
-    alerts = {a["alert_id"]: a for a in await storage.get_recent_alerts(limit=5000)}
+    # By id, not from the newest N alerts: a review can be older than any cap.
+    alerts = {a["alert_id"]: a for a in await storage.get_alerts_by_ids(alert_ids)}
     return [
         (a, alerts[a.alert_id]) for a in actions
         if a.alert_id in alerts and not (verdicts.get(a.alert_id) or {}).get("bluf")
