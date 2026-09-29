@@ -449,6 +449,8 @@ services:
       # The authority's public certificate: the public sign-in listener
       # verifies Keycloak's certificate with it.
       - ./tls/trust:/etc/nginx/trust:ro
+      # The public story site (static files, listener 8452; docs/public-access.md).
+      - ./site:/usr/share/nginx/site:ro
     ports:
       - "127.0.0.1:8443:8443"   # dashboard
       - "127.0.0.1:8444:8444"   # API (/health, /v1/*)
