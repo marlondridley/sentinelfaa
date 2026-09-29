@@ -25,12 +25,17 @@ What stays Sentinel's, and lives here without importing Streamlit:
   sign-in here is valid for the realm's maximum SSO session from the moment
   the operator authenticated (auth_time), no longer;
 - that identity URLs are HTTPS, because the realm's sign-in carries the
-  operator's password.
+  operator's password;
+- when a login's access ends. Keycloak has no account expiry, so a login
+  made with an end date (scripts/Add-Guest.ps1 -Days) carries it in the
+  admin-only user attribute sentinel_expires_on, which the realm's "access
+  expiry in ID token" mapper puts in the ID token.
 """
 from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -79,6 +84,34 @@ def session_expires_at(claims: Mapping[str, Any], max_seconds: int = SESSION_MAX
 def session_expired(claims: Mapping[str, Any], now: float | None = None) -> bool:
     """True once the sign-in has outlived the realm's maximum session, or its start is unknown."""
     return (now if now is not None else time.time()) >= session_expires_at(claims)
+
+
+# The ID-token claim carrying a login's last day, YYYY-MM-DD in UTC
+# (scripts/keycloak-rbac.sh declares the attribute and its mapper).
+EXPIRY_CLAIM = "sentinel_expires_on"
+
+
+def access_ends_on(claims: Mapping[str, Any]) -> date | None:
+    """
+    The login's last day, or None if it does not expire (operators). A value
+    that is present but not a date reads as already over: an end date that
+    cannot be read must not become no end date.
+    """
+    raw = claims.get(EXPIRY_CLAIM)
+    if raw is None or raw == "" or raw == []:
+        return None
+    if isinstance(raw, list):                        # a mapper set to multivalued
+        raw = raw[0] if len(raw) == 1 else None
+    try:
+        return date.fromisoformat(str(raw))
+    except ValueError:
+        return date.min
+
+
+def access_ended(claims: Mapping[str, Any], today: date | None = None) -> bool:
+    """True once today (UTC) is past the login's last day."""
+    ends = access_ends_on(claims)
+    return ends is not None and (today or datetime.now(UTC).date()) > ends
 
 
 def principal_from_claims(claims: Mapping[str, Any], role: str) -> Principal:
