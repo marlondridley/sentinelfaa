@@ -1,4 +1,4 @@
-// NAS Sentinel story site: menu, section highlighting, reveal on scroll. No dependencies.
+// Sentinel story site: menu, section highlighting, reveal on scroll. No dependencies.
 (() => {
   "use strict";
 
