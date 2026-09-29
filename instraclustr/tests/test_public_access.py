@@ -88,7 +88,7 @@ def test_the_tunnel_verifies_the_edge_with_the_authoritys_certificate_only():
 def test_the_tunnel_listeners_are_never_published_on_the_host():
     ports = _compose()["services"]["edge"]["ports"]
     assert all(p.startswith("127.0.0.1:") for p in ports), "every published edge port is loopback"
-    assert not any(re.search(r":845[01]$", p) for p in ports), "8450/8451 are for the tunnel only"
+    assert not any(re.search(r":845[0-2]$", p) for p in ports), "8450-8452 are for the tunnel only"
 
 
 # -- The edge's two tunnel listeners --------------------------------------------
@@ -125,9 +125,54 @@ def test_the_public_listeners_ask_not_to_be_indexed_and_allow_no_devices():
         assert re.search(rf"proxy_hide_header\s+{header};", blocks["8451"]), header
 
 
+def test_the_story_site_listener_serves_static_files_only():
+    block = _server_blocks()["8452"]
+    assert "proxy_pass" not in block, "the site listener reaches no service"
+    assert re.search(r"root\s+/usr/share/nginx/site;", block)
+    assert set(_locations(block)) == {"/"}
+    assert re.search(r"limit_except GET \{ deny all; \}", block), "GET and HEAD only"
+    assert re.search(r"include\s+/etc/nginx/mime.types;", block), "nosniff needs real content types"
+    assert re.search(r"if \(\$host ~\* \^www\\\.\(\.\+\)\$\) \{ return 301 https://\$1\$request_uri; \}", block)
+    csp = re.search(r'add_header Content-Security-Policy "([^"]+)" always;', block).group(1)
+    for directive in ("default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'",
+                      "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'", "object-src 'none'"):
+        assert directive in csp, directive
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+    assert "./site:/usr/share/nginx/site:ro" in _compose()["services"]["edge"]["volumes"]
+
+
+SITE = APP / "site"
+
+
+def test_the_story_site_loads_nothing_from_elsewhere_and_runs_under_its_policy():
+    html = (SITE / "index.html").read_text(encoding="utf-8")
+    loads = re.findall(r'(?:src|href)="([^"#]+)"', html)
+    external = [u for u in loads if re.match(r"(?i)https?:|//", u)]
+    assert external and all(u == "https://sentinel.agenticreliabilityengineering.com/" for u in external), \
+        f"the only off-site link is Sign in: {external}"
+    assert not re.search(r"<(?:script|link)[^>]+(?:src|href)=\"(?:https?:)?//", html), "no third-party script or style"
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html), "no inline script: the policy would block it"
+    assert not re.search(r"\sstyle=\"", html), "no style attributes: the policy would block them"
+    assert not re.search(r"\son[a-z]+=\"", html), "no inline event handlers"
+    css = (SITE / "assets" / "styles.css").read_text(encoding="utf-8")
+    assert not re.search(r"@import|url\(\s*[\"']?(?:https?:)?//", css), "no fonts or images from elsewhere"
+
+
+def test_the_story_site_promises_only_what_the_code_does():
+    """The Layer 4 of the architecture deck once promised self-healing; the code never executes on its own."""
+    text = re.sub(r"<[^>]+>", " ", (SITE / "index.html").read_text(encoding="utf-8")).lower()
+    for claim in ("auto-execut", "autoexecut", "self-heal", "worker pod", "reconnect dropped", "retry quarantined",
+                  "cryptographic audit chain"):
+        assert claim not in text, f"the site must not claim {claim!r}"
+    assert "nothing executes on its own" in text
+    # The site presents a streaming-data-pipeline capability: no agency, program or system names.
+    for pattern in (r"\bfaa\b", r"\bswim\b", r"\bnas\b", r"national airspace", r"federal aviation"):
+        assert not re.search(pattern, text), f"the site must not name {pattern!r}"
+
+
 def test_no_tunnel_listener_reaches_any_other_service():
     blocks = _server_blocks()
-    for port in ("8450", "8451"):
+    for port in ("8450", "8451", "8452"):
         for other in ("grafana", "prometheus", "temporal", "api:8000", "vault", "spire", "postgres"):
             assert other not in blocks[port], f"listener {port} must not reach {other}"
 

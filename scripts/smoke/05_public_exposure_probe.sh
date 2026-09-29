@@ -2,14 +2,18 @@
 # Public exposure probe: what the Cloudflare tunnel can reach, and nothing more
 # (nas-feedops-sentinel/docs/public-access.md).
 #
-#   1. Host          the public listeners (edge 8450, 8451) publish no host
+#   1. Host          the public listeners (edge 8450-8452) publish no host
 #                    port, and nas-cloudflared (if running) publishes none
 #   2. Allowed       through the listeners, exactly as the tunnel reaches them
 #                    (the edge certificate verified: local CA, name localhost):
 #                    the dashboard answers; the sign-in realm's discovery
-#                    document answers and names the public sign-in address
+#                    document answers and names the public sign-in address;
+#                    the story site (8452) serves its page, its stylesheet as
+#                    text/css, a no-inline Content-Security-Policy, and sends
+#                    www.<domain> to the bare domain
 #   3. Refused       the admin console, the master realm, the account console,
-#                    Keycloak's metrics/health, and every other service:
+#                    Keycloak's metrics/health, every other service, and on
+#                    the site listener any write and any non-site path:
 #                    all 404 at the edge, whatever a tunnel rule says
 #   4. Tunnel        running exactly when public access is on; if running:
 #                    read-only root, all capabilities dropped, no-new-privileges,
@@ -43,6 +47,7 @@ envval() {  # the application's env file wins over the infrastructure's, as in c
 DASH_URL=$(envval PUBLIC_DASHBOARD_URL); AUTH_URL=$(envval KEYCLOAK_PUBLIC_URL)
 DASH_HOST=${DASH_URL#https://}; DASH_HOST=${DASH_HOST:-localhost}
 AUTH_HOST=${AUTH_URL#https://}; AUTH_HOST=${AUTH_HOST:-localhost}
+SITE_HOST=${DASH_HOST#*.}        # the bare domain: sentinel.<domain> -> <domain>
 # The sign-in address Keycloak is serving now: the public one while public
 # access is on (KEYCLOAK_BROWSER_URL, scripts/Set-PublicAccess.ps1), else local.
 BROWSER_URL=$(envval KEYCLOAK_BROWSER_URL)
@@ -53,8 +58,8 @@ echo "Public exposure probe: dashboard=$DASH_HOST sign-in=$AUTH_HOST (public acc
 # ── 1. Host ──────────────────────────────────────────────────────────────────
 echo "1. Nothing public is published on this machine"
 published=$(docker port nas-edge 2>/dev/null)
-if printf '%s\n' "$published" | grep -qE '^(8450|8451)/'; then fail "edge publishes a public listener on the host: $published"
-else pass "edge publishes only its loopback consoles (8450/8451 are tunnel-only)"; fi
+if printf '%s\n' "$published" | grep -qE '^(8450|8451|8452)/'; then fail "edge publishes a public listener on the host: $published"
+else pass "edge publishes only its loopback consoles (8450-8452 are tunnel-only)"; fi
 if docker inspect nas-cloudflared >/dev/null 2>&1; then
     if [ -z "$(docker port nas-cloudflared 2>/dev/null)" ]; then pass "nas-cloudflared publishes no port"
     else fail "nas-cloudflared publishes a port"; fi
@@ -63,9 +68,9 @@ fi
 # ── 2 and 3. Through the listeners, as the tunnel reaches them ──────────────
 echo "2. Allowed, and 3. refused, through the public listeners"
 out=$(docker run --rm -i --network nas-network -v "$(hostpath "$REPO/nas-feedops-sentinel/tls/trust"):/ca:ro" \
-    --entrypoint python nas-feedops-sentinel:latest - "$DASH_HOST" "$AUTH_HOST" "$ISSUER" <<'PY'
+    --entrypoint python nas-feedops-sentinel:latest - "$DASH_HOST" "$AUTH_HOST" "$ISSUER" "$SITE_HOST" <<'PY'
 import http.client, json, socket, ssl, sys
-dash, auth, issuer = sys.argv[1:4]
+dash, auth, issuer, site = sys.argv[1:5]
 # Verified exactly as the tunnel's routes verify it: the local authority, and
 # the edge certificate's name `localhost` (Origin Server Name + CA Pool).
 ctx = ssl.create_default_context(cafile="/ca/edge-ca.crt")
@@ -73,14 +78,17 @@ class Edge(http.client.HTTPSConnection):
     def connect(self):
         self.sock = ctx.wrap_socket(socket.create_connection((self.host, self.port), self.timeout),
                                     server_hostname="localhost")
-def get(port, path, host):
+def request(port, path, host, method="GET"):
     try:
         conn = Edge("nas-edge", port, timeout=15)
-        conn.request("GET", path, headers={"Host": host})
+        conn.request(method, path, headers={"Host": host})
         r = conn.getresponse()
-        return r.status, r.read(65536)
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, r.read(65536)
     except Exception as e:           # connection refused, certificate not verified etc.
-        return f"error: {e}", b""
+        return f"error: {e}", {}, b""
+def get(port, path, host):
+    s, _, body = request(port, path, host)
+    return s, body
 def check(ok, msg): print(("PASS" if ok else "FAIL") + " " + msg)
 
 s, body = get(8450, "/_stcore/health", dash)
@@ -100,6 +108,21 @@ for port, path, why in [
 ]:
     s, _ = get(port, path, auth)
     check(s == 404, f"refused: {why} {path} ({s})")
+
+# The story site: static files, nothing else.
+s, h, body = request(8452, "/", site)
+check(s == 200 and b"Sign in" in body, f"story site answers on its listener ({s})")
+csp = h.get("content-security-policy", "")
+check("default-src 'none'" in csp and "unsafe-inline" not in csp, "story site sends its Content-Security-Policy")
+s, h, _ = request(8452, "/assets/styles.css", site)
+check(s == 200 and h.get("content-type", "").startswith("text/css"), f"stylesheet served as text/css ({s} {h.get('content-type')})")
+s, h, _ = request(8452, "/", "www." + site)
+check(s == 301 and h.get("location") == f"https://{site}/", f"www.{site} redirects to the bare domain ({s})")
+s, _, _ = request(8452, "/", site, method="POST")
+check(s == 403, f"refused: a write to the story site ({s})")
+for path in ("/realms/nas-sentinel/.well-known/openid-configuration", "/admin/", "/_stcore/health"):
+    s, _ = get(8452, path, site)
+    check(s == 404, f"refused: {path} on the story site ({s})")
 PY
 )
 printf '%s\n' "$out" | while IFS= read -r line; do
@@ -141,5 +164,5 @@ else
 fi
 
 echo
-if [ "$FAILED" -eq 0 ]; then echo "RESULT: only the dashboard and the sign-in pages are reachable through the tunnel"; else echo "RESULT: FAILED -- see above"; fi
+if [ "$FAILED" -eq 0 ]; then echo "RESULT: only the story site, the dashboard and the sign-in pages are reachable through the tunnel"; else echo "RESULT: FAILED -- see above"; fi
 exit "$FAILED"
