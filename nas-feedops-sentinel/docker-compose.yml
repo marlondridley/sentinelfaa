@@ -337,12 +337,14 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
       # Substituted into the realm file; must equal client_secret in .streamlit/secrets.toml.
       KC_DASHBOARD_CLIENT_SECRET: ${KEYCLOAK_DASHBOARD_CLIENT_SECRET:?KEYCLOAK_DASHBOARD_CLIENT_SECRET is required -- run scripts/Setup-Keycloak.ps1}
-      # Browser-facing URLs: the host port by default; with public access
-      # (docs/public-access.md) the public sign-in hostname, reached through
-      # the tunnel and the edge's sign-in-only listener. Server-to-server
-      # calls keep the host they used (https://keycloak:8443 from the
-      # dashboard). The admin console is always loopback-only, never public.
-      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-https://localhost:8081}
+      # Browser-facing URLs: the host port by default; while public access is
+      # on (docs/public-access.md) the public sign-in hostname, reached through
+      # the tunnel and the edge's sign-in-only listener. KEYCLOAK_BROWSER_URL
+      # is written to .env by scripts/Set-PublicAccess.ps1 (the launcher's
+      # -Public), so every compose run agrees on it. Server-to-server calls
+      # keep the host they used (https://keycloak:8443 from the dashboard).
+      # The admin console is always loopback-only, never public.
+      KC_HOSTNAME: ${KEYCLOAK_BROWSER_URL:-https://localhost:8081}
       KC_HOSTNAME_ADMIN: https://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       # The edge (the only proxy in front of Keycloak) sets X-Forwarded-*, with

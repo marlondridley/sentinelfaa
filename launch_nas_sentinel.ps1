@@ -10,10 +10,11 @@
 # It is opt-in rather than automatic because it opens a live subscription to
 # the FAA broker and requires a Java 25 runtime on this machine.
 #
-# -Public also starts the Cloudflare tunnel (nas-cloudflared), making the
-# dashboard reachable at its public address -- see
-# nas-feedops-sentinel/docs/public-access.md. Without -Public a running tunnel
-# is stopped: the site is public only on the launches that ask for it.
+# -Public turns public access on (nas-feedops-sentinel/docs/public-access.md):
+# the Cloudflare tunnel runs and everyone, operators on this machine too,
+# signs in through the public addresses. Without -Public it is turned off:
+# the tunnel is stopped and sign-in is back on https://localhost:8443. The
+# site is public only on the launches that ask for it.
 [CmdletBinding()]
 param(
     [switch]$WithLiveFeed,
@@ -224,27 +225,15 @@ if ($LASTEXITCODE -ne 0) {
 docker compose -f $appCompose @appEnvFiles stop migrate-vault-agent migrate-spiffe | Out-Null
 Write-Host "  [+] migrate finished; its identity sidecars stopped." -ForegroundColor Green
 
-# 4b. Public access: on for this launch only if asked for.
-if ($Public) {
-    $tokenSet = $false
-    foreach ($f in @($infraEnv, $appEnv)) {
-        if ((Test-Path $f) -and (Select-String -Path $f -Pattern '^\s*CLOUDFLARE_TUNNEL_TOKEN\s*=\s*\S' -Quiet)) { $tokenSet = $true }
-    }
-    if (-not $tokenSet) {
-        Write-Host "CRITICAL ERROR: -Public needs CLOUDFLARE_TUNNEL_TOKEN in an env file (nas-feedops-sentinel\docs\public-access.md)." -ForegroundColor Red
-        exit 1
-    }
-    # --no-deps: the stack is already up; without it compose would restart the
-    # migrate sidecars stopped above.
-    docker compose -f $appCompose @appEnvFiles --profile public up -d --wait --no-deps cloudflared
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "CRITICAL ERROR: the Cloudflare tunnel did not connect: docker logs nas-cloudflared" -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  [+] Public access ON: the Cloudflare tunnel is connected." -ForegroundColor Green
-} elseif ((docker inspect -f '{{.State.Running}}' nas-cloudflared 2>$null) -eq 'true') {
-    docker compose -f $appCompose @appEnvFiles --profile public stop cloudflared | Out-Null
-    Write-Host "  [+] Public access OFF: the Cloudflare tunnel was stopped (launch with -Public to publish)." -ForegroundColor Green
+# 4b. Public access: on for this launch only if asked for. Set-PublicAccess
+# switches Keycloak's sign-in address, the dashboard's return address and the
+# tunnel together (restarting only what changed), so sign-in works in both
+# modes: publicly with -Public, at https://localhost:8443 without it.
+$publicMode = if ($Public) { 'On' } else { 'Off' }
+& (Join-Path $appDir 'scripts\Set-PublicAccess.ps1') -Mode $publicMode
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "CRITICAL ERROR: public access could not be switched $($publicMode.ToLower()) (see above; nas-feedops-sentinel\docs\public-access.md)." -ForegroundColor Red
+    exit 1
 }
 
 # 5. Optional: live FAA SWIM feed (native, not containerized)
@@ -279,7 +268,11 @@ if ($WithLiveFeed) {
 
 Write-Host ""
 Write-Host "Launch sequence complete!  (HTTPS via the edge proxy; self-signed cert for localhost)" -ForegroundColor Green
-Write-Host "  - Dashboard          : https://localhost:8443" -ForegroundColor Cyan
+if ($Public) {
+    Write-Host "  - Dashboard          : the public address above (public access is on; sign-in goes through it)" -ForegroundColor Cyan
+} else {
+    Write-Host "  - Dashboard          : https://localhost:8443" -ForegroundColor Cyan
+}
 Write-Host "  - API                : https://localhost:8444/health" -ForegroundColor Cyan
 Write-Host "  - Grafana            : https://localhost:8445" -ForegroundColor Cyan
 Write-Host "  - Temporal UI        : https://localhost:8446" -ForegroundColor Cyan

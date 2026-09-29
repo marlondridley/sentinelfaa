@@ -1,12 +1,22 @@
-# Add-Guest.ps1 -- a read-only guest login for the public site (docs/public-access.md).
+# Add-Guest.ps1 -- a login for the public site (docs/public-access.md):
+# read-only by default, or with a decision role for a demo.
 #
 #   .\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Email jdoe@example.com
+#   .\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Email jdoe@example.com -Role watch_officer
 #   .\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Disable
 #
-# A guest has no realm role: they can see the dashboard and decide nothing
-# (src/auth.authorize). The password is generated here, shown ONCE, and is
-# temporary -- Keycloak makes the guest choose their own at first sign-in.
-# Give it to them privately (not in the same email as the link).
+# -Role (src/auth.py DECISION_ROLES):
+#   none           (default) sees everything, decides nothing
+#   auditor        the same, as a named auditor
+#   watch_officer  approve, reject, monitor
+#   supervisor     those, and override the AI's recommendation or severity
+# The user ends with exactly that role: running it again with another role
+# replaces it. Every decision is signed with the user's name in the audit
+# trail, so give each person their own login, never a shared one.
+#
+# The password is generated here, shown ONCE, and is temporary -- Keycloak
+# makes the user choose their own at first sign-in. Give it to them
+# privately (not in the same email as the link).
 #
 # -Disable turns the login off and ends its sessions at once. (If you also
 # run Cloudflare Access in front of the site -- optional, see the runbook --
@@ -19,6 +29,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[a-zA-Z0-9._-]{3,64}$')][string]$Username,
     [string]$Email,
+    [ValidateSet('none', 'auditor', 'watch_officer', 'supervisor')][string]$Role = 'none',
     [switch]$Disable
 )
 
@@ -67,10 +78,11 @@ try {
         $temporary = New-TemporaryPassword
         $env:APP_USER_PW = $temporary
         $env:APP_EMAIL = $Email
-        $env:APP_ROLES = 'none'
+        $env:APP_ROLES = $Role
+        $env:APP_ROLES_EXACT = '1'
         $env:APP_TEMPORARY_PASSWORD = '1'
-        $env:APP_LAST_NAME = 'Guest'
-        docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL -e APP_ROLES `
+        $env:APP_LAST_NAME = if ($Role -eq 'none') { 'Guest' } else { 'Operator' }
+        docker exec -e KC_ADMIN_PW -e APP_USERNAME -e APP_USER_PW -e APP_EMAIL -e APP_ROLES -e APP_ROLES_EXACT `
             -e APP_TEMPORARY_PASSWORD -e APP_LAST_NAME nas-keycloak bash /tmp/keycloak-operator.sh
     }
     $code = $LASTEXITCODE
@@ -84,11 +96,13 @@ if ($code -ne 0) { Fail "Keycloak did not accept the change (exit $code); see ab
 
 if ($Disable) {
     Write-Host ""
-    Write-Host "Guest '$Username' is off; their sessions are ended." -ForegroundColor Green
+    Write-Host "'$Username' is off; their sessions are ended." -ForegroundColor Green
     exit 0
 }
 Write-Host ""
-Write-Host "Guest '$Username' ($Email) is ready: read-only." -ForegroundColor Green
+$can = @{ none = 'read-only'; auditor = 'auditor, read-only'; watch_officer = 'watch officer: approve, reject, monitor'
+          supervisor = 'supervisor: approve, reject, monitor, override' }[$Role]
+Write-Host "'$Username' ($Email) is ready: $can." -ForegroundColor Green
 Write-Host "  Temporary password (shown once): $temporary" -ForegroundColor Yellow
 Write-Host "  Give it to them privately. They choose their own at first sign-in." -ForegroundColor Yellow
 Write-Host "  They sign in at the public dashboard address (docs/public-access.md)." -ForegroundColor Cyan

@@ -11,9 +11,10 @@
 #   3. Refused       the admin console, the master realm, the account console,
 #                    Keycloak's metrics/health, and every other service:
 #                    all 404 at the edge, whatever a tunnel rule says
-#   4. Tunnel        if running: read-only root, all capabilities dropped,
-#                    no-new-privileges, non-root user, healthy, and every route
-#                    Cloudflare sent it verifies the edge (no noTLSVerify)
+#   4. Tunnel        running exactly when public access is on; if running:
+#                    read-only root, all capabilities dropped, no-new-privileges,
+#                    non-root user, healthy, and every route Cloudflare sent it
+#                    verifies the edge (no noTLSVerify)
 #
 # Runs from the host with the Docker CLI; requests go from a throwaway
 # container on nas-network (the app image: Python, the local CA). Hostnames
@@ -42,9 +43,12 @@ envval() {  # the application's env file wins over the infrastructure's, as in c
 DASH_URL=$(envval PUBLIC_DASHBOARD_URL); AUTH_URL=$(envval KEYCLOAK_PUBLIC_URL)
 DASH_HOST=${DASH_URL#https://}; DASH_HOST=${DASH_HOST:-localhost}
 AUTH_HOST=${AUTH_URL#https://}; AUTH_HOST=${AUTH_HOST:-localhost}
-ISSUER="${AUTH_URL:-https://localhost:8081}/realms/nas-sentinel"
+# The sign-in address Keycloak is serving now: the public one while public
+# access is on (KEYCLOAK_BROWSER_URL, scripts/Set-PublicAccess.ps1), else local.
+BROWSER_URL=$(envval KEYCLOAK_BROWSER_URL)
+ISSUER="${BROWSER_URL:-https://localhost:8081}/realms/nas-sentinel"
 
-echo "Public exposure probe: dashboard=$DASH_HOST sign-in=$AUTH_HOST"
+echo "Public exposure probe: dashboard=$DASH_HOST sign-in=$AUTH_HOST (public access $([ -n "$BROWSER_URL" ] && echo on || echo off))"
 
 # ── 1. Host ──────────────────────────────────────────────────────────────────
 echo "1. Nothing public is published on this machine"
@@ -106,7 +110,13 @@ printf '%s\n' "$out" | grep -q '^PASS' || { fail "the probe container produced n
 
 # ── 4. The tunnel's own container ────────────────────────────────────────────
 echo "4. The tunnel container"
-if docker inspect nas-cloudflared >/dev/null 2>&1; then
+running=$(docker inspect -f '{{.State.Running}}' nas-cloudflared 2>/dev/null)
+if [ -n "$BROWSER_URL" ] && [ "$running" != true ]; then
+    fail "public access is on (sign-in at $BROWSER_URL) but the tunnel is not running: nobody can reach it"
+elif [ -z "$BROWSER_URL" ] && [ "$running" = true ]; then
+    fail "the tunnel is running while public access is off: visitors reach a sign-in they cannot use"
+fi
+if [ "$running" = true ]; then
     [ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' nas-cloudflared)" = true ] && pass "read-only root filesystem" || fail "writable root filesystem"
     docker inspect -f '{{.HostConfig.CapDrop}}' nas-cloudflared | grep -q ALL && pass "all capabilities dropped" || fail "capabilities not dropped"
     docker inspect -f '{{.HostConfig.SecurityOpt}}' nas-cloudflared | grep -q no-new-privileges && pass "no-new-privileges" || fail "no-new-privileges not set"

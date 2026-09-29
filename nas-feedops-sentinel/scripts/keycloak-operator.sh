@@ -14,6 +14,8 @@
 #                           "none": a read-only guest -- every role this realm
 #                           defines is removed (a signed-in user with no role
 #                           can see, never decide: src/auth.authorize).
+#   APP_ROLES_EXACT         1: the user ends with exactly APP_ROLES (realm
+#                           roles not listed are removed); default: added to.
 #   APP_TEMPORARY_PASSWORD  1: the password is temporary, and Keycloak makes
 #                           the user choose their own at first sign-in.
 #   APP_LAST_NAME           default Operator (Keycloak's profile requires one).
@@ -94,8 +96,16 @@ if [ "$APP_ROLES" = none ]; then
     done
     echo "user $APP_USERNAME: no role (read-only)"
 else
+    if [ "${APP_ROLES_EXACT:-0}" = 1 ]; then   # exactly these: a change of role also takes the old one away
+        for role in $REALM_ROLES; do
+            case ",$APP_ROLES," in
+                *",$role,"*) ;;
+                *) kc remove-roles -r "$REALM" --uusername "$APP_USERNAME" --rolename "$role" >/dev/null 2>&1 || true ;;
+            esac
+        done
+    fi
     for role in $(echo "$APP_ROLES" | tr ',' ' '); do
         kc add-roles -r "$REALM" --uusername "$APP_USERNAME" --rolename "$role"
     done
-    echo "user $APP_USERNAME: roles $APP_ROLES"
+    echo "user $APP_USERNAME: roles $APP_ROLES${APP_ROLES_EXACT:+ (only)}"
 fi

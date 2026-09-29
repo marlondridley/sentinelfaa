@@ -167,7 +167,7 @@ def test_compose_serves_keycloak_over_https_only():
     assert env["KC_HTTP_ENABLED"] == "false"
     # The public sign-in address is a setting (docs/public-access.md); its
     # default, and the admin console always, are https on loopback.
-    hostname = re.fullmatch(r"\$\{KEYCLOAK_PUBLIC_URL:-(.+)\}", env["KC_HOSTNAME"])
+    hostname = re.fullmatch(r"\$\{KEYCLOAK_BROWSER_URL:-(.+)\}", env["KC_HOSTNAME"])
     assert hostname and hostname.group(1).startswith("https://"), env["KC_HOSTNAME"]
     assert env["KC_HOSTNAME_ADMIN"] == "https://localhost:8081"
     assert env["KC_HTTPS_CERTIFICATE_FILE"] and env["KC_HTTPS_CERTIFICATE_KEY_FILE"]

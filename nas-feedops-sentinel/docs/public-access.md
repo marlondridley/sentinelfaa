@@ -86,29 +86,49 @@ docker ps --filter ancestor=cloudflare/cloudflared --format "{{.Names}}"   # the
 It does the following, and can be run again safely:
 
 - checks the three settings;
-- points the dashboard's sign-in return address at the public URL, asking before it changes that one line of `.streamlit/secrets.toml`;
-- lets Keycloak accept it;
-- restarts Keycloak, the edge and the dashboard;
-- starts the tunnel;
+- lets Keycloak accept the public return address, alongside the local one;
+- makes sure the edge's public listeners are up;
+- switches public access on (below);
 - runs the exposure probe.
 
-From then on, every launch that should be public:
+## 5. On and off
+
+Public access is a mode. `scripts/Set-PublicAccess.ps1 -Mode On|Off` switches three things together, because sign-in only works when they agree:
+
+| | On | Off |
+|---|---|---|
+| Keycloak's sign-in address | `https://auth.<your-domain>` | `https://localhost:8081` |
+| The dashboard's return address (`redirect_uri` in `.streamlit/secrets.toml`) | `https://sentinel.<your-domain>/oauth2callback` | `https://localhost:8443/oauth2callback` |
+| The tunnel | running | stopped |
+| Where everyone signs in, operators on this machine too | `https://sentinel.<your-domain>` | `https://localhost:8443` |
+
+The launcher switches it on every launch:
 
 ```powershell
-.\launch_nas_sentinel.ps1 -Public
+.\launch_nas_sentinel.ps1 -Public    # on
+.\launch_nas_sentinel.ps1            # off: local only
 ```
 
-Without `-Public`, the launcher stops the tunnel: the site is public only when you ask for it.
+The mode is kept in the files (Keycloak's address as `KEYCLOAK_BROWSER_URL` in `nas-feedops-sentinel/.env`, which the script writes and removes; don't edit that line). So any `docker compose` run starts Keycloak with the same address. The script restarts only what changed. Probe 05 fails if the tunnel and the mode disagree.
 
-## 5. Guests
+## 6. Logins
 
 ```powershell
-.\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Email jdoe@example.com
+.\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Email jdoe@example.com                       # read-only
+.\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username jdoe -Email jdoe@example.com -Role watch_officer   # a demo operator
 ```
 
-- **What a guest gets:** a read-only account and a temporary password, shown once. Give it to them privately, not in the same message as the link. Keycloak makes them choose their own at first sign-in (12+ characters).
-- **Turning a guest off:** `-Disable` does it and ends their sessions immediately.
-- **Operators** (people who decide) are still created with `scripts/Setup-Keycloak.ps1`.
+| `-Role` | Can do |
+|---|---|
+| `none` (the default) | see everything, decide nothing |
+| `auditor` | the same, as a named auditor |
+| `watch_officer` | approve, reject, monitor |
+| `supervisor` | those, and override the AI's recommendation or severity |
+
+- **What a login gets:** exactly that role, and a temporary password shown once. Give it to them privately, not in the same message as the link. Keycloak makes them choose their own at first sign-in (12+ characters). Running it again with another role replaces the role.
+- **Decisions are real.** Each one is signed with the person's name in the audit trail and acts on live data. Give each person their own login, never a shared one.
+- **Turning a login off:** `-Disable` does it and ends their sessions immediately.
+- **Your own operator login** (you choose the password) is still `scripts/Setup-Keycloak.ps1`. It keeps the public return address.
 
 ## Adding Cloudflare Access later (optional)
 
