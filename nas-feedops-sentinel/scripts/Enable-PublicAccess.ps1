@@ -90,10 +90,13 @@ if ($code -ne 0) { Fail "updating the realm's dashboard client failed (exit $cod
 Ok "Keycloak accepts $wanted"
 
 # -- 4. Restart what changed, then the tunnel ----------------------------------
-docker compose -f $compose @envArgs up -d --wait keycloak edge dashboard
+# --no-deps: only these, on the running stack. Without it compose would also
+# start their dependencies, among them the migrate job's identity sidecars,
+# which hold the schema owner's credentials and run only during a migration.
+docker compose -f $compose @envArgs up -d --wait --no-deps keycloak edge dashboard
 if ($LASTEXITCODE -ne 0) { Fail "keycloak / edge / dashboard did not come back healthy" }
 Ok "keycloak (sign-in at $authUrl), edge (public listeners), dashboard restarted"
-docker compose -f $compose @envArgs --profile public up -d --wait cloudflared
+docker compose -f $compose @envArgs --profile public up -d --wait --no-deps cloudflared
 if ($LASTEXITCODE -ne 0) { Fail "the tunnel did not become ready: docker logs nas-cloudflared" }
 Ok "tunnel connected (nas-cloudflared)"
 
