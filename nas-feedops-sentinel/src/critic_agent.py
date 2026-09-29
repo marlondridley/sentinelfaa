@@ -87,7 +87,7 @@ class CriticAgent:
 
         start = time.perf_counter()
         try:
-            context = await agent_tools.invoke("read_alert_context", _router.build_alert_context, alert.airport_code)
+            context = await agent_tools.invoke("read_alert_context", _router.build_alert_context, alert.airport_code, as_of=alert.triggered_at)
             raw = await self._call_llm(alert, context)
 
             # The critic's output reaches critic_results and the staged action a

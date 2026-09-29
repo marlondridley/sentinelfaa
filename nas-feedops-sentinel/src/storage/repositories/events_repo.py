@@ -13,6 +13,15 @@ import asyncpg
 from src.models import AlertEvent, NASEvent
 
 
+def _critic_window(window_minutes: int, as_of: datetime | None) -> tuple[datetime, datetime | None]:
+    """(start, end) of a critic look-back: the last N minutes, or N minutes up to as_of."""
+    if as_of is None:
+        return datetime.now(timezone.utc) - timedelta(minutes=window_minutes), None
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    return as_of - timedelta(minutes=window_minutes), as_of + timedelta(minutes=1)
+
+
 class EventsRepository:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
@@ -221,53 +230,42 @@ class EventsRepository:
         return dict(row) if row else {"total": 0, "passed": 0, "failed": 0}
 
     async def get_events_for_critic(
-        self, airport_code: str | None, window_minutes: int = 30, limit: int = 50
+        self, airport_code: str | None, window_minutes: int = 30, limit: int = 50,
+        as_of: datetime | None = None,
     ) -> list[dict]:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-        if airport_code:
-            rows = await self._pool.fetch(
-                """SELECT event_id, airport_code, service_name, latency_ms, feed_status,
-                          rvr_touchdown, rvr_midpoint, rvr_rollout, runway,
-                          received_time_utc, validation_status
-                   FROM nas_events
-                   WHERE airport_code = $1 AND received_time_utc >= $2
-                   ORDER BY received_time_utc DESC LIMIT $3""",
-                airport_code, cutoff, limit,
-            )
-        else:
-            rows = await self._pool.fetch(
-                """SELECT event_id, airport_code, service_name, latency_ms, feed_status,
-                          rvr_touchdown, rvr_midpoint, rvr_rollout, runway,
-                          received_time_utc, validation_status
-                   FROM nas_events
-                   WHERE received_time_utc >= $1
-                   ORDER BY received_time_utc DESC LIMIT $2""",
-                cutoff, limit,
-            )
+        # as_of anchors the window on the moment being judged (an alert's own
+        # firing time) instead of "now": re-reading an old alert today must see
+        # the feed as it was then, not a silent one. A minute of slack after
+        # as_of keeps readings that landed with the alert.
+        start, end = _critic_window(window_minutes, as_of)
+        rows = await self._pool.fetch(
+            """SELECT event_id, airport_code, service_name, latency_ms, feed_status,
+                      rvr_touchdown, rvr_midpoint, rvr_rollout, runway,
+                      received_time_utc, validation_status
+               FROM nas_events
+               WHERE ($1::text IS NULL OR airport_code = $1)
+                 AND received_time_utc >= $2
+                 AND ($3::timestamptz IS NULL OR received_time_utc <= $3)
+               ORDER BY received_time_utc DESC LIMIT $4""",
+            airport_code, start, end, limit,
+        )
         return [dict(r) for r in rows]
 
     async def get_alerts_for_critic(
-        self, airport_code: str | None, window_minutes: int = 60, limit: int = 10
+        self, airport_code: str | None, window_minutes: int = 60, limit: int = 10,
+        as_of: datetime | None = None,
     ) -> list[dict]:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-        if airport_code:
-            rows = await self._pool.fetch(
-                """SELECT alert_id, alert_type, severity, airport_code, service_name,
-                          description, triggered_at
-                   FROM alert_events
-                   WHERE airport_code = $1 AND triggered_at >= $2
-                   ORDER BY triggered_at DESC LIMIT $3""",
-                airport_code, cutoff, limit,
-            )
-        else:
-            rows = await self._pool.fetch(
-                """SELECT alert_id, alert_type, severity, airport_code, service_name,
-                          description, triggered_at
-                   FROM alert_events
-                   WHERE triggered_at >= $1
-                   ORDER BY triggered_at DESC LIMIT $2""",
-                cutoff, limit,
-            )
+        start, end = _critic_window(window_minutes, as_of)
+        rows = await self._pool.fetch(
+            """SELECT alert_id, alert_type, severity, airport_code, service_name,
+                      description, triggered_at
+               FROM alert_events
+               WHERE ($1::text IS NULL OR airport_code = $1)
+                 AND triggered_at >= $2
+                 AND ($3::timestamptz IS NULL OR triggered_at <= $3)
+               ORDER BY triggered_at DESC LIMIT $4""",
+            airport_code, start, end, limit,
+        )
         return [dict(r) for r in rows]
 
     async def get_active_aircraft(self, window_minutes: int = 5, limit: int = 500) -> list[dict]:
