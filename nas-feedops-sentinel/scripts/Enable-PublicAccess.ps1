@@ -6,13 +6,13 @@
 #   1. Settings   PUBLIC_DASHBOARD_URL, KEYCLOAK_PUBLIC_URL (https://host, no
 #                 trailing slash) and CLOUDFLARE_TUNNEL_TOKEN, in either env
 #                 file. Only their names are ever printed.
-#   2. Dashboard  .streamlit/secrets.toml redirect_uri must be
-#                 PUBLIC_DASHBOARD_URL/oauth2callback; asks before changing
-#                 that one line (nothing else in the file is touched).
-#   3. Keycloak   the dashboard client also accepts the public callback
+#   2. Keycloak   the dashboard client also accepts the public callback
 #                 (scripts/keycloak-rbac.sh, PUBLIC_DASHBOARD_URL).
-#   4. Restart    keycloak (its public sign-in address), edge (the public
-#                 listeners), dashboard (the new redirect_uri); then the tunnel.
+#   3. Edge       the public listeners (a no-op once they exist).
+#   4. On         scripts/Set-PublicAccess.ps1 -Mode On: Keycloak's sign-in
+#                 address, the dashboard's return address (the one
+#                 redirect_uri line of .streamlit/secrets.toml) and the tunnel.
+#                 From then on the launcher switches it: -Public on, else off.
 #   5. Proof      scripts/smoke/05_public_exposure_probe.sh: the public
 #                 listeners serve the dashboard and the sign-in pages, and
 #                 nothing else -- not the admin console, not the master realm.
@@ -24,7 +24,6 @@ $repo     = Split-Path -Parent $appDir
 $infraEnv = Join-Path (Join-Path $repo 'instraclustr') '.env'
 $appEnv   = Join-Path $appDir '.env'
 $compose  = Join-Path $appDir 'docker-compose.yml'
-$secrets  = Join-Path (Join-Path $appDir '.streamlit') 'secrets.toml'
 $envArgs  = @('--env-file', $infraEnv, '--env-file', $appEnv)
 
 function Fail([string]$message) { Write-Host "ERROR: $message" -ForegroundColor Red; exit 2 }
@@ -56,24 +55,9 @@ if ($dashboardUrl -eq $authUrl) { Fail "PUBLIC_DASHBOARD_URL and KEYCLOAK_PUBLIC
 if (-not (Get-EnvValue 'CLOUDFLARE_TUNNEL_TOKEN')) { Fail "CLOUDFLARE_TUNNEL_TOKEN is in neither env file" }
 Ok "settings: PUBLIC_DASHBOARD_URL, KEYCLOAK_PUBLIC_URL, CLOUDFLARE_TUNNEL_TOKEN"
 
-# -- 2. The dashboard's redirect_uri -------------------------------------------
-if (-not (Test-Path $secrets)) { Fail "missing $secrets" }
 $wanted = "$dashboardUrl/oauth2callback"
-$lines = [IO.File]::ReadAllLines($secrets)
-$index = -1
-for ($i = 0; $i -lt $lines.Length; $i++) { if ($lines[$i] -match '^\s*redirect_uri\s*=') { $index = $i; break } }
-if ($index -lt 0) { Fail "no redirect_uri in $secrets" }
-if ($lines[$index] -notmatch [regex]::Escape($wanted)) {
-    Write-Host "  .streamlit/secrets.toml has: $($lines[$index].Trim())"
-    Write-Host "  It must be:                 redirect_uri = `"$wanted`""
-    Write-Host "  (Operators on this machine then also sign in through the public address.)"
-    if ((Read-Host "  Change that one line now? [y/N]") -notmatch '^[yY]') { Fail "redirect_uri left as it is; nothing else was changed" }
-    $lines[$index] = "redirect_uri = `"$wanted`""
-    [IO.File]::WriteAllLines($secrets, $lines, (New-Object System.Text.UTF8Encoding($false)))
-}
-Ok "dashboard redirect_uri: $wanted"
 
-# -- 3. Keycloak: allow the public callback ------------------------------------
+# -- 2. Keycloak: allow the public callback ------------------------------------
 $adminPw = Get-EnvValue 'KEYCLOAK_ADMIN_PASSWORD'
 if (-not $adminPw) { Fail "KEYCLOAK_ADMIN_PASSWORD is in neither env file" }
 if ((docker inspect -f '{{.State.Running}}' nas-keycloak 2>$null) -ne 'true') { Fail "nas-keycloak is not running: start the stack first" }
@@ -89,16 +73,17 @@ try {
 if ($code -ne 0) { Fail "updating the realm's dashboard client failed (exit $code)" }
 Ok "Keycloak accepts $wanted"
 
-# -- 4. Restart what changed, then the tunnel ----------------------------------
-# --no-deps: only these, on the running stack. Without it compose would also
-# start their dependencies, among them the migrate job's identity sidecars,
-# which hold the schema owner's credentials and run only during a migration.
-docker compose -f $compose @envArgs up -d --wait --no-deps keycloak edge dashboard
-if ($LASTEXITCODE -ne 0) { Fail "keycloak / edge / dashboard did not come back healthy" }
-Ok "keycloak (sign-in at $authUrl), edge (public listeners), dashboard restarted"
-docker compose -f $compose @envArgs --profile public up -d --wait --no-deps cloudflared
-if ($LASTEXITCODE -ne 0) { Fail "the tunnel did not become ready: docker logs nas-cloudflared" }
-Ok "tunnel connected (nas-cloudflared)"
+# -- 3. The edge's public listeners ---------------------------------------------
+# --no-deps: the running stack only. Without it compose would also start the
+# migrate job's identity sidecars, which hold the schema owner's credentials
+# and run only during a migration.
+docker compose -f $compose @envArgs up -d --wait --no-deps edge
+if ($LASTEXITCODE -ne 0) { Fail "the edge did not come back healthy: docker logs nas-edge" }
+Ok "edge (public listeners)"
+
+# -- 4. On: sign-in addresses and the tunnel -------------------------------------
+& (Join-Path $PSScriptRoot 'Set-PublicAccess.ps1') -Mode On
+if ($LASTEXITCODE -ne 0) { Fail "public access could not be switched on (see above)" }
 
 # -- 5. Proof -------------------------------------------------------------------
 $git = Get-Command git -ErrorAction SilentlyContinue
@@ -111,6 +96,6 @@ Write-Host ""
 Write-Host "Public access is on:" -ForegroundColor Green
 Write-Host "  dashboard  $dashboardUrl" -ForegroundColor Cyan
 Write-Host "  sign-in    $authUrl" -ForegroundColor Cyan
-Write-Host "From now on: .\launch_nas_sentinel.ps1 -Public  (without -Public the tunnel is stopped)." -ForegroundColor DarkGray
-Write-Host "Guests: .\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username <name> -Email <email>" -ForegroundColor DarkGray
+Write-Host "From now on: .\launch_nas_sentinel.ps1 -Public  (without -Public it is switched off: tunnel stopped, sign-in at https://localhost:8443)." -ForegroundColor DarkGray
+Write-Host "Logins: .\nas-feedops-sentinel\scripts\Add-Guest.ps1 -Username <name> -Email <email> [-Role watch_officer|supervisor]" -ForegroundColor DarkGray
 exit 0

@@ -12,7 +12,9 @@ edit that would widen it fails CI instead of reaching the internet:
     account console and everything else answer 404
   * Keycloak: the public sign-in address is a setting, the admin console is
     always loopback
-  * guests: no realm role, a temporary password, secrets passed by name only
+  * guests: no realm role unless one is named (then exactly that one), a
+    temporary password, secrets passed by name only; every realm update
+    keeps the public sign-in callback
 scripts/smoke/05_public_exposure_probe.sh proves the same on the live stack.
 """
 from __future__ import annotations
@@ -130,9 +132,41 @@ def test_the_edge_can_verify_keycloak():
 def test_keycloak_public_address_is_a_setting_and_the_admin_console_stays_local():
     kc = _compose()["services"]["keycloak"]
     env = kc["environment"]
-    assert env["KC_HOSTNAME"] == "${KEYCLOAK_PUBLIC_URL:-https://localhost:8081}"
+    assert env["KC_HOSTNAME"] == "${KEYCLOAK_BROWSER_URL:-https://localhost:8081}"
     assert env["KC_HOSTNAME_ADMIN"] == "https://localhost:8081"
     assert all(p.startswith("127.0.0.1:") for p in kc["ports"]), "Keycloak's own port is loopback"
+
+
+# -- The switch: public on with -Public, off without it ----------------------------
+
+def _set_public() -> str:
+    return (APP / "scripts" / "Set-PublicAccess.ps1").read_text(encoding="utf-8")
+
+
+def test_the_launcher_switches_public_access_on_every_launch():
+    launcher = (INFRA.parent / "launch_nas_sentinel.ps1").read_text(encoding="utf-8")
+    assert "$publicMode = if ($Public) { 'On' } else { 'Off' }" in launcher
+    assert "'scripts\\Set-PublicAccess.ps1') -Mode $publicMode" in launcher
+    assert "cloudflared" not in launcher.split("# 4b.")[1].split("# 5.")[0], \
+        "the tunnel is started and stopped by Set-PublicAccess.ps1 only"
+
+
+def test_off_restores_local_sign_in_and_stops_the_tunnel():
+    text = _set_public()
+    assert "$localSignIn   = 'https://localhost:8081'" in text
+    assert "$localCallback = 'https://localhost:8443/oauth2callback'" in text
+    off = text.split("} else {\n    $signIn   = $localSignIn")[0]
+    assert "if ($pair[1] -notmatch '^https://[a-z0-9.-]+[a-z0-9]$')" in off, "On accepts https://host only"
+    assert "--profile public stop cloudflared" in text
+
+
+def test_one_name_for_the_sign_in_address_everywhere():
+    # compose reads it, Set-PublicAccess writes it, probe 05 checks Keycloak
+    # against it: a rename in one place alone breaks sign-in.
+    assert "${KEYCLOAK_BROWSER_URL:-" in _compose()["services"]["keycloak"]["environment"]["KC_HOSTNAME"]
+    assert "$browserKey    = 'KEYCLOAK_BROWSER_URL'" in _set_public()
+    probe = (INFRA.parent / "scripts" / "smoke" / "05_public_exposure_probe.sh").read_text(encoding="utf-8")
+    assert "BROWSER_URL=$(envval KEYCLOAK_BROWSER_URL)" in probe
 
 
 # -- Guests ---------------------------------------------------------------------
@@ -143,8 +177,29 @@ def test_a_guest_gets_no_role_and_a_temporary_password():
     assert 'for role in $REALM_ROLES; do' in op and 'kc remove-roles' in op
     assert "--temporary" in op
     guest = (APP / "scripts" / "Add-Guest.ps1").read_text(encoding="utf-8")
-    assert "$env:APP_ROLES = 'none'" in guest
+    # Read-only unless a role is asked for by name, from the realm's own roles.
+    assert "[ValidateSet('none', 'auditor', 'watch_officer', 'supervisor')][string]$Role = 'none'" in guest
+    assert "$env:APP_ROLES = $Role" in guest
     assert "$env:APP_TEMPORARY_PASSWORD = '1'" in guest
+
+
+def test_a_role_change_replaces_the_old_role():
+    op = (APP / "scripts" / "keycloak-operator.sh").read_text(encoding="utf-8")
+    assert 'if [ "${APP_ROLES_EXACT:-0}" = 1 ]; then' in op
+    guest = (APP / "scripts" / "Add-Guest.ps1").read_text(encoding="utf-8")
+    assert "$env:APP_ROLES_EXACT = '1'" in guest and "-e APP_ROLES_EXACT" in guest
+
+
+def test_every_realm_update_keeps_the_public_callback():
+    # keycloak-rbac.sh rewrites the dashboard client's callbacks on every run;
+    # a caller that leaves out PUBLIC_DASHBOARD_URL drops the public one, and
+    # sign-in through the public address fails.
+    for name in ("Setup-Keycloak.ps1", "Enable-PublicAccess.ps1"):
+        runs = [line for line in (APP / "scripts" / name).read_text(encoding="utf-8").splitlines()
+                if "docker exec" in line and "bash /tmp/keycloak-rbac.sh" in line]
+        assert runs, f"{name}: does not run keycloak-rbac.sh"
+        for line in runs:
+            assert "-e PUBLIC_DASHBOARD_URL" in line, f"{name}: {line.strip()}"
 
 
 def test_guest_and_public_scripts_pass_secrets_by_name_only():
@@ -159,12 +214,10 @@ def test_turning_public_access_on_restarts_nothing_else():
     # Starting the tunnel (or restarting keycloak/edge/dashboard for it) must
     # not bring back the migrate job's sidecars: they hold the schema owner's
     # credentials and run only during a migration.
-    launcher = (INFRA.parent / "launch_nas_sentinel.ps1").read_text(encoding="utf-8")
-    enable = (APP / "scripts" / "Enable-PublicAccess.ps1").read_text(encoding="utf-8")
-    for name, text in (("launch_nas_sentinel.ps1", launcher), ("Enable-PublicAccess.ps1", enable)):
-        ups = [line for line in text.splitlines() if re.search(r"docker compose .* up -d", line)
-               and re.search(r"\b(cloudflared|keycloak edge dashboard)\b", line)]
-        assert ups, f"{name}: no compose up for the tunnel"
+    for name in ("Set-PublicAccess.ps1", "Enable-PublicAccess.ps1"):
+        text = (APP / "scripts" / name).read_text(encoding="utf-8")
+        ups = [line for line in text.splitlines() if re.search(r"docker compose .* up -d", line)]
+        assert ups, f"{name}: no compose up"
         for line in ups:
             assert "--no-deps" in line, f"{name}: {line.strip()}"
 

@@ -150,8 +150,12 @@ docker cp $operatorSh nas-keycloak:/tmp/keycloak-operator.sh | Out-Null
 docker cp $rbacSh nas-keycloak:/tmp/keycloak-rbac.sh | Out-Null
 try {
     $env:KC_ADMIN_PW = $adminPw; $env:APP_USERNAME = $user; $env:APP_USER_PW = $p1; $env:APP_EMAIL = $email
+    # The public sign-in callback as well, once public access is set up
+    # (docs/public-access.md): without it this run would drop it from the
+    # dashboard client, and sign-in through the public address would fail.
+    $env:PUBLIC_DASHBOARD_URL = Get-EnvValue 'PUBLIC_DASHBOARD_URL'
     # Realm roles + ID-token mapper first: the operator script grants roles.
-    docker exec -e KC_ADMIN_PW nas-keycloak bash /tmp/keycloak-rbac.sh
+    docker exec -e KC_ADMIN_PW -e PUBLIC_DASHBOARD_URL nas-keycloak bash /tmp/keycloak-rbac.sh
     if ($LASTEXITCODE -ne 0) { throw "Applying realm roles failed inside the container (exit $LASTEXITCODE)." }
     # APP_ROLES defaults to watch_officer; set it before running this script
     # (e.g. $env:APP_ROLES = 'watch_officer,supervisor') to grant more.
@@ -159,7 +163,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Creating the operator failed inside the container (exit $LASTEXITCODE)." }
 }
 finally {
-    Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL -ErrorAction SilentlyContinue
+    Remove-Item Env:KC_ADMIN_PW, Env:APP_USERNAME, Env:APP_USER_PW, Env:APP_EMAIL, Env:PUBLIC_DASHBOARD_URL -ErrorAction SilentlyContinue
     docker exec -u 0 nas-keycloak rm -f /tmp/keycloak-operator.sh /tmp/keycloak-rbac.sh | Out-Null   # docker cp: root-owned
 }
 
