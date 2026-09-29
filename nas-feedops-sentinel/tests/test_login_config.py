@@ -119,6 +119,75 @@ def test_a_forged_cookie_is_not_a_sign_in_while_the_secret_is_a_placeholder(monk
     assert login.current_principal() is None
 
 
+class _Metadata:
+    def __init__(self, document: dict | None = None, error: Exception | None = None):
+        self.document, self.error, self.calls = document, error, []
+
+    def __call__(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if self.error:
+            raise self.error
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: self.document)
+
+
+def test_the_realm_shown_is_the_issuer_keycloak_publishes():
+    get = _Metadata({"issuer": "https://auth.example.com/realms/nas-sentinel"})
+    url = GOOD["keycloak"]["server_metadata_url"]
+    assert login._issuer(url, "/run/tls/edge-ca.crt", get) == "https://auth.example.com/realms/nas-sentinel"
+    assert get.calls == [(url, {"verify": "/run/tls/edge-ca.crt", "timeout": 3.0})], "fetched with the local CA"
+
+
+@pytest.mark.parametrize("get", [_Metadata({"issuer": "http://auth.example.com/realms/nas-sentinel"}),
+                                 _Metadata({}), _Metadata(error=OSError("connection refused"))])
+def test_no_realm_is_shown_rather_than_a_wrong_or_insecure_one(get):
+    assert login._issuer(GOOD["keycloak"]["server_metadata_url"], True, get) == ""
+
+
+def _render(monkeypatch, realm: str) -> str:
+    """render_login with a stand-in Streamlit; returns every piece of HTML it drew."""
+    class Auth(dict):
+        def to_dict(self):
+            return dict(self)
+
+    class Block:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class Stopped(Exception):
+        pass
+
+    def stop():
+        raise Stopped
+
+    drawn: list[str] = []
+    monkeypatch.setattr(login, "st", SimpleNamespace(
+        secrets=SimpleNamespace(get=lambda key: Auth(GOOD)),
+        markdown=lambda html, **kwargs: drawn.append(html),
+        columns=lambda spec: (Block(), Block(), Block()),
+        container=lambda **kwargs: Block(),
+        button=lambda *args, **kwargs: False,
+        stop=stop,
+    ))
+    monkeypatch.setattr(login, "_realm_address", lambda url, verify: realm)
+    with pytest.raises(Stopped):
+        login.render_login()
+    return "\n".join(drawn)
+
+
+def test_the_sign_in_page_names_the_public_realm_never_the_internal_address(monkeypatch):
+    page = _render(monkeypatch, "https://auth.example.com/realms/nas-sentinel")
+    assert "Realm: <code>https://auth.example.com/realms/nas-sentinel</code>" in page
+    assert "keycloak:8443" not in page, "the dashboard's server-to-server address stays off the page"
+
+
+def test_the_sign_in_page_leaves_the_realm_out_when_it_is_unknown(monkeypatch):
+    page = _render(monkeypatch, "")
+    assert "Realm:" not in page and "keycloak:8443" not in page
+
+
 def test_a_properly_configured_sign_in_is_still_honoured(monkeypatch):
     class Auth(dict):
         def to_dict(self):

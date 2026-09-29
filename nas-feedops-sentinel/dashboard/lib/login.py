@@ -16,8 +16,10 @@ callsign, labelled UNVERIFIED (lib/page_setup.py).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any, NoReturn
 
+import httpx
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
@@ -105,6 +107,29 @@ def _config_problem(auth: dict[str, Any]) -> str:
     return ""
 
 
+def _issuer(metadata_url: str, verify: str | bool, get: Callable[..., Any] = httpx.get) -> str:
+    """
+    The realm as browsers reach it: the issuer Keycloak publishes, which is its
+    public sign-in address while public access is on (docs/public-access.md)
+    and https://localhost:8081 otherwise. Not server_metadata_url: that is the
+    dashboard's internal, server-to-server address, which means nothing to a
+    visitor and should not be shown on a public page. "" when unavailable.
+    """
+    try:
+        response = get(metadata_url, verify=verify, timeout=3.0)
+        response.raise_for_status()
+        return require_https(str(response.json().get("issuer", "")), "issuer")
+    except Exception as exc:  # noqa: BLE001 -- the footer is informational; sign-in must not depend on it
+        _log.warning("realm_issuer_unavailable", extra={"error": type(exc).__name__})
+        return ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _realm_address(metadata_url: str, verify: str | bool) -> str:
+    """_issuer, fetched at most every five minutes however many visitors load the page."""
+    return _issuer(metadata_url, verify)
+
+
 def current_principal() -> Principal | None:
     """The signed-in operator, or None. A sign-in past the realm's maximum session is ended here."""
     # st.user has no is_logged_in at all without an [auth] section. With an unusable
@@ -174,7 +199,11 @@ def render_login() -> NoReturn:
                 st.markdown(f'<div class="lg-alert">{theme._esc(problem)}</div>', unsafe_allow_html=True)
             elif st.button("Sign in with Keycloak", type="primary", use_container_width=True):
                 st.login(PROVIDER)
-        realm = str(auth.get(PROVIDER, {}).get("server_metadata_url", "")).split("/.well-known")[0]
+        provider = auth.get(PROVIDER, {})
+        realm = ""
+        if not problem:
+            verify = (provider.get("client_kwargs") or {}).get("verify", True)
+            realm = _realm_address(str(provider.get("server_metadata_url", "")), verify)
         st.markdown(
             '<div class="lg-foot">You sign in on the realm\'s own page; this console never sees your password.'
             + (f"<br/>Realm: <code>{theme._esc(realm)}</code>" if realm else "") + "</div>",

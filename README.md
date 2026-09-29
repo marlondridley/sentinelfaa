@@ -111,7 +111,7 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 | | `prometheus`, `grafana` | metrics and alert rules, including the GenAI and AGT agent metrics (OTLP export optional) |
 | | `edge` | nginx: the only published entry point, HTTPS on 127.0.0.1 |
 
-Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit together is in [docs/operations.md](nas-feedops-sentinel/docs/operations.md).
+Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit together is in [docs/operations.md](nas-feedops-sentinel/docs/operations.md). To let invited guests use the dashboard from the internet (a Cloudflare tunnel, no port opened, read-only guest accounts), see [docs/public-access.md](nas-feedops-sentinel/docs/public-access.md).
 
 ---
 
