@@ -7,23 +7,24 @@ How to let invited guests use the dashboard from the internet, without opening a
 ## What is and is not reachable
 
 ```
-browser ─HTTPS─> Cloudflare (WAF rules) ─tunnel─> nas-cloudflared ─> nas-edge:8450 ─> dashboard
+browser ─HTTPS─> Cloudflare (WAF rules) ─tunnel─> nas-cloudflared ─> nas-edge:8452 ─> the story site (static files)
+                                                                  ├> nas-edge:8450 ─> dashboard
                                                                   └> nas-edge:8451 ─> Keycloak sign-in pages only
 ```
 
 | Reachable from the internet | Never reachable from the internet |
 |---|---|
-| The dashboard, at `https://sentinel.<your-domain>` | Keycloak's admin console and `master` realm |
-| Keycloak's sign-in pages for the `nas-sentinel` realm, at `https://auth.<your-domain>` | The account console, Keycloak's metrics and health endpoints |
-| | Grafana, Prometheus, the Temporal UI, the API, Vault, SPIRE, Postgres |
+| The story site, at `https://<your-domain>`: static pages about the system, with a Sign in button (`site/`) | Keycloak's admin console and `master` realm |
+| The dashboard, at `https://sentinel.<your-domain>` | The account console, Keycloak's metrics and health endpoints |
+| Keycloak's sign-in pages for the `nas-sentinel` realm, at `https://auth.<your-domain>` | Grafana, Prometheus, the Temporal UI, the API, Vault, SPIRE, Postgres |
 
-The tunnel only makes outbound connections from `nas-cloudflared`, and publishes no port. Its two destinations are listeners on the edge proxy that are not published on this machine either (`docker/edge/nginx.conf`, 8450 and 8451). Those listeners decide which paths exist at all: a mistaken rule in Cloudflare can't expose anything else. `scripts/smoke/05_public_exposure_probe.sh` proves that on the live stack.
+The tunnel only makes outbound connections from `nas-cloudflared`, and publishes no port. Its destinations are listeners on the edge proxy that are not published on this machine either (`docker/edge/nginx.conf`, 8450-8452). Those listeners decide which paths exist at all: a mistaken rule in Cloudflare can't expose anything else. `scripts/smoke/05_public_exposure_probe.sh` proves that on the live stack.
 
 **Cost:** Cloudflare Tunnel and the WAF rules below are free. Cloudflare Access (an email one-time-code gate in front of the site) is optional. It's free up to 50 users, with billing above that.
 
 ## 1. Cloudflare: the tunnel routes
 
-Zero Trust → Networks → **Tunnels** → your tunnel → **Routes** → **Add route** → **Published application**, twice. Older dashboards call these *Public Hostname* routes. Don't add DNS records by hand: saving a route creates its DNS record (a proxied CNAME to `<tunnel-id>.cfargotunnel.com`). Networking → **Routes**, and the *Tunnel Hostname* / *Tunnel CIDR* choices, are private routes for WARP clients: not these.
+Zero Trust → Networks → **Tunnels** → your tunnel → **Routes** → **Add route** → **Published application**, once per route below. Older dashboards call these *Public Hostname* routes. Don't add DNS records by hand: saving a route creates its DNS record (a proxied CNAME to `<tunnel-id>.cfargotunnel.com`). Networking → **Routes**, and the *Tunnel Hostname* / *Tunnel CIDR* choices, are private routes for WARP clients: not these.
 
 | | Route 1: dashboard | Route 2: sign-in |
 |---|---|---|
@@ -35,6 +36,15 @@ Zero Trust → Networks → **Tunnels** → your tunnel → **Routes** → **Add
 | TLS → **CA Pool** | `/etc/cloudflared/trust/edge-ca.crt` | `/etc/cloudflared/trust/edge-ca.crt` |
 | TLS → **Disable TLS certificate verification** (*No TLS Verify*) | **Off** | **Off** |
 | HTTP, Connection, Access | defaults | defaults |
+
+Two more routes for the story site, with the same TLS settings (Origin Server Name `localhost`, the same CA Pool, verification on):
+
+| | Route 3: story site | Route 4: www |
+|---|---|---|
+| Subdomain | *(empty: the bare domain)* | `www` |
+| Service URL | `https://nas-edge:8452` | `https://nas-edge:8452` |
+
+The site listener sends `www.<your-domain>` to the bare domain itself. The site is static (`nas-feedops-sentinel/site/`): the edge serves its files and nothing else, under a Content-Security-Policy that allows only its own origin, and its Sign in button opens the dashboard.
 
 Service URL needs the `https://`: the listeners speak only TLS. The TLS settings make the tunnel verify the edge, as every other hop in this stack is verified. The edge's certificate comes from the local authority and is issued for `localhost`, and `nas-cloudflared` has that authority's public certificate (never a key) at `/etc/cloudflared/trust`. Visitors connect to Cloudflare's own certificate. Probe 05 fails if a route turns verification off.
 
