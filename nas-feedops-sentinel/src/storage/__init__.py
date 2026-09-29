@@ -154,6 +154,11 @@ async def get_recent_alerts(limit: int = 200, *, data_origin: str | None = None)
     return await repo.get_recent_alerts(limit, data_origin=data_origin)
 
 
+async def get_alerts_by_ids(alert_ids: list[str]) -> list[dict]:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.get_alerts_by_ids(alert_ids)
+
+
 async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
     repo = EventsRepository(await get_db_pool())
     return await repo.get_origin_counts(window_minutes)

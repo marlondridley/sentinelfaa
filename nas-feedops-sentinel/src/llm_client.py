@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import Any, Protocol
 
 # Before the import: otherwise litellm downloads its model-price map from
@@ -412,7 +413,7 @@ class LiteLLMClient:
             raise LLMTransientError("Empty completion content.")
 
         try:
-            parsed = json.loads(content)
+            parsed = json.loads(_unfenced(content))
         except json.JSONDecodeError as exc:
             if temperature == 0.0:
                 # Deterministic call: a re-roll reproduces the same malformed
@@ -424,6 +425,15 @@ class LiteLLMClient:
         if not isinstance(parsed, dict):
             raise LLMPermanentError(f"Model returned JSON {type(parsed).__name__}, not an object")
         return parsed, content
+
+
+_FENCE = re.compile(r"^```(?:json)?[ \t]*\n?(.*?)\n?```$", re.DOTALL | re.IGNORECASE)
+
+
+def _unfenced(content: str) -> str:
+    """The JSON object inside a ```json fence, which some models (Claude) wrap it in; other text unchanged."""
+    fenced = _FENCE.match(content.strip())
+    return fenced.group(1).strip() if fenced else content
 
 
 def build_llm_client(model: str | None = None) -> LLMClient | None:

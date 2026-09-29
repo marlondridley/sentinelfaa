@@ -42,3 +42,17 @@ async def test_only_reviews_without_a_written_summary_are_picked():
     wanted = await backfill._wanted()
 
     assert sorted(row["airport_code"] for _, row in wanted) == ["KDCA", "KIAD"]
+
+
+async def test_a_review_older_than_the_newest_alerts_is_still_found():
+    """Reviews are looked up by alert id: the newest-N read missed old ones once alerts outnumbered N."""
+    from datetime import datetime, timedelta, timezone
+
+    old = _rvr("KDCA")
+    old.triggered_at = datetime.now(timezone.utc) - timedelta(days=4)
+    await storage.save_alerts([old, *[_rvr("KBWI") for _ in range(5)]])
+    await stage_critical_alert(old)
+
+    [(_, row)] = [w for w in await backfill._wanted() if w[1]["airport_code"] == "KDCA"]
+    assert row["alert_id"] == old.alert_id
+    assert [a["alert_id"] for a in await storage.get_alerts_by_ids([old.alert_id])] == [old.alert_id]

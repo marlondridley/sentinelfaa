@@ -54,6 +54,11 @@ model_list:
     litellm_params:
       model: anthropic/claude-sonnet-5-5
       api_key: "os.environ/ANTHROPIC_API_KEY"
+      # Sonnet reasons by default, and that spends the caller's max_tokens (the
+      # Critic asks for 1000): the reply can stop with finish_reason=length and
+      # no content. "thinking: disabled" is ignored by this model; a low
+      # reasoning effort leaves room for the answer.
+      reasoning_effort: low
 
   # Haiku 4.5: the cheaper, faster Claude, under its own alias. A separate
   # model_name, not a second claude-model entry: entries under one alias are
