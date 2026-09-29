@@ -160,30 +160,31 @@
     <section class="section section--tint" id="governance" aria-labelledby="governance-title">
       <div class="wrap">
         <p class="eyebrow">Layer 4</p>
-        <h2 id="governance-title">Governance: agentic reasoning logged</h2>
-        <p class="lead">Nothing executes on its own. Every agent step is recorded; every decision is a person's.</p>
+        <h2 id="governance-title">The governance: agentic reasoning logged</h2>
 
         <div class="split">
           <div class="panel reveal">
             <h3>Reasoning, recorded</h3>
-            <p class="panel__tag">Agentic reasoning logged</p>
+            <p class="panel__domain">Low risk domain</p>
             <ul class="arrows">
               <li>Every investigation is sealed (SHA-256) and stored append-only.</li>
               <li>Every model call is logged: agent, model, tokens, cost, policy verdict.</li>
               <li>Every claim cites evidence; ungrounded claims are rejected.</li>
             </ul>
+            <p class="panel__tag">Agentic Reasoning Logged</p>
           </div>
           <div class="panel panel--human reveal">
             <h3>Decisions, signed</h3>
-            <p class="panel__tag">Strict human approval</p>
+            <p class="panel__domain">High risk domain</p>
             <ul class="arrows">
               <li>Agents are denied decide and write tools by policy.</li>
               <li>Every staged action waits for a named, role-checked person.</li>
-              <li>Approvals, overrides and rejections are signed and append-only.</li>
+              <li>Approvals, overrides and rejections are signed by a human.</li>
             </ul>
+            <p class="panel__tag">Strict Human Approval</p>
           </div>
         </div>
-        <p class="footnote reveal">Every model call and tool call is an OpenTelemetry span, linked to its audit record by trace ID.</p>
+        <p class="banner reveal">Nothing executes on its own. Every agent step is recorded. Every decision is a person's.</p>
       </div>
     </section>
 

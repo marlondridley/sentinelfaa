@@ -166,17 +166,26 @@ strong { color: var(--ink); }
 
 /* Layer 4 */
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 48px; }
-.panel { background: var(--paper); border-radius: var(--radius); border-top: 6px solid #94a3b8; padding: 36px 36px 32px; box-shadow: var(--shadow); }
-.panel h3 { font-size: 24px; }
-.panel__tag { display: inline-block; margin: 14px 0 22px; padding: 7px 14px; border-radius: 8px; background: #e2e8f0; color: #334155; font-weight: 600; font-size: 14px; }
+.panel {
+  background: #f8fafc; border-radius: var(--radius); border-top: 6px solid #94a3b8; padding: 40px 40px 36px;
+  box-shadow: var(--shadow); display: flex; flex-direction: column;
+}
+.panel h3 { font-size: 26px; text-transform: uppercase; letter-spacing: .01em; }
+.panel__domain { margin: 10px 0 26px; font-weight: 700; font-size: 15px; letter-spacing: .04em; text-transform: uppercase; color: #64748b; }
+.panel__tag { align-self: flex-start; margin-top: auto; padding: 12px 22px; border-radius: 10px; background: #e2e8f0; color: #334155; font-weight: 600; font-size: 15px; }
 .panel--human { background: var(--orange-tint); border-top-color: var(--orange); }
+.panel--human .panel__domain { color: var(--orange); }
 .panel--human .panel__tag { background: #ffedd5; color: var(--orange-ink); }
 .arrows { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
-.arrows li { position: relative; padding-left: 34px; color: var(--ink); font-weight: 600; }
+.panel .arrows { margin-bottom: 30px; }
+.arrows li { position: relative; padding-left: 34px; color: #64748b; font-weight: 600; }
 .arrows li::before { content: "\2192"; position: absolute; left: 0; top: -1px; color: #94a3b8; font-size: 20px; line-height: 1.3; }
 .panel--human .arrows li { color: #b45309; }
 .panel--human .arrows li::before { color: var(--orange); }
-.footnote { margin-top: 26px; font-style: italic; color: var(--text); }
+.banner {
+  margin-top: 28px; padding: 18px 24px; border-radius: 12px; background: #dbeef6; color: var(--ink);
+  font-size: clamp(17px, 2vw, 22px); font-style: italic; text-align: center;
+}
 
 /* Close */
 .closing { background: var(--navy-900); color: #cbd5e1; text-align: center; padding: 120px 0; }
