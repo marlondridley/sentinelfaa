@@ -175,3 +175,54 @@ def _cause(exc_type_name: str, status: int | None = None, text: str = "boom") ->
 ])
 def test_failures_are_classified_into_outcome_classes(error, outcome):
     assert classify_outcome(error) == outcome
+
+
+async def test_a_cancelled_call_still_leaves_its_row(monkeypatch):
+    """A Temporal timeout or a shutdown cancels the task, often after the request was sent and billed.
+    CancelledError is not an Exception, so such a call was recorded nowhere."""
+    import asyncio
+
+    fake = _Scripted(asyncio.CancelledError())
+    monkeypatch.setattr(llm.litellm, "acompletion", fake)
+    client = llm.LiteLLMClient(model="openai/primary-model")
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.acall_with_tool("sys", _TOOL, "user", role="critic")
+
+    row = await _only_row()
+    assert (row["outcome"], row["attempts"], row["role"]) == ("cancelled", 1, "critic")
+    assert row["cost_usd"] is None, "sent, nothing came back: unknown, not zero"
+
+
+async def test_a_reply_cut_off_at_max_tokens_is_not_asked_for_again(monkeypatch):
+    """The same budget cuts it off in the same place: three attempts were three bills for one unfinished answer."""
+    cut = _response(_COMPLETE)
+    cut.choices[0].message.content = ""
+    cut.choices[0].finish_reason = "length"
+
+    result, fake = await _call(monkeypatch, cut, cut, cut)
+
+    assert isinstance(result, llm.LLMPermanentError) and "max_tokens" in str(result)
+    assert fake.calls == 1
+    row = await _only_row()
+    assert (row["outcome"], row["attempts"]) == ("invalid_output", 1)
+
+
+async def test_an_unfinished_json_reply_cut_off_at_max_tokens_is_permanent_too(monkeypatch):
+    cut = _response(_COMPLETE)
+    cut.choices[0].message.content = '{"pattern": "TRANS'
+    cut.choices[0].finish_reason = "length"
+
+    result, fake = await _call(monkeypatch, cut, cut, cut)
+
+    assert isinstance(result, llm.LLMPermanentError) and fake.calls == 1
+
+
+async def test_an_empty_reply_that_was_not_cut_off_is_still_worth_another_try(monkeypatch):
+    empty = _response(_COMPLETE)
+    empty.choices[0].message.content = ""
+    empty.choices[0].finish_reason = "stop"
+
+    result, fake = await _call(monkeypatch, empty, _response(_COMPLETE))
+
+    assert result == _COMPLETE and fake.calls == 2

@@ -44,7 +44,7 @@ from src.governance import UNREGISTERED_ROLE, evaluate_model_call
 from src.logging_config import get_correlation_id, get_logger
 from src.model_telemetry import ModelCall, classify_outcome
 from src.model_telemetry import record as record_model_call
-from src.redaction import redact_text
+from src.redaction import is_redacted, redact_text
 
 _log = get_logger(__name__)
 
@@ -270,7 +270,7 @@ class LiteLLMClient:
             )
             decision = evaluate_model_call(
                 role=role, model=target_model, prompt=f"{system_prompt}\n{redacted_user_message}",
-                max_tokens=max_tokens, redacted=True,
+                max_tokens=max_tokens, redacted=is_redacted(redacted_user_message),
             )
             which = "model-use"
             if decision.allowed:
@@ -292,6 +292,13 @@ class LiteLLMClient:
                 result = await self._acall_with_retries(
                     system_prompt, tool, redacted_user_message, max_tokens, target_model, temperature, call,
                 )
+            except asyncio.CancelledError:
+                # A Temporal activity timeout or a shutdown cancels the call, often after the request went out
+                # and the provider billed it. `except Exception` does not see a cancellation, so such a call
+                # left no model_calls row: money spent with no record. Shielded, because the task is being
+                # cancelled and the write is what is left to do.
+                await asyncio.shield(record_model_call(call, "cancelled"))
+                raise
             except Exception as exc:
                 await record_model_call(call, classify_outcome(exc), exc)
                 raise
@@ -404,11 +411,19 @@ class LiteLLMClient:
 
         try:
             content = response.choices[0].message.content
+            truncated = getattr(response.choices[0], "finish_reason", None) == "length"
         except (AttributeError, IndexError, TypeError) as exc:
             # Malformed envelope from the proxy -- usually a transport-layer
             # truncation rather than a modelling problem.
             raise LLMTransientError(f"Unexpected LiteLLM response shape: {exc}") from exc
 
+        if truncated:
+            # The reply hit max_tokens. Asking again with the same budget cuts it off in the same place, so
+            # three attempts were three bills for the same empty or unfinished answer.
+            raise LLMPermanentError(
+                "Empty completion content: the reply was cut off at max_tokens (finish_reason=length)."
+                if not content else
+                "Model returned non-JSON content: the reply was cut off at max_tokens (finish_reason=length).")
         if not content:
             raise LLMTransientError("Empty completion content.")
 

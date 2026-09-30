@@ -45,14 +45,22 @@ _AIRPORT = re.compile(r"\b(K?(?:IAD|DCA|BWI|ADW))\b", re.IGNORECASE)
 _AIRPORT_PATTERN = r"k?(?:iad|dca|bwi|adw)"
 # Three letters and one to four digits (UAL1234, ual1234, SWA890A). Codes that are not flights are skipped.
 _CALLSIGN = re.compile(r"\b([A-Za-z]{3}\d{1,4}[A-Za-z]?)\b")
-_NOT_CALLSIGNS = frozenset({"RWY", "RVR", "ILS", "UTC", "GMT", "VOR", "SID", "MSL", "AGL", "TWY", "FAA"})
-_WINDOW = re.compile(r"\b(?:last|past)\s+(\d+)\s*(min(?:ute)?s?|h(?:ou)?rs?)\b", re.IGNORECASE)
+# ... and the aircraft types written the same way (CRJ700, ATR72): "which CRJ700 flights have departed" is not
+# about a flight called CRJ700.
+_NOT_CALLSIGNS = frozenset({"RWY", "RVR", "ILS", "UTC", "GMT", "VOR", "SID", "MSL", "AGL", "TWY", "FAA",
+                            "CRJ", "ATR", "EMB", "DHC", "BAE"})
+# "last 15 minutes", "past 2 hours", "last 1.5 hours", "last 2 days". At most four digits, so a run of thousands
+# is not a number to parse (int() refuses more than 4,300 of them) and falls to the default window.
+_WINDOW = re.compile(r"\b(?:last|past)\s+(\d{1,4}(?:\.\d{1,2})?)\s*(min(?:ute)?s?|h(?:ou)?rs?|d(?:ay)?s?)\b", re.IGNORECASE)
 _ONE_HOUR = re.compile(r"\b(?:last|past)\s+hour\b", re.IGNORECASE)
 _TODAY = re.compile(r"\btoday\b|\bthis (?:morning|shift)\b", re.IGNORECASE)
-_LONGER_THAN = re.compile(r"(?:more than|over|longer than|at least)\s+(\d+)\s*min", re.IGNORECASE)
+_LONGER_THAN = re.compile(r"(?:more than|over|longer than|at least)\s+(\d{1,4})\s*min", re.IGNORECASE)
 
 _TAXI_OUT = re.compile(r"taxi[\s-]*out|taxiing out|push[\s-]*back|pushed back|spot[\s-]*out", re.IGNORECASE)
-_TAXI_IN = re.compile(r"taxi[\s-]*in\b|taxiing in|spot[\s-]*in\b|reached (?:a|the) gate", re.IGNORECASE)
+# "taxiing in the departure queue" is the queue, not a taxi-in: the preposition is not the direction.
+_TAXI_IN = re.compile(
+    r"taxi[\s-]*in\b|taxiing in(?!\s+(?:the\s+|a\s+)?(?:(?:departure|takeoff|take-off)\s+)?queue)"
+    r"|spot[\s-]*in\b|reached (?:a|the) gate", re.IGNORECASE)
 # The departure queue, not any queue: the review queue is a different thing on this dashboard.
 _QUEUE = re.compile(
     rf"(?:departure|taxi|takeoff|take-off)[\s-]*queue|(?<!review )queue (?:at|for|of|to) {_AIRPORT_PATTERN}\b"
@@ -64,7 +72,13 @@ _TAXI_GENERIC = re.compile(r"\btaxi(?:ing|\s+times?)?\b", re.IGNORECASE)
 # Words that say a question is about surface timing, whether or not a tool matched it.
 _SURFACE_TIMING = re.compile(
     r"taxi|push[\s-]*back|pushed back|departure (?:delay|wait|rate)|waiting to (?:depart|take ?off|get airborne)"
-    r"|gate (?:hold|delay)|wheels[\s-]*(?:on|off)|spot[\s-]*(?:in|out)", re.IGNORECASE)
+    r"|gate (?:hold|delay)|wheels[\s-]*(?:on|off)|spot[\s-]*(?:in|out)"
+    r"|(?:taken|took) off|take[\s-]?offs?\b|\bdeparted\b", re.IGNORECASE)
+
+
+def _plain(question: str) -> str:
+    """The question with typographic apostrophes made plain: "haven\u2019t taken off" must match "haven't"."""
+    return question.replace("\u2019", "'").replace("\u2018", "'")
 
 
 def _airports(question: str) -> list[str]:
@@ -84,8 +98,8 @@ def _callsign(question: str) -> str | None:
 def _window_minutes(question: str, default: int = DEFAULT_WINDOW_MINUTES) -> int:
     match = _WINDOW.search(question)
     if match:
-        amount = int(match.group(1))
-        minutes = amount * 60 if match.group(2).lower().startswith("h") else amount
+        unit = match.group(2).lower()
+        minutes = round(float(match.group(1)) * (60 if unit.startswith("h") else 1440 if unit.startswith("d") else 1))
     elif _ONE_HOUR.search(question):
         minutes = 60
     elif _TODAY.search(question):
@@ -97,6 +111,7 @@ def _window_minutes(question: str, default: int = DEFAULT_WINDOW_MINUTES) -> int
 
 def route(question: str) -> list[tuple[str, dict[str, Any]]]:
     """The (tool, arguments) calls this question needs; an empty list when it is not a taxi-time question."""
+    question = _plain(question)
     callsign = _callsign(question)
     if callsign and _FLIGHT_WORDS.search(question):
         return [("read_flight_timeline", {"aircraft_id": callsign})]      # about one flight, not the airport
@@ -241,7 +256,7 @@ async def gather(question: str, as_of: datetime | None = None) -> dict[str, Any]
     """
     calls = route(question)
     if not calls:
-        return {"not_fetched": NOT_FETCHED} if _SURFACE_TIMING.search(question) else {}
+        return {"not_fetched": NOT_FETCHED} if _SURFACE_TIMING.search(_plain(question)) else {}
     outcomes = await asyncio.gather(*(_run(tool, args, as_of) for tool, args in calls))
     results: dict[str, Any] = {}
     unavailable: list[dict[str, str]] = []

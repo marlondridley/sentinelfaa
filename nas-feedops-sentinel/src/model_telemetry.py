@@ -31,6 +31,8 @@ Outcome classes -- the failure modes readiness reports on:
   bad_request      the request itself was rejected (400/404/422, context window)
   provider_error   5xx, connection failures, anything else upstream
   policy_denied    refused by the model-use policy; nothing was sent
+  cancelled        the caller cancelled it (an activity timeout, a shutdown) before an answer came back; the
+                   request may already have been sent and billed
 """
 from __future__ import annotations
 
@@ -54,7 +56,7 @@ SUCCESS_OUTCOMES = ("ok", "repaired")
 RETURNED_OUTCOMES = ("ok", "repaired", "incomplete")
 OUTCOMES = (
     "ok", "repaired", "incomplete", "invalid_output", "timeout", "rate_limited",
-    "quota_exhausted", "auth_error", "bad_request", "provider_error", "policy_denied",
+    "quota_exhausted", "auth_error", "bad_request", "provider_error", "policy_denied", "cancelled",
 )
 
 # Messages src/llm_client.py raises itself when the model's reply is unusable.

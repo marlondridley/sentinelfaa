@@ -332,3 +332,62 @@ def test_alerts_raised_while_data_was_still_arriving_are_not_blamed_on_the_outag
     context["alerts"] = [before, after]
     warnings = wa.assess(context, now=NOW).consistency_warnings
     assert warnings == ["1 alert(s) were raised after the last data arrived: they describe the outage, not the airports."]
+
+
+# -- the RVR sensor-code test reads the reading, not the runway text ----------------------------------------------------
+
+def test_a_runway_string_cannot_pass_a_real_low_rvr_off_as_a_sensor_code():
+    """The description goes on to name the runway, free text from the message: '10L 0 ft' matched \\b0 ft\\b."""
+    real = _alert("r1", "ALERT_LOW_RVR", "KBWI", NOW, "Low RVR 400 ft at touchdown on runway 10L 0 ft at KBWI")
+    artifact = _alert("r2", "ALERT_LOW_RVR", "KBWI", NOW, "Low RVR 0 ft at touchdown on runway 10L at KBWI")
+
+    assert wa.is_artifact(real) is False
+    assert wa.is_artifact(artifact) is True
+    assert wa.is_artifact(_alert("r3", "ALERT_LOW_RVR", "KBWI", NOW, "Low RVR 10 ft at touchdown on runway 10 at KBWI")) is False
+
+
+# -- a bottom line that negates the claim is the statement the prompt asks for --------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "This data is not used by air traffic controllers.",
+    "There is no ATC impact from the stale KIAD feed.",
+    "The stale feed does not affect traffic.",
+    "Nothing here is unsafe; the feed is simply behind.",
+    "It has never reached controllers."])
+def test_the_overreach_check_spares_a_claim_that_is_being_denied(text):
+    assert wa.overreach(text) is None
+
+
+@pytest.mark.parametrize("text, claim", [
+    ("Controllers may be affected by stale data.", "controllers may be affected"),
+    ("A ground stop is possible until the feed recovers.", "ground stop"),
+    ("Stale data will impact air traffic at IAD.", "impact air traffic"),
+    ("Not all of it is current. Controllers are misled.", "controllers are misled")])
+def test_the_overreach_check_catches_the_softer_claims_too(text, claim):
+    assert wa.overreach(text) == claim
+
+
+def test_a_negation_from_an_earlier_sentence_does_not_excuse_the_next_claim():
+    assert wa.overreach("The parser is not the problem. The airspace is unsafe.") == "unsafe"
+
+
+# -- a model headline may not contradict the status -----------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "No issues; all normal at every airport.", "All clear.", "Nothing to report from the feed.",
+    "Everything is normal and no action is needed."])
+def test_an_all_clear_headline_is_refused_while_the_status_is_not_green(text):
+    a = wa.assess(_healthy_context(alerts=[], airport_status={"KDCA": "OK", "KIAD": "STALE", "KBWI": "OK"}), now=NOW)
+    assert a.status != "GREEN"
+
+    used, reason = wa.accept_model_bluf(a, "KIAD data is stale. " + text)
+
+    assert used == a.bluf and "says all is well while the status is" in reason
+
+
+def test_an_all_clear_headline_is_accepted_when_the_status_is_green():
+    a = wa.assess(_healthy_context(alerts=[], critical_alerts=[], pending_actions=[], pending_actions_count=0), now=NOW)
+    assert a.status == "GREEN"
+
+    assert wa.accept_model_bluf(a, "All clear: data is current at every airport.") == (
+        "All clear: data is current at every airport.", None)
