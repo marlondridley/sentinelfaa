@@ -11,7 +11,8 @@ roles count, how long a sign-in lasts), are in src/keycloak_auth.py.
 
 Configuration is [auth] and [auth.keycloak] in .streamlit/secrets.toml (see
 secrets.toml.example). Without it the dashboard falls back to a self-declared
-callsign, labelled UNVERIFIED (lib/page_setup.py).
+callsign, labelled UNVERIFIED (lib/page_setup.py), unless REQUIRE_SIGN_IN is set:
+then it shows "Sign-in is not configured" and nothing else.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import httpx
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
+from src import config
 from src.auth import Principal
 from src.keycloak_auth import (
     PROVIDER,
@@ -83,9 +85,13 @@ def _auth_config() -> dict[str, Any] | None:
 
 
 def oidc_configured() -> bool:
-    """Sign-in is wanted: a Keycloak provider is configured, or the file that would say so is broken."""
+    """
+    Sign-in is wanted: a Keycloak provider is configured, the file that would say so is broken, or this
+    deployment requires sign-in (REQUIRE_SIGN_IN). The last is what makes a missing secrets.toml stop at
+    "Sign-in is not configured" instead of quietly opening every page to a typed callsign.
+    """
     auth, unreadable = _load_auth()
-    return auth is not None or bool(unreadable)
+    return auth is not None or bool(unreadable) or config.settings.REQUIRE_SIGN_IN
 
 
 # The example file ships these; a value that was never replaced is not a secret.
