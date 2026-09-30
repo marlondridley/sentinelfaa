@@ -27,15 +27,21 @@ model_list:
   # One deployment per free-tier key under the same alias: the router spreads
   # requests across them and, when one key returns 429 (the free tier allows
   # 20 requests/day/model per project), cools it down and uses the next.
+  # Gemini 3.x reasons before it answers, and the reasoning spends the caller's
+  # max_tokens (the Watch Officer asks for 900): the JSON stopped mid-string with
+  # finish_reason=length. reasoning_effort: low, on every Gemini deployment below,
+  # leaves room for the answer.
   - model_name: gemini-backup
     litellm_params:
       model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
+      reasoning_effort: low
 
   - model_name: gemini-backup
     litellm_params:
       model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY_2"
+      reasoning_effort: low
 
   # Third key (GEMINI_API_KEY_3 in .env): uncomment once it is set. An entry
   # with an empty key fails every call routed to it.
@@ -72,6 +78,7 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.8-flash
       api_key: "os.environ/GEMINI_API_KEY"
+      reasoning_effort: low
 
 # Fallbacks belong here. They used to sit inside the primary-model entry,
 # where the proxy does not read them, so a DeepSeek failure had no fallback.
