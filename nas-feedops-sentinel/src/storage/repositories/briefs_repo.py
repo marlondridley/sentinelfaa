@@ -43,6 +43,7 @@ def _row_to_brief(row) -> WatchOfficerBrief:
         llm_used=bool(d.get("llm_used")),
         limitations=json.loads(d.get("limitations_json") or "[]") if isinstance(d.get("limitations_json"), str) else d.get("limitations_json", []),
         assessment=_assessment(d.get("assessment_json")),
+        call_id=d.get("call_id"),
     )
 
 
@@ -53,7 +54,11 @@ _LEGACY_COLUMNS = (
     "evidence_json", "affected_airports_json", "pending_actions_count",
     "critical_alert_count", "confidence", "llm_used", "limitations_json",
 )
-_COLUMNS = (*_LEGACY_COLUMNS, "assessment_json")
+_ASSESSMENT_COLUMNS = (*_LEGACY_COLUMNS, "assessment_json")
+_COLUMNS = (*_ASSESSMENT_COLUMNS, "call_id")
+# Newest layout first: each later migration adds a column, and a rolling deploy can run against a
+# database that has not got the latest yet.
+_LAYOUTS = (_COLUMNS, _ASSESSMENT_COLUMNS, _LEGACY_COLUMNS)
 
 
 def _save_sql(columns: tuple[str, ...]) -> str:
@@ -69,10 +74,10 @@ def _select_sql(columns: tuple[str, ...], tail: str) -> str:
 
 class BriefsRepository:
     """
-    A rolling deploy can run this code against a database the assessment migration has not reached
-    yet (the app is rebuilt without its migrate job). Then the assessment column is left out, with
-    a warning, and the brief still saves and loads (in the older layout) instead of the Overview
-    page failing on a missing column.
+    A rolling deploy can run this code against a database a later migration (the assessment, then the
+    model call id) has not reached yet (the app is rebuilt without its migrate job). Then the missing
+    columns are left out, with a warning, and the brief still saves and loads (in the older layout)
+    instead of the Overview page failing on a missing column.
     """
 
     def __init__(self, pool: asyncpg.Pool):
@@ -86,21 +91,23 @@ class BriefsRepository:
             brief.critical_alert_count, brief.confidence, bool(brief.llm_used), json.dumps(brief.limitations),
         )
         assessment = brief.assessment.model_dump_json() if brief.assessment else None
-        try:
-            await self._pool.execute(_save_sql(_COLUMNS), *values, assessment)
-        except asyncpg.UndefinedColumnError:
-            _log.warning("watch_officer_briefs_assessment_column_missing_run_migrations")
-            await self._pool.execute(_save_sql(_LEGACY_COLUMNS), *values)
-        return brief
+        everything = (*values, assessment, brief.call_id)
+        for columns in _LAYOUTS:
+            try:
+                await self._pool.execute(_save_sql(columns), *everything[: len(columns)])
+                return brief
+            except asyncpg.UndefinedColumnError:
+                _log.warning("watch_officer_briefs_columns_missing_run_migrations", extra={"layout_columns": len(columns)})
+        raise RuntimeError("watch_officer_briefs is missing columns beyond the original layout")
 
     async def _fetch(self, tail: str, *args, one: bool = False):
-        for columns in (_COLUMNS, _LEGACY_COLUMNS):
+        for columns in _LAYOUTS:
             try:
                 query = _select_sql(columns, tail)
                 return await (self._pool.fetchrow(query, *args) if one else self._pool.fetch(query, *args))
             except asyncpg.UndefinedColumnError:
-                _log.warning("watch_officer_briefs_assessment_column_missing_run_migrations")
-        raise RuntimeError("watch_officer_briefs is missing columns beyond assessment_json")
+                _log.warning("watch_officer_briefs_columns_missing_run_migrations", extra={"layout_columns": len(columns)})
+        raise RuntimeError("watch_officer_briefs is missing columns beyond the original layout")
 
     async def get_latest(self) -> WatchOfficerBrief | None:
         row = await self._fetch("LIMIT 1", one=True)
