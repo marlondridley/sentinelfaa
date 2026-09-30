@@ -10,7 +10,11 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
+from src.logging_config import get_logger
+from src.metrics import EVENT_ORIGIN_CONFLICTS
 from src.models import AlertEvent, NASEvent
+
+_log = get_logger(__name__)
 
 
 def _critic_window(window_minutes: int, as_of: datetime | None) -> tuple[datetime, datetime | None]:
@@ -66,7 +70,11 @@ _UPSERT_EVENT_SQL = """
                 validation_errors = EXCLUDED.validation_errors,
                 raw_message_path = EXCLUDED.raw_message_path,
                 status_code = EXCLUDED.status_code,
-                data_origin = EXCLUDED.data_origin;
+                data_origin = EXCLUDED.data_origin
+            -- A row is only ever rewritten by the origin that wrote it (or by the feed that replaces a
+            -- migrated row whose origin was unknowable). Otherwise an API or replay event that reused a live
+            -- event_id replaced the stored row and flipped its origin, which made a healthy feed look stale.
+            WHERE nas_events.data_origin IN (EXCLUDED.data_origin, 'unknown');
         """
 
 
@@ -108,12 +116,27 @@ def _alert_args(alert: AlertEvent) -> tuple:
     )
 
 
+async def _note_origin_conflicts(conn: asyncpg.Connection, events: list[NASEvent]) -> None:
+    """
+    Say so when an event's id belongs to a row of another origin: the upsert leaves that row alone, and
+    a silent skip would hide either a client choosing ids or two origins that derive the same one.
+    """
+    stored = {r["event_id"]: r["data_origin"] for r in await conn.fetch(
+        "SELECT event_id, data_origin FROM nas_events WHERE event_id = ANY($1::text[])", [e.event_id for e in events])}
+    for event in events:
+        was = stored.get(event.event_id)
+        if was is not None and was not in (event.data_origin, "unknown"):
+            EVENT_ORIGIN_CONFLICTS.labels(incoming=event.data_origin, stored=was).inc()
+            _log.warning("event_origin_conflict", extra={
+                "event_id": event.event_id, "incoming_origin": event.data_origin, "stored_origin": was})
+
+
 class EventsRepository:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def save_event(self, event: NASEvent) -> None:
-        await self._pool.execute(_UPSERT_EVENT_SQL, *_event_args(event))
+        await self.save_events([event])
 
     async def save_alert(self, alert: AlertEvent) -> None:
         await self._pool.execute(_UPSERT_ALERT_SQL, *_alert_args(alert))
@@ -127,6 +150,7 @@ class EventsRepository:
         if not events:
             return
         async with self._pool.acquire() as conn, conn.transaction():
+            await _note_origin_conflicts(conn, events)
             await conn.executemany(_UPSERT_EVENT_SQL, [_event_args(e) for e in events])
 
     async def save_alerts(self, alerts: list[AlertEvent]) -> None:

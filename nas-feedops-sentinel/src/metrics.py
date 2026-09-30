@@ -74,6 +74,12 @@ ALERTS_TRIGGERED = Counter(
 )
 
 
+EVENT_ORIGIN_CONFLICTS = Counter(
+    "nas_event_origin_conflicts_total",
+    "Events left unwritten because their id belongs to a stored row of another data origin.",
+    ["incoming", "stored"],
+)
+
 # ── LLM metrics ───────────────────────────────────────────────────────────────
 
 LLM_CALL_LATENCY = Histogram(
