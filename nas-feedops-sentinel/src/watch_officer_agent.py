@@ -20,6 +20,7 @@ from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import NASEvent, WatchOfficerBrief
 from src.prompts_loader import system_prompt, tool_schema
 from src.redaction import redact_structured
+from src.watch_officer_projection import project_for_model
 
 _log = get_logger(__name__)
 
@@ -441,12 +442,14 @@ async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> Ra
     if client is None:
         raise RuntimeError("no LLM client configured")
 
-    payload = redact_structured({"context": context, "signals": signals})
+    # A projection built for the four questions the brief answers, bounded by
+    # construction (src/watch_officer_projection.py), not the raw snapshot.
+    payload = redact_structured(project_for_model(context, signals))
     raw = await client.acall_with_tool(
         system_prompt=system_prompt("watch_officer"),
         tool=tool_schema("watch_officer"),
         user_message=(
-            "Write the operational watch summary for this context:\n"
+            "Write the operational watch summary for this operating picture:\n"
             + json.dumps(payload, default=str)
         ),
         max_tokens=900,
