@@ -34,7 +34,10 @@ src/
   agent_tools.py          the agent tool boundary: tool registry, acting_as(), governed invoke()
   telemetry.py            OpenTelemetry: GenAI spans and metrics, AGT instruments, OTLP export
   model_telemetry.py      one model_calls row per call, projected from its chat span
-  evaluation.py           the evaluation layer: per-investigation measures and gates, window metrics
+  evaluation.py           the evaluation layer: per-investigation measures, loading, the window evaluation
+  evaluation_gates.py     the gates an investigation is judged against, one function per gate
+  evaluation_metrics.py   the window's metric groups: quality, latency, cost, reliability, orchestration, governance
+  evaluation_types.py     the gate and evaluation records, status names, gate configuration
   agt_metrics.py          AGT adapters (agent-sre, agent-os-kernel), the metric categories, AGT-compatible calculations
   readiness.py            the readiness verdict and deployment gate (python -m src.readiness)
   redaction.py  guardrails.py
