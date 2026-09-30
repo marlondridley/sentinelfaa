@@ -225,6 +225,19 @@ Neither provider is an authorized boundary for FAA operational data; move
 Application settings name aliases only (`LLM_MODEL=primary-model`);
 provider routes such as `gemini/...` are refused at startup.
 
+**Retries, breaker and budget** (`src/llm_guard.py`, `src/llm_client.py`).
+The gateway is the one layer that retries provider calls and falls back
+(`router_settings` in `litellm-config.yaml`). The application client retries
+only a request that never reached the gateway, at most `LLM_CONNECT_ATTEMPTS`
+(2) attempts; Temporal never sees a model failure, because the Critic and the
+investigations catch it and fall back to rules. After
+`LLM_BREAKER_THRESHOLD` (5) consecutive gateway failures an alias's circuit
+opens for `LLM_BREAKER_COOLDOWN_SECONDS` (120) and the Critic reports itself
+unavailable (alert `ModelCircuitOpen`). One pipeline pass may spend
+`LLM_TOKEN_BUDGET_PER_PASS` (250000) tokens; past it calls are refused (alert
+`LLMPassBudgetExhausted`). Refused calls are recorded in `model_calls` as
+`circuit_open` or `budget_exhausted` and are excluded from the success rate.
+
 ## The FAA SWIM Jumpstart kit
 
 Not containerized, deliberately. The kit ships a prebuilt fat jar
