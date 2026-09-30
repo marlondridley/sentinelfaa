@@ -8,7 +8,10 @@ import json
 
 import asyncpg
 
+from src.logging_config import get_logger
 from src.models import BriefAssessment, WatchOfficerBrief
+
+_log = get_logger(__name__)
 
 
 def _assessment(value) -> BriefAssessment | None:
@@ -43,63 +46,66 @@ def _row_to_brief(row) -> WatchOfficerBrief:
     )
 
 
+# Columns that existed before the assessment; assessment_json arrived with a later migration.
+_LEGACY_COLUMNS = (
+    "brief_id", "generated_at", "posture", "trust_assessment", "headline",
+    "what_changed_json", "why_it_matters_json", "recommended_human_review_json",
+    "evidence_json", "affected_airports_json", "pending_actions_count",
+    "critical_alert_count", "confidence", "llm_used", "limitations_json",
+)
+_COLUMNS = (*_LEGACY_COLUMNS, "assessment_json")
+
+
+def _save_sql(columns: tuple[str, ...]) -> str:
+    placeholders = ", ".join(f"${i}" for i in range(1, len(columns) + 1))
+    updates = ",\n                ".join(f"{c} = EXCLUDED.{c}" for c in columns[1:])
+    return (f"INSERT INTO watch_officer_briefs ({', '.join(columns)}) VALUES ({placeholders})\n"
+            f"            ON CONFLICT (brief_id) DO UPDATE SET\n                {updates};")
+
+
+def _select_sql(columns: tuple[str, ...], tail: str) -> str:
+    return f"SELECT {', '.join(columns)} FROM watch_officer_briefs ORDER BY generated_at DESC {tail}"
+
+
 class BriefsRepository:
+    """
+    A rolling deploy can run this code against a database the assessment migration has not reached
+    yet (the app is rebuilt without its migrate job). Then the assessment column is left out, with
+    a warning, and the brief still saves and loads (in the older layout) instead of the Overview
+    page failing on a missing column.
+    """
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def save(self, brief: WatchOfficerBrief) -> WatchOfficerBrief:
-        query = """
-            INSERT INTO watch_officer_briefs (
-                brief_id, generated_at, posture, trust_assessment, headline,
-                what_changed_json, why_it_matters_json, recommended_human_review_json,
-                evidence_json, affected_airports_json,
-                pending_actions_count, critical_alert_count, confidence,
-                llm_used, limitations_json, assessment_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-            ON CONFLICT (brief_id) DO UPDATE SET
-                generated_at = EXCLUDED.generated_at,
-                posture = EXCLUDED.posture,
-                trust_assessment = EXCLUDED.trust_assessment,
-                headline = EXCLUDED.headline,
-                what_changed_json = EXCLUDED.what_changed_json,
-                why_it_matters_json = EXCLUDED.why_it_matters_json,
-                recommended_human_review_json = EXCLUDED.recommended_human_review_json,
-                evidence_json = EXCLUDED.evidence_json,
-                affected_airports_json = EXCLUDED.affected_airports_json,
-                pending_actions_count = EXCLUDED.pending_actions_count,
-                critical_alert_count = EXCLUDED.critical_alert_count,
-                confidence = EXCLUDED.confidence,
-                llm_used = EXCLUDED.llm_used,
-                limitations_json = EXCLUDED.limitations_json,
-                assessment_json = EXCLUDED.assessment_json;
-        """
-        await self._pool.execute(
-            query,
+        values = (
             brief.brief_id, brief.generated_at, brief.posture, brief.trust_assessment, brief.headline,
             json.dumps(brief.what_changed), json.dumps(brief.why_it_matters), json.dumps(brief.recommended_human_review),
             json.dumps(brief.evidence), json.dumps(brief.affected_airports), brief.pending_actions_count,
             brief.critical_alert_count, brief.confidence, bool(brief.llm_used), json.dumps(brief.limitations),
-            brief.assessment.model_dump_json() if brief.assessment else None,
         )
+        assessment = brief.assessment.model_dump_json() if brief.assessment else None
+        try:
+            await self._pool.execute(_save_sql(_COLUMNS), *values, assessment)
+        except asyncpg.UndefinedColumnError:
+            _log.warning("watch_officer_briefs_assessment_column_missing_run_migrations")
+            await self._pool.execute(_save_sql(_LEGACY_COLUMNS), *values)
         return brief
 
+    async def _fetch(self, tail: str, *args, one: bool = False):
+        for columns in (_COLUMNS, _LEGACY_COLUMNS):
+            try:
+                query = _select_sql(columns, tail)
+                return await (self._pool.fetchrow(query, *args) if one else self._pool.fetch(query, *args))
+            except asyncpg.UndefinedColumnError:
+                _log.warning("watch_officer_briefs_assessment_column_missing_run_migrations")
+        raise RuntimeError("watch_officer_briefs is missing columns beyond assessment_json")
+
     async def get_latest(self) -> WatchOfficerBrief | None:
-        row = await self._pool.fetchrow(
-            """SELECT brief_id, generated_at, posture, trust_assessment, headline,
-                      what_changed_json, why_it_matters_json, recommended_human_review_json,
-                      evidence_json, affected_airports_json, pending_actions_count,
-                      critical_alert_count, confidence, llm_used, limitations_json, assessment_json
-               FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT 1"""
-        )
+        row = await self._fetch("LIMIT 1", one=True)
         return _row_to_brief(row) if row else None
 
     async def get_recent(self, limit: int = 10) -> list[WatchOfficerBrief]:
-        rows = await self._pool.fetch(
-            """SELECT brief_id, generated_at, posture, trust_assessment, headline,
-                      what_changed_json, why_it_matters_json, recommended_human_review_json,
-                      evidence_json, affected_airports_json, pending_actions_count,
-                      critical_alert_count, confidence, llm_used, limitations_json, assessment_json
-               FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT $1""",
-            limit,
-        )
+        rows = await self._fetch("LIMIT $1", limit)
         return [_row_to_brief(r) for r in rows]

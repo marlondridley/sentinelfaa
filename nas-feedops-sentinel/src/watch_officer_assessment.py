@@ -29,13 +29,15 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from src.config import settings
 from src.models import BriefAction, BriefAssessment, BriefIncident, DataHealth
 from src.timeutil import as_utc
 
-ALERT_MAX_AGE_HOURS = 6
-DOWN_AFTER_MINUTES = 15          # nothing received for this long: the pipeline is down
-BACKLOG_LAG_SECONDS = 300        # average event-to-ingest lag above this: catching up, not live
-CLUSTER_GAP_MINUTES = 30         # alerts closer together than this belong to one incident
+ALERT_MAX_AGE_HOURS = settings.WATCH_ALERT_MAX_AGE_HOURS          # older than this, with no newer evidence: history
+DOWN_AFTER_MINUTES = settings.WATCH_PIPELINE_DOWN_MINUTES         # nothing received for this long: the pipeline is down
+BACKLOG_LAG_SECONDS = settings.WATCH_BACKLOG_LAG_SECONDS          # recent average lag above this: catching up, not live
+CLUSTER_GAP_MINUTES = settings.WATCH_CLUSTER_GAP_MINUTES          # alerts closer together than this are one incident
+LATENCY_WINDOW_MINUTES = 15      # lag is judged on what arrived recently, never on the average of everything stored
 MAX_ACTIONS = 3
 MAX_WATCH = 3
 MAX_INCIDENTS = 5
@@ -48,9 +50,20 @@ DUTY_MANAGER = "Duty manager"
 
 _DOWN_LIKE = frozenset({"STALE", "UNAVAILABLE", "DISCONNECTED"})
 _ARTIFACT_RVR = re.compile(r"\b0 ft\b")
-# A bottom line about our data must not reach for consequences in the airspace, or imply that
-# this console feeds controllers: it does not.
-_NOT_OURS_TO_SAY = ("controller", "air traffic control", " atc ", "unsafe", "collision", "tactical", "separation")
+# A bottom line about our data must not reach for consequences in the airspace, or imply that this console
+# feeds controllers: it does not. Whole words, and the sense that matters ("reaching controllers", not "the
+# Kafka controller").
+_OVERREACH = re.compile(
+    r"\bair traffic control(?:lers?)?\b|\batc\b"
+    r"|\b(?:to|reach(?:es|ing)?|for|by)\s+(?:the\s+)?controllers?\b"
+    r"|\bunsafe\b|\bcollisions?\b|\bloss of separation\b|\btactical (?:information|data|picture)\b",
+    re.IGNORECASE)
+
+
+def overreach(text: str) -> str | None:
+    """The phrase in `text` that claims something about the airspace or controllers this console cannot know, if any."""
+    match = _OVERREACH.search(text or "")
+    return match.group(0).strip().lower() if match else None
 
 
 # -- small helpers ----------------------------------------------------------------------------------
@@ -185,12 +198,13 @@ def assess(context: dict[str, Any], signals: dict[str, Any] | None = None, *, no
     historical = [a for a in genuine if a["_at"] < limit]
     current_critical = [a for a in current if a.get("severity") == "CRITICAL"]
 
-    def is_current(review: dict[str, Any]) -> bool:
+    def is_recent(review: dict[str, Any]) -> bool:
         seen = _review_time(review)
-        return (seen is None or seen >= limit) and review.get("alert_id") not in artifact_ids   # no timestamp: cannot call it old
+        return seen is None or seen >= limit                        # no timestamp: cannot call it old
 
-    current_reviews = [r for r in reviews if is_current(r)]
-    stale_reviews = [r for r in reviews if not is_current(r)]        # older than the limit, or raised on a sensor artifact
+    current_reviews = [r for r in reviews if is_recent(r) and r.get("alert_id") not in artifact_ids]
+    artifact_reviews = [r for r in reviews if is_recent(r) and r.get("alert_id") in artifact_ids]
+    stale_reviews = [r for r in reviews if not is_recent(r)] + artifact_reviews     # closed as history either way
 
     result = BriefAssessment(
         data_health=health, incidents=cluster_incidents(alerts, reviews, now),
@@ -200,7 +214,7 @@ def assess(context: dict[str, Any], signals: dict[str, Any] | None = None, *, no
     result.affected_airports = sorted({*health.stale_airports, *(a["airport_code"] for a in current_critical if a.get("airport_code"))})
     n_reporting = len([s for s in (context.get("airport_status") or {}).values() if s != "NO DATA"])
     _status_and_bluf(result, health, current, current_critical, current_reviews, stale_reviews, historical)
-    result.actions = _actions(health, current_critical, current_reviews, stale_reviews, n_reporting)
+    result.actions = _actions(health, current_critical, current_reviews, stale_reviews, len(artifact_reviews), n_reporting)
     result.watch = _watch(context, health, historical)
     result.confidence_label, result.confidence_reason = _confidence(health)
     result.consistency_warnings = check_consistency(result, context, alerts, reviews, limit)
@@ -237,7 +251,7 @@ def _status_and_bluf(result, health, current, current_critical, current_reviews,
             result.bluf += f" {old} older item(s) are history and need closing."
 
 
-def _actions(health, current_critical, current_reviews, stale_reviews, n_reporting) -> list[BriefAction]:
+def _actions(health, current_critical, current_reviews, stale_reviews, fresh_artifacts, n_reporting) -> list[BriefAction]:
     acts: list[BriefAction] = []
     if health.state in ("DOWN", "UNKNOWN"):
         acts.append(BriefAction(
@@ -253,8 +267,10 @@ def _actions(health, current_critical, current_reviews, stale_reviews, n_reporti
                        else "Average lag is under 30 s.")))
     if stale_reviews:
         why = "as feed outage" if health.state in ("DOWN", "DEGRADED") else "as history"
+        what = (f"{len(stale_reviews)} review(s) ({fresh_artifacts} on RVR 0 ft sensor codes)" if fresh_artifacts
+                else f"{len(stale_reviews)} stale review(s)")
         acts.append(BriefAction(
-            action=f"Close {len(stale_reviews)} stale review(s) {why}.", owner=WATCH_OFFICER,
+            action=f"Close {what} {why}.", owner=WATCH_OFFICER,
             done_when=f"None in the queue is older than {ALERT_MAX_AGE_HOURS} h."))
     if current_reviews or current_critical:
         n = len(current_reviews) or len(current_critical)
@@ -305,9 +321,6 @@ def check_consistency(result: BriefAssessment, context: dict[str, Any], alerts: 
     if stale_escalations:
         warnings.append(f"{len(stale_escalations)} AI escalation(s) concern alerts older than {ALERT_MAX_AGE_HOURS} h "
                         "and are not current.")
-    raw_critical = context.get("critical_alert_count") or 0
-    if raw_critical and not result.current_critical_count:
-        warnings.append(f"{raw_critical} critical alert(s) are on record but none is from the last {ALERT_MAX_AGE_HOURS} h.")
     if result.data_health.state == "DOWN" and (result.current_alert_count or result.current_review_count):
         warnings.append("Alerts and reviews newer than the age limit arrived while the feed was down: treat them as suspect.")
     return warnings
@@ -331,6 +344,11 @@ def fit_above_the_fold(a: BriefAssessment) -> BriefAssessment:
     if a.above_fold_words > ABOVE_FOLD_MAX_WORDS:
         a.confidence_reason = ""
         a.above_fold_words = above_the_fold_words(a)
+    sentences = re.split(r"(?<=[.!?])\s+", a.bluf)
+    while a.above_fold_words > ABOVE_FOLD_MAX_WORDS and len(sentences) > 1:
+        sentences.pop()
+        a.bluf = " ".join(sentences)
+        a.above_fold_words = above_the_fold_words(a)
     return a
 
 
@@ -350,9 +368,9 @@ def accept_model_bluf(a: BriefAssessment, text: str) -> tuple[str, str | None]:
     if words(text) > MODEL_BLUF_MAX_WORDS:
         return a.bluf, f"longer than {MODEL_BLUF_MAX_WORDS} words"
     lowered = f" {text.lower()} "
-    for phrase in _NOT_OURS_TO_SAY:
-        if phrase in lowered:
-            return a.bluf, f"claims something about {phrase.strip()} that this console cannot know"
+    claim = overreach(text)
+    if claim:
+        return a.bluf, f"claims something about {claim} that this console cannot know"
     if a.data_health.state == "DEGRADED" and not re.search(r"\b(data|feed|pipeline|stale|backlog)\b", lowered):
         return a.bluf, "does not say the data is degraded"
     return text, None
