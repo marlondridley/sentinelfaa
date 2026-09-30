@@ -245,6 +245,10 @@ services:
       HOME: /tmp/streamlit-home
       GRAFANA_PUBLIC_URL: https://localhost:8445
       PROMETHEUS_PUBLIC_URL: https://localhost:8447
+      # Fail closed: without a working .streamlit/secrets.toml the dashboard shows "Sign-in is not configured"
+      # and nothing else, instead of a typed callsign anyone reaching the public address could use. Set to 0
+      # only for a lab run with no Keycloak.
+      REQUIRE_SIGN_IN: ${REQUIRE_SIGN_IN:-1}
     volumes:
       - ./data:/app/data
       - dashboard-secrets:/vault/secrets:ro

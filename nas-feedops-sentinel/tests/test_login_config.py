@@ -25,6 +25,7 @@ if DASHBOARD not in sys.path:
 from streamlit.errors import StreamlitSecretNotFoundError  # noqa: E402
 
 from lib import login  # noqa: E402
+from src import config  # noqa: E402
 
 GOOD = {
     "redirect_uri": "https://localhost:8443/oauth2callback",
@@ -233,3 +234,42 @@ def test_a_properly_configured_sign_in_is_still_honoured(monkeypatch):
     _streamlit(monkeypatch, secrets_get=lambda key: Auth(GOOD), logged_in=True)
     principal = login.current_principal()
     assert principal is not None and principal.principal_id == "mallory"
+
+
+# ── a deployment that requires sign-in ────────────────────────────────────────
+
+def test_with_sign_in_required_a_missing_secrets_file_is_a_broken_setup_not_the_lab_fallback(monkeypatch):
+    """The public deployment: a bad bind mount must not turn every page into a typed-callsign console."""
+    def missing(key):
+        raise StreamlitSecretNotFoundError("no secrets.toml")
+
+    _streamlit(monkeypatch, secrets_get=missing)
+    monkeypatch.setattr(config.settings, "REQUIRE_SIGN_IN", True)
+
+    assert login.oidc_configured() is True
+    assert login.current_principal() is None, "nobody is signed in, and there is nothing to sign in to"
+
+
+def test_with_sign_in_required_the_overview_shows_only_the_not_configured_notice(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(config.settings, "REQUIRE_SIGN_IN", True)      # and this test copy has no secrets.toml
+    app = Path(__file__).resolve().parent.parent / "dashboard" / "app.py"
+
+    at = AppTest.from_file(str(app), default_timeout=90).run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    html = " ".join(m.value for m in at.markdown)
+    assert "Sign-in is not configured" in html
+    assert not [b for b in at.button if b.label in ("Refresh brief", "Ask")], "no page content behind the notice"
+    assert "Operator ID" not in " ".join(t.label for t in at.text_input), "and no typed-callsign fallback"
+
+
+def test_without_it_the_lab_fallback_is_unchanged(monkeypatch):
+    def missing(key):
+        raise StreamlitSecretNotFoundError("no secrets.toml")
+
+    _streamlit(monkeypatch, secrets_get=missing)
+    monkeypatch.setattr(config.settings, "REQUIRE_SIGN_IN", False)
+
+    assert login.oidc_configured() is False
