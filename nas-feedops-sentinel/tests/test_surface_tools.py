@@ -177,6 +177,69 @@ async def test_with_no_model_the_planner_answers_a_taxi_question_from_the_figure
     assert result.recommended_actions, "an answer is never left without a next step"
 
 
+async def test_one_tool_failing_is_reported_and_the_others_still_answer(monkeypatch):
+    await _seed()
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(storage, "get_departure_queue", boom)
+    with agent_tools.acting_as("planner"):
+        results = await surface_tools.gather("taxi-out at IAD, and the departure queue at IAD", as_of=AS_OF)
+    assert results["read_taxi_out_stats"][0]["completed"] == 2, "the healthy tool still answered"
+    assert results["unavailable"] == [{"tool": "read_departure_queue", "reason": "RuntimeError: database went away"}]
+    assert surface_tools.has_figures(results) is True
+
+
+async def _planner(monkeypatch, llm=None):
+    import src.planner_agent as planner
+
+    monkeypatch.setattr(planner.settings, "CRITIC_ENABLED", False)
+    real_gather = surface_tools.gather
+
+    async def at_noon(question, as_of=None):
+        return await real_gather(question, as_of=AS_OF)
+
+    monkeypatch.setattr(planner.surface_tools, "gather", at_noon)
+    agent = PlannerAgent()
+    agent._llm = llm
+    return agent
+
+
+async def test_a_taxi_answer_does_not_hide_an_active_critical_alert(monkeypatch):
+    from src.models import AlertEvent
+
+    await _seed()
+    await storage.save_alert(AlertEvent(alert_type="ALERT_LOW_RVR", severity="CRITICAL", airport_code="KIAD",
+                                        service_name="APDS_RVR", description="Low RVR 600 ft"))
+    result = await (await _planner(monkeypatch)).query("What's the average taxi-out time at IAD?")
+    assert "KIAD: average taxi-out 9.0 min" in result.answer
+    assert "Alerts: " in result.answer and "CRITICAL alerts are active at: KIAD" in result.answer
+    assert any("Escalate" in a for a in result.recommended_actions), "the alert's actions are kept"
+
+
+async def test_a_review_queue_question_is_answered_from_the_alerts_not_the_departure_queue(monkeypatch):
+    await _seed()
+    result = await (await _planner(monkeypatch)).query("What is in the human review queue?")
+    assert "departure" not in result.answer and "taxi" not in result.answer.lower()
+
+
+async def test_a_model_answer_is_followed_by_the_flights_the_model_never_saw(monkeypatch):
+    class Llm:
+        async def acall_with_tool(self, **kwargs):
+            self.message = kwargs["user_message"]
+            return {"answer": "Average taxi-out at KIAD is 9.0 minutes over 2 flights.", "confidence": 0.8,
+                    "citations": [], "recommended_actions": ["Keep watching."], "sub_queries": []}
+
+    await _seed()
+    llm = Llm()
+    result = await (await _planner(monkeypatch, llm)).query("Which flight had the longest taxi-out at IAD?")
+    assert result.answer.startswith("Average taxi-out at KIAD is 9.0 minutes")
+    assert "From the records (flight identifiers are withheld from the model" in result.answer
+    assert "longest 12.0 min, UAL1" in result.answer, "the callsign comes from the records, not the model"
+    assert '"read_taxi_out_stats"' in llm.message, "the model was given the figures"
+
+
 async def test_the_description_of_no_flights_does_not_read_as_a_zero_minute_taxi():
     await _seed()
     with agent_tools.acting_as("planner"):

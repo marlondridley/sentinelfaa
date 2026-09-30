@@ -119,9 +119,76 @@ def test_gate_return_and_taxi_in_and_a_named_flight_are_recognised():
 @pytest.mark.parametrize("question", [
     "What's the current RVR at IAD?", "Is anything unusual happening?", "status briefing", "why is the feed stale",
     "the total of THE flights",                 # capitalised words are not callsigns without digits
+    "What is in the human review queue?",       # the review queue is not the departure queue
+    "How many items are in the review queue at KIAD?",
+    "When did rwy01 last change at IAD?",       # runway 01 is not a flight
 ])
 def test_other_questions_use_no_taxi_tools(question):
     assert surface_tools.route(question) == []
+
+
+def test_a_callsign_is_found_however_it_is_typed():
+    for text in ("When did UAL1234 push back?", "when did ual1234 push back?", "When did Ual1234 push back?"):
+        assert surface_tools.route(text) == [("read_flight_timeline", {"aircraft_id": "UAL1234"})], text
+
+
+def test_a_departure_queue_is_recognised_by_name_or_by_airport():
+    for text in ("How many aircraft are in the departure queue at DCA?", "what's the queue at IAD?",
+                 "How long is the taxi queue?"):
+        assert surface_tools.route(text)[0][0] == "read_departure_queue", text
+
+
+def test_taxi_time_with_no_direction_asks_for_both():
+    tools = [tool for tool, _ in surface_tools.route("What is the average taxi time at IAD?")]
+    assert tools == ["read_taxi_out_stats", "read_taxi_in_stats"]
+
+
+async def test_a_taxi_question_the_router_cannot_read_says_nothing_was_fetched_instead_of_staying_silent():
+    """No database is touched: nothing matched."""
+    result = await surface_tools.gather("How long are departures waiting to get airborne at Dulles?")
+    assert set(result) == {"not_fetched"} and "do not state a taxi time" in result["not_fetched"].lower()
+    assert surface_tools.has_figures(result) is False
+    assert "No surface figures were fetched" in " ".join(surface_tools.describe(result))
+    assert await surface_tools.gather("what is the current RVR at IAD?") == {}
+
+
+# -- wording, the suspect flag, and describe() ------------------------------------------
+
+@pytest.mark.parametrize("minutes, label", [(1, "1 minute"), (15, "15 minutes"), (60, "1 hour"),
+                                            (90, "90 minutes"), (120, "2 hours"), (1440, "24 hours")])
+def test_a_window_is_worded_the_way_a_person_says_it(minutes, label):
+    assert sm.window_label(minutes) == label
+
+
+def test_today_is_reported_as_the_last_24_hours_not_as_1440_minutes():
+    result = sm.taxi_stats([], "a", "b", airport="KIAD", window_minutes=1440, as_of=AS_OF, latest_event=_t(11, 59))
+    assert result["window_label"] == "last 24 hours" and "last 24 hours" in result["note"]
+
+
+def test_a_flight_out_for_45_minutes_with_no_takeoff_is_marked_as_probably_departed():
+    rows = [{"aircraft_id": "OLD1", "airport_code": "KIAD", "spot_out_at": _t(10, 30)},      # 90 min
+            {"aircraft_id": "NEW2", "airport_code": "KIAD", "spot_out_at": _t(11, 50)}]      # 10 min
+    result = sm.queue_summary(rows, airport="KIAD", as_of=AS_OF, latest_event=_t(11, 59))
+    flags = {f["aircraft_id"]: f["suspect"] for f in result["flights"]}
+    assert flags == {"OLD1": True, "NEW2": False}
+    assert result["possibly_departed"] == 1 and "probably not received" in result["note"]
+    assert "take-off probably not recorded" in " ".join(surface_tools.describe({"read_departure_queue": [result]}))
+
+
+def test_describe_words_every_kind_of_result_and_names_the_flights():
+    def ev(kind, at, airport="KIAD"):
+        return {"surface_event_type": kind, "event_time_utc": at, "airport_code": airport, "runway": None}
+
+    returns = sm.gate_return_summary(
+        [{"aircraft_id": "JBU5", "airport_code": "KIAD", "spot_out_at": _t(11, 30), "spot_in_at": _t(11, 41)}],
+        airport="KIAD", window_minutes=1440, as_of=AS_OF, latest_event=_t(11, 59))
+    timeline = sm.flight_timeline("UAL1", [ev("SPOT_OUT", _t(10, 0)), ev("WHEELS_OFF", _t(10, 14))], as_of=AS_OF)
+    text = " ".join(surface_tools.describe({
+        "read_gate_returns": [returns], "read_flight_timeline": [timeline],
+        "unavailable": [{"tool": "read_taxi_in_stats", "reason": "refused"}]}))
+    assert "JBU5 (11.0 min out)" in text and "last 24 hours" in text
+    assert "UAL1: SPOT_OUT at KIAD 10:00Z, WHEELS_OFF at KIAD 10:14Z" in text and "taxi-out 14.0 min" in text
+    assert "read_taxi_in_stats was unavailable (refused)" in text
 
 
 def test_the_same_call_is_never_made_twice():

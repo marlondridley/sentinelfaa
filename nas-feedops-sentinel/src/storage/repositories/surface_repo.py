@@ -11,9 +11,10 @@ Taxi-out is SPOT_OUT to WHEELS_OFF; taxi-in is WHEELS_ON to SPOT_IN. These
 reads return the raw pairs and lists; src/surface_metrics.py turns them into
 numbers, so the arithmetic is testable without a database.
 
-A flight that pushes back, returns to the gate and pushes back again (or a message the feed repeats)
-has more than one SPOT_OUT before its WHEELS_OFF; the pairs use the latest, so the time spent back
-at the gate is not counted as taxi time and the flight is counted once.
+A flight that pushes back, returns to the gate and pushes back again (or a
+message the feed repeats) has more than one SPOT_OUT before its WHEELS_OFF;
+the pairs use the latest, so the time spent back at the gate is not counted as
+taxi time and the flight is counted once.
 
 Every read takes `as_of` (default now): the moment the question is asked
 about, so a past hour can be asked as easily as the last fifteen minutes. The
@@ -23,9 +24,11 @@ happened.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import asyncpg
+
+from src.timeutil import as_utc
 
 TAXI_OUT_MAX = timedelta(minutes=90)       # a SPOT_OUT with no WHEELS_OFF this long after is not a taxi-out
 TAXI_IN_MAX = timedelta(minutes=60)
@@ -37,89 +40,67 @@ TIMELINE_TYPES = (
 )
 
 
-def _utc(value: datetime | None) -> datetime:
-    if value is None:
-        return datetime.now(timezone.utc)
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-
 class SurfaceRepository:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
+
+    async def _pairs(
+        self, airport_code: str | None, since: datetime, as_of: datetime | None, *,
+        start_type: str, end_type: str, max_gap: timedelta, start_key: str, end_key: str,
+    ) -> list[dict]:
+        """
+        Each `end_type` event in [since, as_of] paired with the latest `start_type` event of the
+        same aircraft at the same airport before it (within max_gap): the shape of both taxi legs.
+        """
+        end = as_utc(as_of)
+        since = as_utc(since)
+        rows = await self._pool.fetch(
+            """
+            WITH s AS (
+              SELECT airport_code, aircraft_id, event_time_utc AS t0
+              FROM nas_events
+              WHERE surface_event_type = $5 AND aircraft_id IS NOT NULL
+                AND ($1::text IS NULL OR airport_code = $1)
+                AND received_time_utc >= $2::timestamptz - $4::interval
+                AND event_time_utc >= $2::timestamptz - $4::interval AND event_time_utc <= $3::timestamptz
+            )
+            SELECT * FROM (
+              SELECT DISTINCT ON (s.airport_code, s.aircraft_id, e.t1)
+                     s.airport_code, s.aircraft_id, s.t0 AS start_at, e.t1 AS end_at
+              FROM s
+              JOIN LATERAL (
+                SELECT min(x.event_time_utc) AS t1 FROM nas_events x
+                WHERE x.surface_event_type = $6 AND x.aircraft_id = s.aircraft_id
+                  AND x.airport_code = s.airport_code
+                  AND x.received_time_utc >= s.t0
+                  AND x.event_time_utc > s.t0 AND x.event_time_utc < s.t0 + $4::interval
+                  AND x.event_time_utc <= $3::timestamptz
+              ) e ON e.t1 IS NOT NULL AND e.t1 >= $2::timestamptz
+              ORDER BY s.airport_code, s.aircraft_id, e.t1, s.t0 DESC
+            ) paired ORDER BY end_at
+            """,
+            airport_code, since, end, max_gap, start_type, end_type,
+        )
+        return [{"airport_code": r["airport_code"], "aircraft_id": r["aircraft_id"],
+                 start_key: r["start_at"], end_key: r["end_at"]} for r in rows]
 
     async def get_taxi_out_pairs(
         self, airport_code: str | None, since: datetime, as_of: datetime | None = None,
     ) -> list[dict]:
         """Completed taxi-outs whose WHEELS_OFF fell in [since, as_of]: aircraft, spot_out_at, wheels_off_at."""
-        end = _utc(as_of)
-        since = _utc(since)
-        rows = await self._pool.fetch(
-            """
-            WITH so AS (
-              SELECT airport_code, aircraft_id, event_time_utc AS t0
-              FROM nas_events
-              WHERE surface_event_type = 'SPOT_OUT' AND aircraft_id IS NOT NULL
-                AND ($1::text IS NULL OR airport_code = $1)
-                AND received_time_utc >= $2::timestamptz - $4::interval
-                AND event_time_utc >= $2::timestamptz - $4::interval AND event_time_utc <= $3::timestamptz
-            )
-            SELECT * FROM (
-            SELECT DISTINCT ON (so.airport_code, so.aircraft_id, w.t1)
-                   so.airport_code, so.aircraft_id, so.t0 AS spot_out_at, w.t1 AS wheels_off_at
-            FROM so
-            JOIN LATERAL (
-              SELECT min(x.event_time_utc) AS t1 FROM nas_events x
-              WHERE x.surface_event_type = 'WHEELS_OFF' AND x.aircraft_id = so.aircraft_id
-                AND x.airport_code = so.airport_code
-                AND x.received_time_utc >= so.t0
-                AND x.event_time_utc > so.t0 AND x.event_time_utc < so.t0 + $4::interval
-                AND x.event_time_utc <= $3::timestamptz
-            ) w ON w.t1 IS NOT NULL AND w.t1 >= $2::timestamptz
-            ORDER BY so.airport_code, so.aircraft_id, w.t1, so.t0 DESC
-            ) paired ORDER BY wheels_off_at
-            """,
-            airport_code, since, end, TAXI_OUT_MAX,
-        )
-        return [dict(r) for r in rows]
+        return await self._pairs(airport_code, since, as_of, start_type="SPOT_OUT", end_type="WHEELS_OFF",
+                                 max_gap=TAXI_OUT_MAX, start_key="spot_out_at", end_key="wheels_off_at")
 
     async def get_taxi_in_pairs(
         self, airport_code: str | None, since: datetime, as_of: datetime | None = None,
     ) -> list[dict]:
         """Completed taxi-ins whose SPOT_IN fell in [since, as_of]: aircraft, wheels_on_at, spot_in_at."""
-        end = _utc(as_of)
-        since = _utc(since)
-        rows = await self._pool.fetch(
-            """
-            WITH wo AS (
-              SELECT airport_code, aircraft_id, event_time_utc AS t0
-              FROM nas_events
-              WHERE surface_event_type = 'WHEELS_ON' AND aircraft_id IS NOT NULL
-                AND ($1::text IS NULL OR airport_code = $1)
-                AND received_time_utc >= $2::timestamptz - $4::interval
-                AND event_time_utc >= $2::timestamptz - $4::interval AND event_time_utc <= $3::timestamptz
-            )
-            SELECT * FROM (
-            SELECT DISTINCT ON (wo.airport_code, wo.aircraft_id, s.t1)
-                   wo.airport_code, wo.aircraft_id, wo.t0 AS wheels_on_at, s.t1 AS spot_in_at
-            FROM wo
-            JOIN LATERAL (
-              SELECT min(x.event_time_utc) AS t1 FROM nas_events x
-              WHERE x.surface_event_type = 'SPOT_IN' AND x.aircraft_id = wo.aircraft_id
-                AND x.airport_code = wo.airport_code
-                AND x.received_time_utc >= wo.t0
-                AND x.event_time_utc > wo.t0 AND x.event_time_utc < wo.t0 + $4::interval
-                AND x.event_time_utc <= $3::timestamptz
-            ) s ON s.t1 IS NOT NULL AND s.t1 >= $2::timestamptz
-            ORDER BY wo.airport_code, wo.aircraft_id, s.t1, wo.t0 DESC
-            ) paired ORDER BY spot_in_at
-            """,
-            airport_code, since, end, TAXI_IN_MAX,
-        )
-        return [dict(r) for r in rows]
+        return await self._pairs(airport_code, since, as_of, start_type="WHEELS_ON", end_type="SPOT_IN",
+                                 max_gap=TAXI_IN_MAX, start_key="wheels_on_at", end_key="spot_in_at")
 
     async def get_departure_queue(self, airport_code: str | None, as_of: datetime | None = None) -> list[dict]:
         """Aircraft that left the gate and have neither taken off nor returned to it: aircraft, spot_out_at."""
-        end = _utc(as_of)
+        end = as_utc(as_of)
         rows = await self._pool.fetch(
             """
             SELECT DISTINCT ON (so.airport_code, so.aircraft_id)
@@ -145,8 +126,8 @@ class SurfaceRepository:
         self, airport_code: str | None, since: datetime, as_of: datetime | None = None,
     ) -> list[dict]:
         """SPOT_OUT followed by SPOT_IN with no WHEELS_OFF between: aircraft, spot_out_at, spot_in_at."""
-        end = _utc(as_of)
-        since = _utc(since)
+        end = as_utc(as_of)
+        since = as_utc(since)
         rows = await self._pool.fetch(
             """
             SELECT * FROM (
@@ -182,7 +163,7 @@ class SurfaceRepository:
         self, aircraft_id: str, lookback: timedelta, as_of: datetime | None = None,
     ) -> list[dict]:
         """One aircraft's surface events in order: time, airport, type, runway."""
-        end = _utc(as_of)
+        end = as_utc(as_of)
         rows = await self._pool.fetch(
             """
             SELECT event_time_utc, airport_code, surface_event_type, runway
@@ -201,14 +182,18 @@ class SurfaceRepository:
         When the newest SMES message happened: whether the surface feed is flowing, which is what
         the answers above depend on. Any SMES message counts (position reports arrive constantly);
         the sparse spot/wheels events alone would call a quiet airport's feed stale.
+
+        The newest by arrival, one row off the (airport, received time) index: not a maximum over
+        days of SMES rows, which every tool would repeat for every airport.
         """
-        end = _utc(as_of)
+        end = as_utc(as_of)
         return await self._pool.fetchval(
             """
-            SELECT max(event_time_utc) FROM nas_events
-            WHERE service_name = 'SMES'
-              AND ($1::text IS NULL OR airport_code = $1)
-              AND received_time_utc >= $2::timestamptz - interval '7 days' AND event_time_utc <= $2::timestamptz
+            SELECT event_time_utc FROM nas_events
+            WHERE service_name = 'SMES' AND ($1::text IS NULL OR airport_code = $1)
+              AND received_time_utc <= $2::timestamptz
+              AND received_time_utc >= $2::timestamptz - interval '7 days'
+            ORDER BY received_time_utc DESC LIMIT 1
             """,
             airport_code, end,
         )
