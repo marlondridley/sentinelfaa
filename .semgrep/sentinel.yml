@@ -26,7 +26,7 @@ rules:
     message: >-
       Feed files come from an external broker. Parse XML with defusedxml
       (DTDs, entities and external references refused), as
-      src/swim_file_ingest.py does -- not the stdlib parser's defaults.
+      src/swim_parse.py does -- not the stdlib parser's defaults.
     severity: ERROR
     languages: [python]
     paths:

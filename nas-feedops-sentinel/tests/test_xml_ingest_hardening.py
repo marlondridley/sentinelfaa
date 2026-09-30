@@ -1,5 +1,5 @@
 """
-.xml feed files are parsed with defusedxml (src/swim_file_ingest.py): their
+.xml feed files are parsed with defusedxml (src/swim_parse.py): their
 content comes from an external broker, so a DTD, an entity declaration or an
 external reference is refused -- the file goes to quarantine with that reason
 -- rather than left to the stdlib parser's defaults to bound. Found by the
