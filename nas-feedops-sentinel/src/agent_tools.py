@@ -58,6 +58,12 @@ TOOLS: dict[str, Tool] = {tool.name: tool for tool in (
     Tool("read_operating_picture", "read", "Events, alerts, traffic, latency and the review queue "
                                            "(src/watch_officer_agent.py)"),
     Tool("collect_evidence", "read", "The investigation snapshot (src/investigation/evidence.py)"),
+    # Taxi-time reads over SMES surface events (src/surface_tools.py)
+    Tool("read_taxi_out_stats", "read", "Average and longest taxi-out, with an hourly trend"),
+    Tool("read_taxi_in_stats", "read", "Average and longest taxi-in, with an hourly trend"),
+    Tool("read_departure_queue", "read", "Aircraft that left the gate and have not taken off, and for how long"),
+    Tool("read_gate_returns", "read", "Flights that left the gate and returned without taking off"),
+    Tool("read_flight_timeline", "read", "One flight's surface events with its taxi times"),
     # Structured-output tools handed to a model (prompts/*.yaml)
     Tool("submit_critique", "respond", "The Critic's or Red-Team Critic's assessment"),
     Tool("submit_operational_brief", "respond", "The Planner's answer"),

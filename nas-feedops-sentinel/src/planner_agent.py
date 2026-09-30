@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src import agent_tools, storage
+from src import agent_tools, storage, surface_tools
 from src.config import settings
 from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
@@ -73,6 +73,12 @@ class PlannerAgent:
             "recent_events_count": len(recent_events),
             "critic_reviews": critic_reviews,
         }
+
+        # Taxi-time questions get their numbers from the surface tools (src/surface_tools.py),
+        # each a governed read; a question about anything else adds nothing here.
+        surface = await surface_tools.gather(question)
+        if surface:
+            context_summary["surface_metrics"] = surface
 
         # PlannerResult.confidence is None when no model made an assessment
         # (see src/models.py), and the rest of this method keeps to that:
@@ -152,6 +158,23 @@ class PlannerAgent:
         has_critical = any(a.get("severity") == "CRITICAL" for a in alerts)
         has_warnings = any(a.get("severity") in ("WARNING", "HIGH") for a in alerts)
         prefix = "LLM planner unavailable; deterministic summary of stored records. "
+
+        # A taxi-time question is answered from the surface tools' figures, which are facts
+        # the records show, whatever the alerts are.
+        surface_metrics = context.get("surface_metrics")
+        if surface_metrics:
+            stale = any(r.get("freshness", {}).get("stale")
+                        for results in surface_metrics.values() if isinstance(results, list)
+                        for r in results if isinstance(r, dict) and "freshness" in r)
+            return PlannerResult(
+                question=question,
+                answer=prefix + " ".join(surface_tools.describe(surface_metrics)),
+                confidence=None,
+                recommended_actions=(
+                    ["Confirm the SWIM surface feed is current before relying on these figures."] if stale
+                    else ["Continue routine monitoring of surface movement."]),
+                sub_queries=[],
+            )
 
         if not alerts:
             if event_count == 0:
