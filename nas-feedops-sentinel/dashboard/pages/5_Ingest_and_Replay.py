@@ -102,12 +102,8 @@ with st.sidebar:
         st.success(f"Removed {removed} file(s). {remaining} remain in Kit log.")
 
     st.divider()
-    # config.DATABASE_URL embeds the DB password in plain text, so it's never
-    # shown in the UI -- this is host:port/db only, no credentials. (The
-    # original single-file dashboard referenced a since-removed `config.DB_PATH`
-    # here, a leftover from before this project's SQLite-to-Postgres migration;
-    # it would raise AttributeError the moment this line rendered.)
-    st.caption(f"DB: `{config.POSTGRES_HOST}:{config.POSTGRES_PORT}/{config.POSTGRES_DB or '—'}`")
+    # The database address is not shown: any signed-in user reads this page, and a host and port are a map
+    # for someone who is not meant to have one. Operators have the compose file.
     st.caption(f"Refreshed: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
     # A refresh only refreshes: deleting Kit files is the explicit button above.
     if st.button("Refresh dashboard", use_container_width=True, type="primary"):
@@ -186,7 +182,7 @@ with col_ingest:
 with col_hint:
     if len(pending_files) == 0:
         st.info(
-            f"No Kit messages waiting in `{swim_live_dir}`: the live watcher ingests "
+            "No Kit messages are waiting in the live SWIM folder: the live watcher ingests "
             "each one within seconds. If this stays empty, the feed is not running; "
             "start it with `jumpstart\run-live.ps1` (or the launcher's `-WithLiveFeed`)."
         )
