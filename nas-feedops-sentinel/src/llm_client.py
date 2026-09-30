@@ -42,9 +42,9 @@ from src.agent_tools import authorize as authorize_tool
 from src.config import proxy_model, settings
 from src.governance import UNREGISTERED_ROLE, evaluate_model_call
 from src.logging_config import get_correlation_id, get_logger
-from src.model_telemetry import ModelCall, classify_outcome
+from src.model_telemetry import ModelCall, classify_outcome, prompt_fingerprint, sha256_hex
 from src.model_telemetry import record as record_model_call
-from src.redaction import is_redacted, redact_text
+from src.redaction import is_redacted, redact_text_counted
 
 _log = get_logger(__name__)
 
@@ -231,6 +231,7 @@ class LiteLLMClient:
         model: str | None = None,
         temperature: float = 0.0,
         role: str | None = None,
+        prompt_version: str | None = None,
     ) -> dict[str, Any]:
         """
         One governed, measured call.
@@ -240,7 +241,9 @@ class LiteLLMClient:
         failed or answered -- is one OpenTelemetry chat span and one
         model_calls record (src/model_telemetry.py), with its retries and
         the schema repair counted as part of it. `role` names the advisory role calling; a call
-        without one is evaluated as unregistered, which the policy refuses.
+        without one is evaluated as unregistered, which the policy refuses. `prompt_version` is the
+        prompt file's version label (prompts_loader.prompt_version), kept in the record beside the
+        prompt's hash.
         """
         # A proxy alias only, normalized to "openai/<alias>" as the policy
         # expects it; a provider route is refused before anything else.
@@ -254,7 +257,7 @@ class LiteLLMClient:
         # caller can't forget to scrub identifying NAS telemetry (aircraft
         # tail numbers, squawk codes, raw lat/lon, callsigns, ...) out of its
         # prompt. See src/redaction.py for what's covered and why.
-        redacted_user_message = redact_text(user_message)
+        redacted_user_message, redaction_count = redact_text_counted(user_message)
 
         # The call's OpenTelemetry span (src/telemetry.py): record() sets its
         # attributes, so exceptions are neither recorded nor turned into a
@@ -267,6 +270,8 @@ class LiteLLMClient:
                 role=role or UNREGISTERED_ROLE, model_alias=target_model,
                 correlation_id=get_correlation_id(), subject=telemetry.current_subject(),
                 max_tokens=max_tokens, temperature=temperature, span=span,
+                prompt_hash=prompt_fingerprint(system_prompt, tool), prompt_version=prompt_version or None,
+                input_hash=sha256_hex(redacted_user_message), redaction_count=redaction_count,
             )
             decision = evaluate_model_call(
                 role=role, model=target_model, prompt=f"{system_prompt}\n{redacted_user_message}",
