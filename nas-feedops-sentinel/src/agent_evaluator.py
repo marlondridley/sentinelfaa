@@ -11,7 +11,7 @@ from src.alert_engine import check_alerts
 from src.demo_scenario import generate_cascade_failure_scenario
 from src.guardrails import InputGuardrail, OutputGuardrail
 from src.models import EvalReport, EvalResult, NASEvent
-from src.validators import validate_event
+from src.validators import validate_batch
 
 
 @dataclass
@@ -111,9 +111,7 @@ class AgentEvaluator:
 
         # 1. Cascade failure scenario
         cascade_events = _gen_cascade_failure()
-        for e in cascade_events:
-            r = validate_event(e)
-            e.validation_status = "PASSED" if r.passed else "FAILED"
+        validate_batch(cascade_events)
         alerts = check_alerts(cascade_events)
         crit_alerts = [a for a in alerts if a.severity == "CRITICAL"]
         passed = len(crit_alerts) >= 3
@@ -129,9 +127,7 @@ class AgentEvaluator:
 
         # 2. Clean state scenario
         clean_events = _gen_clean_state()
-        for e in clean_events:
-            r = validate_event(e)
-            e.validation_status = "PASSED" if r.passed else "FAILED"
+        validate_batch(clean_events)
         clean_alerts = check_alerts(clean_events)
         clean_passed = len(clean_alerts) == 0
         results.append(

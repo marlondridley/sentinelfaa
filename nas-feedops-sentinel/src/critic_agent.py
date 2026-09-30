@@ -1,6 +1,6 @@
 """
 CriticAgent: Agentic reasoning layer for NAS telemetry and alert validation.
-Refactored for CrewAI Flow integration and LiteLLM proxy fallback.
+Calls the model through the LiteLLM proxy.
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
 
 
 class CriticAgent:
-    """Async engine wrapper for non-CrewAI direct agentic queries (Temporal / Pipeline)."""
+    """Async engine wrapper for direct agentic queries (Temporal / Pipeline)."""
 
     def __init__(self) -> None:
         self._llm = build_llm_client(model=settings.CRITIC_MODEL) if settings.CRITIC_ENABLED else None
