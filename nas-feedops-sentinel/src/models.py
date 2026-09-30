@@ -65,6 +65,60 @@ TraconCode = Annotated[str, AfterValidator(_in_scope_tracon)]
 ServiceName = Literal["SMES", "APDS_RVR", "ISMC", "TOWER_DEPARTURE", "TERMINAL_AUTO"]
 
 
+class BriefAction(BaseModel):
+    """One thing to do, who does it, and how anyone can tell it is finished."""
+    action: str
+    owner: str
+    done_when: str
+
+
+class DataHealth(BaseModel):
+    """Whether our own pipeline is delivering data: checked before anything about the airspace is read."""
+    state: str = "UNKNOWN"             # OK | DEGRADED | DOWN | UNKNOWN
+    scope: str = "none"                # pipeline (every airport at once) | airport | backlog | none
+    minutes_since_last_event: float | None = None
+    stale_airports: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class BriefIncident(BaseModel):
+    """Alerts that began together, across airports, reported as one thing."""
+    started_at: datetime
+    ended_at: datetime
+    airports: list[str] = Field(default_factory=list)
+    alert_types: list[str] = Field(default_factory=list)
+    alert_count: int = 0
+    reviews: int = 0
+    historical: bool = False           # older than the alert-age limit, with no newer evidence
+    artifact: bool = False             # every alert is a sensor not-reporting code (RVR 0 ft), not a reading
+
+
+class BriefAssessment(BaseModel):
+    """
+    What the Watch Officer's brief says, worked out by rules before any model writes a word
+    (src/watch_officer_assessment.py): a status, a bottom line, at most three owned actions, and the
+    facts the narrative must agree with.
+    """
+    status: str = "GREY"               # RED | AMBER | GREEN | GREY
+    status_line: str = ""
+    bluf: str = ""
+    actions: list[BriefAction] = Field(default_factory=list)
+    watch: list[str] = Field(default_factory=list)
+    confidence_label: str = "LOW"      # HIGH | MEDIUM | LOW: in the diagnosis, not in the airspace
+    confidence_reason: str = ""
+    data_health: DataHealth = Field(default_factory=DataHealth)
+    incidents: list[BriefIncident] = Field(default_factory=list)
+    current_alert_count: int = 0
+    current_critical_count: int = 0
+    historical_alert_count: int = 0
+    artifact_alert_count: int = 0
+    current_review_count: int = 0
+    historical_review_count: int = 0
+    consistency_warnings: list[str] = Field(default_factory=list)
+    above_fold_words: int = 0
+    affected_airports: list[str] = Field(default_factory=list)     # stale or degraded now, or with a current CRITICAL alert
+
+
 class WatchOfficerBrief(BaseModel):
     """
     Structured operational brief produced by the Watch Officer Agent.
@@ -85,6 +139,8 @@ class WatchOfficerBrief(BaseModel):
     confidence: float = 0.5
     llm_used: bool = False
     limitations: list[str] = Field(default_factory=list)
+    # The status, bottom line and owned actions (None on briefs stored before they existed).
+    assessment: BriefAssessment | None = None
 
 
 class OperationalTicket(BaseModel):

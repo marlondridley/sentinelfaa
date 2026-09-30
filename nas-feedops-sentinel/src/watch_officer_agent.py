@@ -6,18 +6,19 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from src import agent_tools, config, storage
+from src import watch_officer_assessment as rules
 from src.async_bridge import run_async
 from src.config import settings
 from src.feed_health import compute_feed_health
 from src.llm_client import build_llm_client
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
-from src.models import NASEvent, WatchOfficerBrief
+from src.models import BriefAssessment, NASEvent, WatchOfficerBrief
 from src.prompts_loader import system_prompt, tool_schema
 from src.redaction import redact_structured
 from src.watch_officer_projection import project_for_model
@@ -105,7 +106,7 @@ async def _read_operating_picture(event_limit: int) -> tuple:
         await storage.get_recent_alerts(limit=200),
         await storage.get_flight_phase_counts(window_minutes=15),
         await storage.get_active_aircraft(window_minutes=5, limit=300),
-        await storage.get_latency_stats(),
+        await storage.get_latency_stats(since=datetime.now(timezone.utc) - timedelta(minutes=rules.LATENCY_WINDOW_MINUTES)),
         await storage.get_pending_staged_actions(),
         await storage.get_draft_operational_tickets(),
         await storage.get_recent_critic_results(limit=20),
@@ -152,8 +153,12 @@ async def build_watch_officer_context(
         event.event_id for event in live_events if getattr(event, "event_id", None)
     ][:10]
 
+    received = [e["received_time_utc"] for e in events_raw if e.get("received_time_utc")]
+    latest_event_at = max(received).isoformat() if received and hasattr(max(received), "isoformat") else None
+
     context: dict[str, Any] = {
         "snapshot_time": datetime.now(timezone.utc).isoformat(),
+        "latest_event_at": latest_event_at,
         "per_airport": per_airport,
         "airport_status": airport_status,
         "phase_counts": phase_counts,
@@ -237,9 +242,22 @@ def _detect_signals(context: dict[str, Any]) -> dict[str, Any]:
     return signals
 
 
-def _derive_posture(signals: dict[str, Any], context: dict[str, Any]) -> str:
-    if signals["pending_actions_exist"] or signals["draft_tickets_exist"]:
-        return "ACTION"
+def _derive_posture(signals: dict[str, Any], context: dict[str, Any], assessment: BriefAssessment | None = None) -> str:
+    """
+    Legacy posture for tickets and the staged-action flow. With an assessment, only a review or CRITICAL
+    alert from the last few hours makes it ACTION (one left open from days ago is history), and a pipeline
+    that is down or catching up is ATTENTION, whatever the airports' alerts say.
+    """
+    if assessment is None:
+        if signals["pending_actions_exist"] or signals["draft_tickets_exist"]:
+            return "ACTION"
+    else:
+        if assessment.current_review_count or assessment.current_critical_count:
+            return "ACTION"
+        if assessment.data_health.state == "UNKNOWN":
+            return "UNKNOWN"
+        if assessment.data_health.state in ("DOWN", "DEGRADED"):
+            return "ATTENTION"
     if (
         signals["stale_airports"]
         or signals["missing_airports"]
@@ -255,7 +273,9 @@ def _derive_posture(signals: dict[str, Any], context: dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
-def _derive_trust(signals: dict[str, Any], context: dict[str, Any]) -> str:
+def _derive_trust(signals: dict[str, Any], context: dict[str, Any], assessment: BriefAssessment | None = None) -> str:
+    if assessment is not None and assessment.data_health.state == "DOWN":
+        return "DEGRADED"
     if signals["no_recent_events"]:
         return "UNKNOWN"
     if signals["missing_airports"] or signals["no_active_aircraft"]:
@@ -267,123 +287,98 @@ def _derive_trust(signals: dict[str, Any], context: dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
-def _affected_airports(signals: dict[str, Any], context: dict[str, Any]) -> list[str]:
-    airports = (
-        set(signals["stale_airports"])
-        | set(signals["missing_airports"])
-        | set(signals["degraded_airports"])
-    )
-    for alert in context.get("critical_alerts", []):
-        if alert.get("airport_code"):
-            airports.add(alert["airport_code"])
-    return sorted(airports)
+# The brief's confidence is in its diagnosis of our own data, from the assessment, not a model's self-report.
+_CONFIDENCE = {"HIGH": 0.9, "MEDIUM": 0.6, "LOW": 0.3}
 
 
-def _deterministic_brief(context: dict[str, Any], signals: dict[str, Any]) -> WatchOfficerBrief:
-    posture = _derive_posture(signals, context)
-    trust = _derive_trust(signals, context)
-    aps = _affected_airports(signals, context)
+def _action_lines(a: BriefAssessment) -> list[str]:
+    return [f"{x.action} Owner: {x.owner}. Done when: {x.done_when}" for x in a.actions]
 
-    what_changed: list[str] = []
-    why_it_matters: list[str] = []
-    recommended: list[str] = []
-    evidence: list[str] = []
 
-    if signals.get("critical_alerts_exist"):
-        n = context.get("critical_alert_count", 0)
-        what_changed.append(f"{n} CRITICAL alert(s) active in the last window.")
-        why_it_matters.append("CRITICAL alerts indicate a safety- or feed-significant condition; deterministic rules already classified them as worthy of supervisor attention.")
-        recommended.append("Open the Human Review Queue and triage each pending escalation package.")
-
-    if signals.get("pending_actions_exist"):
-        what_changed.append(f"{context.get('pending_actions_count', 0)} action(s) staged PENDING human review.")
-        recommended.append("Decide Approve Escalation, Reject, or Continue Monitoring on each staged action.")
-
-    if signals.get("draft_tickets_exist"):
-        what_changed.append(f"{context.get('draft_tickets_count', 0)} escalation package(s) drafted but not yet decided.")
-        evidence.append("operational_tickets table has DRAFT rows linked to staged actions.")
-
-    for ap in signals.get("missing_airports", []):
-        what_changed.append(f"{ap} TAIS feed is UNAVAILABLE/DISCONNECTED.")
-        why_it_matters.append(f"Aircraft movement picture at {ap} cannot be trusted while the feed is missing.")
-        recommended.append(f"Verify {ap} feed status against SWIM service desk and STARS console.")
-
-    for ap in signals.get("stale_airports", []):
-        what_changed.append(f"{ap} TAIS feed is STALE (no recent messages in window).")
-        why_it_matters.append(f"Stale data at {ap} means the displayed picture may be out of date.")
-        recommended.append(f"Confirm {ap} Jumpstart Kit is still publishing and broker is reachable.")
-
-    for ap in signals.get("degraded_airports", []):
-        what_changed.append(f"{ap} TAIS feed is DEGRADED.")
-        recommended.append(f"Investigate ISMC link and message latency at {ap}.")
-
-    if signals.get("multi_airport_degradation"):
-        why_it_matters.append("Multiple PCT airports degraded simultaneously suggests infrastructure rather than facility-local issue.")
-
-    if signals.get("latency_severe"):
-        avg = (context.get("avg_latency_ms") or 0) / 60_000.0
-        what_changed.append(f"Average event-to-ingest lag is {avg:.1f} min — system is processing a backlog, not live data.")
-        why_it_matters.append("Backlog processing means current dashboard reflects historical state, not real-time.")
-
-    if signals.get("position_event_mismatch"):
-        what_changed.append("Recent messages received but no aircraft positions available in last 5 minutes.")
-        why_it_matters.append("Could indicate TAIS parser drift or non-track message types dominating the feed.")
-
-    if signals.get("critic_escalation_exists"):
-        evidence.append("AI Critic recommends escalation on at least one recent CRITICAL alert.")
-
+def _evidence(context: dict[str, Any], a: BriefAssessment) -> list[str]:
+    evidence = [f"Data health {a.data_health.state}: {a.data_health.reason}"]
+    if a.current_alert_count or a.historical_alert_count or a.artifact_alert_count:
+        evidence.append(
+            f"alerts: {a.current_alert_count} from the last {rules.ALERT_MAX_AGE_HOURS} h · "
+            f"{a.historical_alert_count} older (history) · {a.artifact_alert_count} sensor artifact(s)")
     evidence.append(
         f"events_in_window={context.get('events_in_window', 0)} · "
         f"active_aircraft={context.get('active_aircraft', 0)} · "
-        f"critical_alerts={context.get('critical_alert_count', 0)} · "
+        f"critical_alerts={a.current_critical_count} · "
         f"pending_actions={context.get('pending_actions_count', 0)}"
     )
+    return evidence
 
-    if posture in ("GOOD", "NORMAL") and not what_changed:
-        what_changed.append("No concerning signals detected in the current window.")
-        why_it_matters.append("Live PCT picture appears trustworthy across all tracked airports.")
-        recommended.append("Continue passive monitoring; no human action required.")
 
-    if posture == "UNKNOWN":
-        what_changed.append("No recent events ingested.")
-        why_it_matters.append("Cannot assess the aircraft movement picture without data.")
-        recommended.append("Verify Jumpstart Kit is running and broker connection is healthy.")
+def _details(context: dict[str, Any], a: BriefAssessment) -> tuple[list[str], list[str]]:
+    """The 'what changed' and 'why it matters' behind the summary: rule-written, and consistent with it."""
+    what: list[str] = []
+    why: list[str] = []
+    health = a.data_health
+    if health.state != "OK":
+        what.append(health.reason)
+    for i in a.incidents[:3]:
+        kind = ", ".join(i.alert_types)
+        line = (f"{i.alert_count} alert(s) at {', '.join(i.airports) or 'unknown'} began "
+                f"{i.started_at:%Y-%m-%d %H:%M} UTC ({kind})")
+        if i.artifact:
+            line += ": sensor not-reporting code (RVR 0 ft), not a reading"
+        elif i.historical:
+            line += f": older than {rules.ALERT_MAX_AGE_HOURS} h, history"
+        if i.reviews:
+            line += f"; {i.reviews} review(s) open"
+        what.append(line + ".")
+    if a.current_review_count or a.historical_review_count:
+        what.append(f"{a.current_review_count} review(s) open from the last {rules.ALERT_MAX_AGE_HOURS} h; "
+                    f"{a.historical_review_count} older or on sensor artifacts.")
+    if health.state == "DOWN":
+        why.append("Every alert raised while the feed is down is suspect; none is evidence about the airports.")
+        why.append("The picture cannot be relied on for operational awareness until data is flowing again.")
+    elif health.state == "DEGRADED":
+        why.append("The picture at the affected airports may be out of date; the rest is current.")
+    if a.historical_review_count:
+        why.append("Reviews left open past the age limit bury the ones that need a decision now.")
+    if not what:
+        what.append("No concerning signals in the current window.")
+    if not why:
+        why.append("Nothing needs a decision; the picture is current.")
+    return what, why
 
-    if posture == "ACTION":
-        headline = (
-            f"ACTION required — {context.get('pending_actions_count', 0)} staged action(s) "
-            f"awaiting human review across PCT TRACON."
-        )
-    elif posture == "ATTENTION":
-        headline = (
-            f"ATTENTION — feed integrity concerns at {', '.join(aps) if aps else 'one or more PCT airports'}. "
-            "No safety claim, data picture may be stale."
-        )
-    elif posture == "GOOD":
-        headline = "All tracked PCT airports current; no pending human review."
-    elif posture == "NORMAL":
-        headline = "PCT aircraft movement picture nominal; routine monitoring."
-    else:
-        headline = "Insufficient data to assess the PCT picture."
 
+def _deterministic_brief(
+    context: dict[str, Any], signals: dict[str, Any], note: str | None = None,
+    assessment: BriefAssessment | None = None,
+) -> WatchOfficerBrief:
+    a = assessment or rules.assess(context, signals)
+    what_changed, why_it_matters = _details(context, a)
+    limitations = [
+        "Deterministic rule-based brief: the status, counts and actions are computed, not written by a model.",
+        "A data problem here is not a statement about the airspace.",
+        *([note] if note else []),
+        *(f"Check: {w}" for w in a.consistency_warnings),
+    ]
     return WatchOfficerBrief(
-        posture=posture,
-        trust_assessment=trust,
-        headline=headline,
+        posture=_derive_posture(signals, context, a),
+        trust_assessment=_derive_trust(signals, context, a),
+        headline=a.bluf,
         what_changed=what_changed,
         why_it_matters=why_it_matters,
-        recommended_human_review=recommended,
-        evidence=evidence,
+        recommended_human_review=_action_lines(a),
+        evidence=_evidence(context, a),
         pending_actions_count=context.get("pending_actions_count", 0),
-        critical_alert_count=context.get("critical_alert_count", 0),
-        affected_airports=aps,
-        confidence=0.6 if posture != "UNKNOWN" else 0.2,
+        critical_alert_count=a.current_critical_count,
+        affected_airports=a.affected_airports,
+        confidence=_CONFIDENCE[a.confidence_label],
         llm_used=False,
-        limitations=[
-            "Deterministic rule-based brief; no LLM nuance.",
-            "Data-feed degradation does NOT imply unsafe airspace.",
-        ],
+        limitations=limitations,
+        assessment=a,
     )
+
+
+def _overreach(raw: RawLLMNarrative) -> str | None:
+    """A phrase a model used that this console cannot know or must not imply (controllers, unsafe airspace...), if any."""
+    return rules.overreach(" ".join([raw.headline, *raw.what_changed, *raw.why_it_matters,
+                                     *raw.recommended_human_review, *raw.limitations]))
 
 
 class OutputGuardrail:
@@ -394,45 +389,50 @@ class OutputGuardrail:
         signals: dict[str, Any],
         *,
         llm_used: bool,
+        assessment: BriefAssessment | None = None,
     ) -> WatchOfficerBrief:
-        posture = _derive_posture(signals, context)
-        trust = _derive_trust(signals, context)
-        affected = _affected_airports(signals, context)
+        """
+        The model's prose inside the computed frame. Status, counts, actions, posture and trust are the
+        assessment's and never the model's; its bottom line replaces the rule-written one only if it fits
+        (src/watch_officer_assessment.accept_model_bluf), and a narrative that reaches for consequences in
+        the airspace is discarded whole in favour of the rule-based brief.
+        """
+        claim = _overreach(raw_narrative)
+        if claim:
+            return _deterministic_brief(
+                context, signals, assessment=assessment,
+                note=f"The model's narrative was not used: it claims something about {claim} that this console cannot know.")
 
-        evidence: list[str] = []
-        if signals.get("critical_alerts_exist"):
-            evidence.append(f"{context.get('critical_alert_count', 0)} critical alerts active")
-        if signals.get("pending_actions_exist"):
-            evidence.append(f"{context.get('pending_actions_count', 0)} pending staged actions")
-        if signals.get("draft_tickets_exist"):
-            evidence.append("operational_tickets table has DRAFT rows linked to staged actions.")
-        if signals.get("critic_escalation_exists"):
-            evidence.append("AI Critic recommends escalation on at least one recent CRITICAL alert.")
-
-        evidence.append(
-            f"events_in_window={context.get('events_in_window', 0)} · "
-            f"active_aircraft={context.get('active_aircraft', 0)} · "
-            f"critical_alerts={context.get('critical_alert_count', 0)} · "
-            f"pending_actions={context.get('pending_actions_count', 0)}"
-        )
+        a = assessment or rules.assess(context, signals)
+        bluf, refused = rules.accept_model_bluf(a, raw_narrative.headline)
+        a.bluf = bluf
+        rules.fit_above_the_fold(a)
+        limitations = list(raw_narrative.limitations)
+        if refused:
+            limitations.append(f"The model's bottom line was not used: {refused}.")
+        limitations.extend(f"Check: {w}" for w in a.consistency_warnings)
 
         return WatchOfficerBrief(
-            posture=posture,
-            trust_assessment=trust,
-            headline=raw_narrative.headline,
+            posture=_derive_posture(signals, context, a),
+            trust_assessment=_derive_trust(signals, context, a),
+            headline=bluf,
             what_changed=raw_narrative.what_changed,
             why_it_matters=raw_narrative.why_it_matters,
-            recommended_human_review=raw_narrative.recommended_human_review,
-            evidence=evidence,
+            recommended_human_review=_action_lines(a),
+            evidence=_evidence(context, a),
             pending_actions_count=context.get("pending_actions_count", 0),
-            critical_alert_count=context.get("critical_alert_count", 0),
-            affected_airports=affected,
-            confidence=raw_narrative.confidence,
+            critical_alert_count=a.current_critical_count,
+            affected_airports=a.affected_airports,
+            confidence=_CONFIDENCE[a.confidence_label],
             llm_used=llm_used,
-            limitations=list(raw_narrative.limitations),
+            limitations=limitations,
+            assessment=a,
         )
 
-async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> RawLLMNarrative:
+
+async def _llm_narrative(
+    context: dict[str, Any], signals: dict[str, Any], assessment: BriefAssessment | None = None,
+) -> RawLLMNarrative:
     """
     One structured completion through the shared LiteLLM client -- the same
     redacted, error-classified path the Critic and Planner use. Raises on any
@@ -444,7 +444,7 @@ async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> Ra
 
     # A projection built for the four questions the brief answers, bounded by
     # construction (src/watch_officer_projection.py), not the raw snapshot.
-    payload = redact_structured(project_for_model(context, signals))
+    payload = redact_structured(project_for_model(context, signals, assessment))
     raw = await client.acall_with_tool(
         system_prompt=system_prompt("watch_officer"),
         tool=tool_schema("watch_officer"),
@@ -473,20 +473,29 @@ async def agenerate_watch_officer_brief(
     if context is None:
         context = await build_watch_officer_context()
     signals = _detect_signals(context)
+    assessment = rules.assess(context, signals)
+
+    if use_llm and settings.CRITIC_ENABLED and assessment.data_health.state in ("DOWN", "UNKNOWN"):
+        # Rule 2: our own pipeline is checked first. While it is down every alert is suspect, so the brief is
+        # rule-written and no model is asked (it would cost a call to produce prose we would not use).
+        LLM_CALLS.labels(agent="watch_officer", outcome="skipped_pipeline_down").inc()
+        return _deterministic_brief(
+            context, signals, assessment=assessment,
+            note="No model was asked: while the pipeline is down or empty the brief is rule-written.")
 
     if use_llm and settings.CRITIC_ENABLED:
         start = time.perf_counter()
         try:
-            narrative = await _llm_narrative(context, signals)
+            narrative = await _llm_narrative(context, signals, assessment)
             LLM_CALLS.labels(agent="watch_officer", outcome="success").inc()
-            return OutputGuardrail.guard(narrative, context, signals, llm_used=True)
+            return OutputGuardrail.guard(narrative, context, signals, llm_used=True, assessment=assessment)
         except Exception as exc:  # noqa: BLE001 -- advisory layer; fall back
             LLM_CALLS.labels(agent="watch_officer", outcome="error").inc()
             _log.warning("watch_officer_llm_failed", extra={"error": str(exc)})
         finally:
             LLM_CALL_LATENCY.labels(agent="watch_officer").observe(time.perf_counter() - start)
 
-    return _deterministic_brief(context, signals)
+    return _deterministic_brief(context, signals, assessment=assessment)
 
 
 def generate_watch_officer_brief(

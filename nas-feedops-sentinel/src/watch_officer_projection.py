@@ -22,7 +22,11 @@ context and never sees this projection.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from src import watch_officer_assessment as rules
+from src.models import BriefAssessment
 
 MAX_ALERT_CONDITIONS = 15
 MAX_OPEN_REVIEWS = 10
@@ -102,7 +106,9 @@ def _compact(row: dict, fields: int = 6) -> dict:
     return dict(list(kept.items())[:fields])
 
 
-def project_for_model(context: dict[str, Any], signals: dict[str, Any]) -> dict[str, Any]:
+def project_for_model(
+    context: dict[str, Any], signals: dict[str, Any], assessment: BriefAssessment | None = None,
+) -> dict[str, Any]:
     """The bounded, decision-shaped picture the Watch Officer's model is shown."""
     alerts = list(context.get("alerts") or [])
     critical = list(context.get("critical_alerts") or [])
@@ -111,7 +117,15 @@ def project_for_model(context: dict[str, Any], signals: dict[str, Any]) -> dict[
     critic_rows = [dict(r) for r in context.get("recent_critic_results") or []]
     verdicts = {r.get("alert_id"): r for r in critic_rows if r.get("alert_id")}
 
+    assessment = assessment or rules.assess(context, signals)
+    age_limit = (rules._dt(context.get("snapshot_time")) or datetime.now(timezone.utc)) - timedelta(hours=rules.ALERT_MAX_AGE_HOURS)
     conditions = _alert_conditions(alerts, critical)
+    for c in conditions:                                       # so a four-day-old alert is never read as current
+        last = rules._dt(c["last_seen"])
+        c["historical"] = bool(last and last < age_limit)
+        c["sensor_artifact"] = rules.is_artifact({"alert_type": f"ALERT_{str(c['alert_type']).upper()}"
+                                                  if not str(c["alert_type"]).startswith("ALERT_") else c["alert_type"],
+                                                  "description": c["example"]})
     reviews = _open_reviews(pending, verdicts)
     omitted = {
         "alert_conditions": max(0, len(conditions) - MAX_ALERT_CONDITIONS),
@@ -136,6 +150,21 @@ def project_for_model(context: dict[str, Any], signals: dict[str, Any]) -> dict[
 
     projection: dict[str, Any] = {
         "as_of": context.get("snapshot_time"),
+        # Settled by rules before you write (src/watch_officer_assessment.py): do not contradict it.
+        "assessment": {
+            "status": assessment.status, "status_line": assessment.status_line,
+            "data_health": {"state": assessment.data_health.state, "scope": assessment.data_health.scope,
+                            "reason": assessment.data_health.reason},
+            "alerts": {"from_last_6h": assessment.current_alert_count, "critical_from_last_6h": assessment.current_critical_count,
+                       "older_history": assessment.historical_alert_count, "sensor_artifacts": assessment.artifact_alert_count},
+            "reviews": {"open_from_last_6h": assessment.current_review_count,
+                        "older_or_on_artifacts": assessment.historical_review_count},
+            "incidents": [{"airports": i.airports, "kinds": i.alert_types, "alerts": i.alert_count, "reviews": i.reviews,
+                           "started": i.started_at.isoformat(), "historical": i.historical, "sensor_artifact": i.artifact}
+                          for i in assessment.incidents],
+            "actions_already_set": [x.action for x in assessment.actions],
+            "checks_that_disagree": assessment.consistency_warnings,
+        },
         "state": {"airport_status": context.get("airport_status"), "per_airport": context.get("per_airport")},
         "counts": {
             "critical_alerts": context.get("critical_alert_count", 0),
