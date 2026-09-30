@@ -38,6 +38,20 @@ x-app-image: &app-image
     dockerfile: docker/Dockerfile
   image: nas-feedops-sentinel:latest
 
+# What the services built from that image run with: no Linux capabilities, no privilege escalation, a read-only
+# root filesystem (they write to the volumes they mount and to /tmp), and ceilings several times what each
+# uses (docker stats: 220-290 MiB, under 30 processes), so a runaway process cannot take the host with it.
+# Each command was run this way against a throwaway Postgres before this was turned on: the pool and
+# migrations, the API, the dashboard, the watcher, the worker.
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 256
+  mem_limit: 2g
+
 # Settings every application process shares.
 x-app-env: &app-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -121,7 +135,7 @@ x-secret-tmpfs: &secret-tmpfs
 services:
   # 0. Schema owner job: runs to completion before anything else starts.
   migrate:
-    <<: *app-image
+    <<: [*app-image, *hardened]
     container_name: nas-migrate
     command: ["python", "-m", "src.storage.migrate"]
     restart: "no"
@@ -169,7 +183,7 @@ services:
 
   # 1. Temporal worker: runs ingest/pipeline workflows started through the API.
   temporal-worker:
-    <<: *app-image
+    <<: [*app-image, *hardened]
     container_name: nas-temporal-worker
     command: ["python", "-m", "src.temporal_worker"]
     stop_grace_period: 30s
@@ -196,7 +210,7 @@ services:
 
   # 2. HTTP API (FastAPI): /health, /v1/ready, /v1/ingest.
   api:
-    <<: *app-image
+    <<: [*app-image, *hardened]
     container_name: nas-api
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
@@ -220,7 +234,7 @@ services:
 
   # 3. Live SWIM folder watcher: the Jumpstart kit writes, this ingests.
   sentinel:
-    <<: *app-image
+    <<: [*app-image, *hardened]
     container_name: nas-sentinel
     restart: unless-stopped
     command: ["python", "-m", "src.main", "--mode", "replay", "--watch"]
@@ -235,7 +249,7 @@ services:
 
   # 4. Operator dashboard (Streamlit).
   dashboard:
-    <<: *app-image
+    <<: [*app-image, *hardened]
     container_name: nas-dashboard
     restart: unless-stopped
     command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
