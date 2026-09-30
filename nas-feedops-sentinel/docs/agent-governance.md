@@ -228,8 +228,9 @@ lower, suppress or stage an alert.
 - `src/alert_engine.py`: alert rules.
 - `src/feed_health.py`: feed status.
 - `src/validators.py`: schema conformance.
-- `src/swim_file_ingest.py`: FAA data handling, including `blockAtFAA`
-  withholding and beacon-code release only for active flight plans.
+- `src/swim_parse.py` and `src/swim_feed_tais.py`: FAA data handling,
+  including `blockAtFAA` withholding and beacon-code release only for active
+  flight plans.
 - The Overview verdict (GREEN/AMBER/RED) is computed from conformance, lag
   and open CRITICAL alerts, with no model consulted.
 - The investigation workflow's order never depends on model output.

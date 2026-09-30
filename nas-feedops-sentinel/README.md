@@ -16,8 +16,12 @@ The application: SWIM ingest, the alert and escalation pipeline, the investigati
 src/
   raw_message.py          the seam: the JVM's raw record {message_id, headers, body, received_at}
                           and the source interface (poll / commit / quarantine)
-  swim_file_ingest.py     the folder source (claim, archive), the driver every source shares, blockAtFAA,
-                          per-feed extractors, stable ids, the watcher
+  swim_file_ingest.py     the folder source (claim, archive), the driver every source shares, the watcher;
+                          re-exports the names below
+  swim_parse.py           a file or RawMessage to raw records: formats, blockAtFAA, dispatch to the feed
+  swim_feed_apds.py, swim_feed_tdes.py, swim_feed_smes.py, swim_feed_tais.py
+                          one extractor per feed; swim_common.py holds what they share
+  swim_normalise.py       a raw record to a validated NASEvent: stable ids, UTC, coercion
   airports.py             where each airport is and its TRACON (scope itself is config)
   pipeline.py             the one pipeline every entry point runs
   validators.py  alert_engine.py  feed_health.py
