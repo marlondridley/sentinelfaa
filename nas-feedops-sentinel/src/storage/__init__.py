@@ -102,6 +102,7 @@ __all__ = [
     "get_pending_staged_actions",
     "get_recent_staged_actions",
     "get_action_audit_log",
+    "record_operator_action",
     "save_watch_officer_brief",
     "get_latest_watch_officer_brief",
     "get_recent_watch_officer_briefs",
@@ -406,6 +407,23 @@ async def get_pending_staged_actions(*, data_origin: str | None = None) -> list[
 async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     repo = StagedActionsRepository(await get_db_pool())
     return await repo.get_recent(limit)
+
+
+async def record_operator_action(
+    kind: str, actor: str, previous_status: str, new_status: str, note: str = "", *, action_id: str | None = None,
+) -> str:
+    """
+    Append an operator's destructive action to the append-only audit trail, under `kind:<id>` (the same
+    arrangement as a ticket transition's "ticket:<id>"). Returns the id, so a later entry can follow the first.
+    """
+    import uuid
+
+    from src.storage.repositories.audit_repo import AuditLogRepository
+
+    pool = await get_db_pool()
+    action_id = action_id or f"{kind}:{uuid.uuid4()}"
+    await AuditLogRepository(pool).write(pool, action_id, previous_status, new_status, actor, note)
+    return action_id
 
 
 async def get_action_audit_log(action_id: str | None = None, limit: int = 50) -> list[dict]:

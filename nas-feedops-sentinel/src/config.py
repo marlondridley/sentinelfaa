@@ -384,6 +384,12 @@ class Settings(BaseSettings):
     # that anyone reaching the public address could use. docker-compose.yml turns it on for the dashboard; off
     # is for a lab run with no identity provider.
     REQUIRE_SIGN_IN: bool = False
+    # How long a dashboard sign-in lasts from the moment the operator authenticated, at most the realm's own
+    # maximum (keycloak_auth.SESSION_MAX_SECONDS, 10 h). The dashboard reads roles and the guest expiry from the
+    # ID token in its cookie and nothing asks Keycloak again, so a user disabled or a role removed in the realm
+    # keeps its authority until this ends. A shorter session is the bound on that lag; past it the operator signs
+    # in again and the roles are read afresh. Lower it for a stricter lag; it cannot exceed the realm's.
+    SIGN_IN_MAX_SECONDS: int = 14_400
 
     # What a dashboard user can spend on the model. A question longer than PLANNER_QUESTION_MAX_CHARS is refused
     # (the Planner puts it in the prompt twice), and one person can start a model-backed action (Ask, Refresh
