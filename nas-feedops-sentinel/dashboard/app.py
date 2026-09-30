@@ -71,6 +71,7 @@ from src.planner_agent import PlannerAgent
 from src.rate_limit import model_action_cooldown
 from src.storage import save_planner_result
 from src.watch_officer_agent import build_watch_officer_context, generate_watch_officer_brief
+from src.watch_officer_freshness import current_view
 
 _principal = bootstrap_page(page_title="PCT TAIS FeedOps Sentinel", page_icon="✈")
 
@@ -394,7 +395,11 @@ with st.container(border=True):
     if _wo_latest is None:
         st.info("No brief has been generated yet. A watch officer or supervisor generates the first one.")
     else:
-        brief_view.render(_wo_latest)
+        # The status shown is today's, not the one stored when the brief was written (src/watch_officer_freshness.py).
+        _wo_shown, _wo_notice = current_view(_wo_latest, run(build_watch_officer_context()))
+        if _wo_notice:
+            st.warning(_wo_notice)
+        brief_view.render(_wo_shown)
 
 # ── AI Planner ────────────────────────────────────────────────────────────────
 theme.section("Ask the planner", "Questions the fixed panels above do not answer.", tone="info")
