@@ -296,8 +296,11 @@ services:
   # root's SPIRE upstream CA (instraclustr/certs/README.md), mounted here
   # and nowhere else.
   spire-server:
-    image: ghcr.io/spiffe/spire-server:1.9.6
+    # Pinned by digest (1.9.6): a tag can be re-pushed.
+    image: ghcr.io/spiffe/spire-server:1.9.6@sha256:59a0b92b39773515e25e68a46c40d3b931b9c1860bc445a79ceb45a805cab8b4
     container_name: spire-server
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     volumes:
       - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
       - spire-server-data:/opt/spire/data
@@ -325,10 +328,24 @@ services:
   # Docker Compose (no Kubernetes here). This container can see every other
   # container's process list as a result; it does not gain the ability to
   # act on them (no ptrace/SYS_ADMIN granted), only to read /proc.
+  #
+  # The same goes for the Docker socket: `:ro` limits the file, not the API
+  # behind it, so this container can ask Docker for anything. The docker
+  # attestor needs exactly that socket and there is no filtering proxy it
+  # accepts, so the socket and the host PID namespace stay, and the rest is
+  # taken away: no capabilities at all, no privilege escalation, and a
+  # read-only root (it writes only to its two volumes). Checked in a scratch
+  # trust domain (join-token attestation, a registered docker:label
+  # selector): a labelled workload still receives its X.509-SVID with these
+  # settings and an unlabelled one still receives none.
   spire-agent:
-    image: ghcr.io/spiffe/spire-agent:1.9.6
+    # Pinned by digest (1.9.6): a tag can be re-pushed.
+    image: ghcr.io/spiffe/spire-agent:1.9.6@sha256:5106ac601272a88684db14daf7f54b9a45f31f77bb16a906bd5e87756ee7b97c
     container_name: spire-agent
     pid: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       spire-server:
         condition: service_healthy
