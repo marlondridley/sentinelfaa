@@ -379,6 +379,19 @@ class Settings(BaseSettings):
     # decision needs a verified Keycloak sign-in holding the right realm role.
     ALLOW_UNVERIFIED_DECISIONS: bool = False
 
+    # The dashboard shows nothing without a verified sign-in. With this on, a missing secrets.toml (a bad bind
+    # mount, a fresh checkout) stops at "Sign-in is not configured" instead of falling back to a typed callsign
+    # that anyone reaching the public address could use. docker-compose.yml turns it on for the dashboard; off
+    # is for a lab run with no identity provider.
+    REQUIRE_SIGN_IN: bool = False
+
+    # What a dashboard user can spend on the model. A question longer than PLANNER_QUESTION_MAX_CHARS is refused
+    # (the Planner puts it in the prompt twice), and one person can start a model-backed action (Ask, Refresh
+    # brief) once every MODEL_ACTION_COOLDOWN_SECONDS. The gateway key has its own ceiling; this keeps one
+    # signed-in account from using all of it.
+    PLANNER_QUESTION_MAX_CHARS: int = 500
+    MODEL_ACTION_COOLDOWN_SECONDS: float = 20.0
+
     # Run schema bootstrap + migrations whenever a process opens its pool.
     # True for tests and local runs. The compose services set it false and run
     # `python -m src.storage.migrate` once, as the schema owner, so the

@@ -184,6 +184,26 @@ class StagedActionsRepository:
         return {r["alert_id"]: {"action_id": r["action_id"], "status": r["status"],
                                 "decided_by": r["decided_by"]} for r in rows}
 
+    async def ongoing_condition_keys(self, condition_keys: list[str], since: datetime) -> set[str]:
+        """
+        Which of these conditions a review already covers: the test create() applies before it opens a new one.
+        A PENDING review that has had an alert attached since `since`, or one decided since then. An alert of
+        such a condition joins that review, and the verdict computed for it would be thrown away.
+        """
+        if not condition_keys:
+            return set()
+        rows = await self._pool.fetch(
+            """SELECT s.condition_key FROM staged_actions s
+               JOIN staged_action_alerts x ON x.action_id = s.action_id
+               WHERE s.condition_key = ANY($1::text[])
+                 AND (s.status = 'PENDING'
+                      OR (s.status IN ('APPROVED', 'REJECTED', 'OVERRIDDEN') AND s.decided_at >= $2))
+               GROUP BY s.action_id, s.condition_key
+               HAVING max(x.attached_at) >= $2""",
+            list(condition_keys), since,
+        )
+        return {r["condition_key"] for r in rows}
+
     async def covered_alert_ids(self, action_id: str) -> list[str]:
         """The CRITICAL alerts this review covers, oldest first."""
         rows = await self._pool.fetch(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from src.alert_engine import check_alerts
 from src.config import settings
@@ -12,7 +13,9 @@ from src.investigation import investigate_staged
 from src.logging_config import bind_correlation_id, get_logger
 from src.metrics import ALERTS_TRIGGERED, EVENTS_INGESTED, EVENTS_VALIDATED, set_airport_status
 from src.models import NASEvent
-from src.storage import save_alerts, save_critic_result, save_events
+from src.storage import (
+    get_covering_actions, get_ongoing_condition_keys, save_alerts, save_critic_result, save_events,
+)
 from src.validators import validate_event
 
 _log = get_logger(__name__)
@@ -31,6 +34,25 @@ def critic_worklist(critical_alerts: list, budget: int) -> list:
     for alert in critical_alerts:
         first_of.setdefault(condition_key(alert), alert)
     return list(first_of.values())[:budget]
+
+
+async def _needing_a_verdict(critical_alerts: list) -> list:
+    """
+    The CRITICAL alerts whose review is not already open.
+
+    An alert that a review already covers (a Temporal retry of the same batch), or whose condition one covers
+    (a later reading of the same low RVR), joins that review, and the verdict computed for it is thrown away.
+    The Critic is a paid call and was made for each of them on every pass and every retry. Asking is an
+    optimisation, never a gate: if the database cannot answer, every alert goes to the Critic as before.
+    """
+    try:
+        covered = await get_covering_actions([a.alert_id for a in critical_alerts])
+        since = datetime.now(timezone.utc) - timedelta(minutes=settings.CONDITION_QUIET_MINUTES)
+        ongoing = await get_ongoing_condition_keys([condition_key(a) for a in critical_alerts], since)
+    except Exception as exc:  # noqa: BLE001 -- the Critic runs as before if it cannot be asked
+        _log.warning("critic_coverage_lookup_failed", extra={"error": f"{type(exc).__name__}: {exc}"})
+        return critical_alerts
+    return [a for a in critical_alerts if a.alert_id not in covered and condition_key(a) not in ongoing]
 
 
 async def run_pipeline(
@@ -72,7 +94,7 @@ async def run_pipeline(
     critical_alerts = [a for a in alerts if a.severity == "CRITICAL"]
     critic_results = {}
     if critical_alerts:
-        to_evaluate = critic_worklist(critical_alerts, settings.MAX_CRITIC_PER_PASS)
+        to_evaluate = critic_worklist(await _needing_a_verdict(critical_alerts), settings.MAX_CRITIC_PER_PASS)
         skipped = len(critical_alerts) - len(to_evaluate)
         _log.info(
         "critic_evaluation_start",
