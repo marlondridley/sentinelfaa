@@ -176,7 +176,7 @@ def test_actions_never_exceed_three_even_when_everything_is_wrong():
     assert len(a.actions) == wa.MAX_ACTIONS == 3
     assert [x.owner for x in a.actions] == [wa.PIPELINE_ONCALL, wa.WATCH_OFFICER, wa.DUTY_MANAGER]
     assert "once the feed is current" in a.actions[2].action, "reviews raised while the feed was down wait for it"
-    assert any("suspect" in w for w in a.consistency_warnings)
+    assert any("raised after the last data arrived" in w for w in a.consistency_warnings)
 
 
 def test_a_review_with_no_timestamp_is_treated_as_current_not_silently_called_old():
@@ -319,3 +319,16 @@ def test_the_thresholds_are_settings_with_documented_defaults():
     assert (wa.ALERT_MAX_AGE_HOURS, wa.DOWN_AFTER_MINUTES, wa.BACKLOG_LAG_SECONDS, wa.CLUSTER_GAP_MINUTES) == (
         settings.WATCH_ALERT_MAX_AGE_HOURS, settings.WATCH_PIPELINE_DOWN_MINUTES,
         settings.WATCH_BACKLOG_LAG_SECONDS, settings.WATCH_CLUSTER_GAP_MINUTES) == (6, 15, 300, 30)
+
+
+def test_alerts_raised_while_data_was_still_arriving_are_not_blamed_on_the_outage():
+    """The feed stopped 3 hours ago; alerts from before it stopped are genuine, and get no outage warning."""
+    before = _alert("b1", "ALERT_HIGH_LATENCY", "KIAD", NOW - timedelta(hours=4), severity="WARNING")
+    after = _alert("b2", "ALERT_FEED_STALE", "KIAD", NOW - timedelta(minutes=30), severity="WARNING")
+    context = _healthy_context(latest_event_at=(NOW - timedelta(hours=3)).isoformat(),
+                               airport_status={"KDCA": "STALE", "KIAD": "STALE", "KBWI": "STALE"},
+                               alerts=[before], critical_alerts=[])
+    assert not any("raised after the last data" in w for w in wa.assess(context, now=NOW).consistency_warnings)
+    context["alerts"] = [before, after]
+    warnings = wa.assess(context, now=NOW).consistency_warnings
+    assert warnings == ["1 alert(s) were raised after the last data arrived: they describe the outage, not the airports."]

@@ -321,8 +321,14 @@ def check_consistency(result: BriefAssessment, context: dict[str, Any], alerts: 
     if stale_escalations:
         warnings.append(f"{len(stale_escalations)} AI escalation(s) concern alerts older than {ALERT_MAX_AGE_HOURS} h "
                         "and are not current.")
-    if result.data_health.state == "DOWN" and (result.current_alert_count or result.current_review_count):
-        warnings.append("Alerts and reviews newer than the age limit arrived while the feed was down: treat them as suspect.")
+    if result.data_health.state == "DOWN":
+        # Alerts raised while data was still arriving are what they were; those raised after it stopped are
+        # consequences of the outage (our own staleness checks firing), not evidence about the airports.
+        latest = _dt(context.get("latest_event_at"))
+        after = [a for a in alerts if latest and a["_at"] > latest and a["_at"] >= limit]
+        if after:
+            warnings.append(f"{len(after)} alert(s) were raised after the last data arrived: they describe the outage, "
+                            "not the airports.")
     return warnings
 
 
