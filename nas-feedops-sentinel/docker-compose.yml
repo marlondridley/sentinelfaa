@@ -64,7 +64,10 @@ x-app-env: &app-env
   LLM_BASE_URL: ${LLM_BASE_URL:-http://nas-litellm:4000/v1}
   LLM_MODEL: ${LLM_MODEL:-primary-model}
   CRITIC_MODEL: ${CRITIC_MODEL:-primary-model}
-  # Empty means LLM_MODEL. Set to an alias in litellm-config.yaml (e.g. claude-haiku).
+  # Empty means LLM_MODEL. Only an alias the application's LiteLLM key may call
+  # and policies/model-use.yaml allows (primary-model, gemini-backup): the
+  # gateway, not the app, decides which provider serves it (fallbacks in
+  # instraclustr/litellm-config.yaml).
   WATCH_OFFICER_MODEL: ${WATCH_OFFICER_MODEL:-}
   INVESTIGATION_MODEL: ${INVESTIGATION_MODEL:-}
   CRITIC_ENABLED: ${CRITIC_ENABLED:-1}

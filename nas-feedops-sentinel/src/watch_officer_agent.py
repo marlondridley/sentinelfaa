@@ -452,7 +452,9 @@ async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> Ra
             "Write the operational watch summary for this operating picture:\n"
             + json.dumps(payload, default=str)
         ),
-        max_tokens=900,
+        # 900 cut Claude Haiku's narrative off mid-object (finish_reason=length);
+        # its briefs run about 1,200 tokens. The model-use policy's ceiling is 2,000.
+        max_tokens=1800,
         role="watch_officer",
     )
     return RawLLMNarrative.model_validate(raw)

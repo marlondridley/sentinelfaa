@@ -283,6 +283,7 @@ async def test_the_model_prompt_stays_under_the_policy_ceiling_however_big_the_i
 
     [call] = client.calls
     assert len(call["system_prompt"] + call["user_message"]) < 120_000
+    assert 1500 <= call["max_tokens"] <= 2000, "room for a full brief, under the policy's output ceiling"
     assert '"critical_alerts": 200' in call["user_message"], "the true count is still stated"
     for section in ("what_changed", "open_reviews", "unknowns", "omitted"):
         assert f'"{section}"' in call["user_message"], f"the projection answers with {section}"
