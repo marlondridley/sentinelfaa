@@ -93,13 +93,13 @@ def render_card(ev: Any, *, sla_s: float | None, budget_usd: float | None) -> No
     decided = ev.action_status in ("APPROVED", "REJECTED", "OVERRIDDEN")
     st.markdown(
         '<div style="display:flex;gap:10px;align-items:baseline;margin:2px 0 6px 0;">'
-        f'<span style="font-size:13px;color:{theme.LIGHT_GRAY5};font-weight:600;">'
+        f'<span style="font-size:15px;color:{theme.LIGHT_GRAY5};font-weight:600;">'
         f'{GATE_ICON[status]} AI investigation</span>'
         + theme.status_chip(status, size="sm")
-        + f'<span style="font-size:12px;color:{theme.GRAY3};">'
+        + f'<span style="font-size:14px;color:{theme.GRAY3};">'
         + theme._esc(f"{ev.alert_type or 'alert'} at {ev.airport or 'PCT'} · "
                      f"{ev.opened_at:%Y-%m-%d %H:%M} UTC · advisory only")
-        + f'</span><a href="{evaluation}" target="_self" style="margin-left:auto;font-size:12px;'
+        + f'</span><a href="{evaluation}" target="_self" style="margin-left:auto;font-size:14px;'
         f'color:{theme.BLUE5};text-decoration:none;font-weight:600;">Agent evaluation →</a></div>',
         unsafe_allow_html=True,
     )
@@ -127,7 +127,7 @@ def render_evaluation(ev: Any) -> None:
     if ev is None:
         return
     chips = "".join(
-        f'<span style="margin-right:10px;font-size:11.5px;color:{theme.GRAY3};">{group} '
+        f'<span style="margin-right:10px;font-size:13px;color:{theme.GRAY3};">{group} '
         + theme.status_chip(status, size="sm") + "</span>"
         for group, status in ev.gate_summary.items()
     )
@@ -137,7 +137,7 @@ def render_evaluation(ev: Any) -> None:
              f"decision quality {pct(ev.decision_score) if ev.decision_score is not None else NO_DATA}")
     st.markdown(
         f'<div style="margin:6px 0 2px 0;">{chips}</div>'
-        f'<div class="mono" style="font-size:11px;color:{theme.GRAY1};margin-bottom:4px;">'
+        f'<div class="mono" style="font-size:13px;color:{theme.GRAY1};margin-bottom:4px;">'
         f'{theme._esc(stats)}</div>',
         unsafe_allow_html=True,
     )

@@ -115,7 +115,7 @@ def _self_declared_identity() -> Principal:
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.ORANGE5};'
         f'background:rgba(200,118,25,0.08);border-radius:3px;padding:8px 10px;'
-        f'font-size:11px;color:{theme.GRAY3};line-height:1.5;margin-top:6px;">'
+        f'font-size:13px;color:{theme.GRAY3};line-height:1.5;margin-top:6px;">'
         f'<b style="color:{theme.ORANGE5};letter-spacing:0.05em;">UNVERIFIED</b><br/>'
         "Self-declared identity. Configure <code>[auth.keycloak]</code> in "
         ".streamlit/secrets.toml for verified sign-in.</div>",
@@ -139,11 +139,11 @@ def _console_links() -> None:
     targets are configured for anonymous read so neither prompts.
     """
     st.markdown(
-        f'<div style="font-size:10.5px;font-weight:700;letter-spacing:0.07em;'
+        f'<div style="font-size:13px;font-weight:700;letter-spacing:0.07em;'
         f'text-transform:uppercase;color:{theme.GRAY1};margin:2px 0 6px 0;">Consoles</div>'
-        f'<a href="{GRAFANA_URL}" target="_blank" style="display:block;font-size:12.5px;'
+        f'<a href="{GRAFANA_URL}" target="_blank" style="display:block;font-size:14px;'
         f'color:{theme.BLUE5};text-decoration:none;padding:3px 0;">Grafana metrics &#8599;</a>'
-        f'<a href="{theme._esc(prometheus_queries_url())}" target="_blank" style="display:block;font-size:12.5px;'
+        f'<a href="{theme._esc(prometheus_queries_url())}" target="_blank" style="display:block;font-size:14px;'
         f'color:{theme.BLUE5};text-decoration:none;padding:3px 0;">Prometheus queries &#8599;</a>',
         unsafe_allow_html=True,
     )

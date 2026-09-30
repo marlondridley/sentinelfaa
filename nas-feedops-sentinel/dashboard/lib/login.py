@@ -169,21 +169,21 @@ def _login_styles() -> None:
         .lg-mark {{ font-size: 30px; line-height: 1; color: {theme.BLUE5}; margin-bottom: 10px; }}
         .lg-app {{ font-size: 19px; font-weight: 700; color: {theme.LIGHT_GRAY5}; letter-spacing: 0.01em; }}
         .lg-sub {{
-            font-size: 12px; color: {theme.GRAY1}; margin-top: 4px;
+            font-size: 14px; color: {theme.GRAY1}; margin-top: 4px;
             letter-spacing: 0.10em; text-transform: uppercase; font-weight: 600;
         }}
         .lg-card-title {{
-            font-size: 16px; font-weight: 650; color: {theme.LIGHT_GRAY5};
+            font-size: 18px; font-weight: 650; color: {theme.LIGHT_GRAY5};
             text-align: center; padding-bottom: 12px; margin-bottom: 12px;
             border-bottom: 1px solid {theme.DARK_GRAY3};
         }}
         .lg-alert {{
             border: 1px solid #5E2326; border-left-width: 3px;
             background: rgba(205,66,70,0.10); border-radius: 3px;
-            padding: 10px 13px; color: {theme.RED5}; font-size: 13px; font-weight: 600;
+            padding: 10px 13px; color: {theme.RED5}; font-size: 15px; font-weight: 600;
         }}
-        .lg-foot {{ text-align: center; font-size: 11px; color: {theme.GRAY1}; margin-top: 16px; line-height: 1.7; }}
-        .lg-foot code {{ color: {theme.GRAY3}; font-size: 10.5px; }}
+        .lg-foot {{ text-align: center; font-size: 13px; color: {theme.GRAY1}; margin-top: 16px; line-height: 1.7; }}
+        .lg-foot code {{ color: {theme.GRAY3}; font-size: 13px; }}
         .stButton button {{ font-weight: 700 !important; letter-spacing: 0.03em; padding: 9px 0 !important; }}
         </style>
         """,
@@ -249,12 +249,12 @@ def render_session_sidebar(principal: Principal) -> None:
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.GREEN5};'
         f'background:{theme.DARK_GRAY2};border-radius:3px;padding:9px 11px;margin-bottom:8px;">'
-        f'<div style="font-size:13px;font-weight:650;color:{theme.LIGHT_GRAY5};">'
+        f'<div style="font-size:15px;font-weight:650;color:{theme.LIGHT_GRAY5};">'
         f"{theme._esc(claims.get('name') or principal.principal_id)}</div>"
-        + (f'<div style="font-size:11px;color:{theme.GRAY1};">{theme._esc(email)}</div>' if email else "")
-        + f'<div style="font-size:10.5px;color:{theme.GREEN5};letter-spacing:0.06em;'
+        + (f'<div style="font-size:13px;color:{theme.GRAY1};">{theme._esc(email)}</div>' if email else "")
+        + f'<div style="font-size:13px;color:{theme.GREEN5};letter-spacing:0.06em;'
           f'font-weight:700;margin-top:5px;">VERIFIED &middot; KEYCLOAK</div>'
-        + f'<div style="font-size:10.5px;color:{theme.GRAY1};margin-top:3px;">Signed in until {until}</div>'
+        + f'<div style="font-size:13px;color:{theme.GRAY1};margin-top:3px;">Signed in until {until}</div>'
         + "</div>",
         unsafe_allow_html=True,
     )

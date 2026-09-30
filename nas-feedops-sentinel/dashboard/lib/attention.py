@@ -28,17 +28,17 @@ def render_attention(airport_status: dict[str, str], alerts: list[dict]) -> None
     rows = "".join(
         f'<a href="{theme.drill_href(i["page"], **i["params"])}" target="_self" '
         f'style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid '
-        f'{theme.DARK_GRAY3};text-decoration:none;color:{theme.LIGHT_GRAY5};font-size:13.5px;">'
-        f'<span style="color:{theme.TONES[_TONE[i["severity"]]][0]};font-size:11px;">{_GLYPH[i["severity"]]}</span>'
+        f'{theme.DARK_GRAY3};text-decoration:none;color:{theme.LIGHT_GRAY5};font-size:15px;">'
+        f'<span style="color:{theme.TONES[_TONE[i["severity"]]][0]};font-size:13px;">{_GLYPH[i["severity"]]}</span>'
         f'<span>{theme._esc(i["text"])}</span>'
-        f'<span style="margin-left:auto;color:{theme.BLUE5};font-size:12px;white-space:nowrap;">Open &rarr;</span></a>'
+        f'<span style="margin-left:auto;color:{theme.BLUE5};font-size:14px;white-space:nowrap;">Open &rarr;</span></a>'
         for i in items[:MAX_SHOWN]
     )
     more = len(items) - MAX_SHOWN
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {lead};border-radius:4px;'
         f'background:{theme.DARK_GRAY1};margin:0 0 16px 0;">'
-        f'<div style="padding:8px 14px;font-size:10.5px;font-weight:700;letter-spacing:0.08em;'
+        f'<div style="padding:8px 14px;font-size:13px;font-weight:700;letter-spacing:0.08em;'
         f'text-transform:uppercase;color:{theme.GRAY1};">'
         + ("Needs attention" if items[0]["severity"] != GOOD else "Status")
         + (f" &middot; {more} more below the top {MAX_SHOWN}" if more > 0 else "")

@@ -251,7 +251,7 @@ elif view == "Data quality":
             use_container_width=True,
         )
         st.markdown(
-            f'<div style="font-size:11.5px;color:{theme.GRAY1};">'
+            f'<div style="font-size:13px;color:{theme.GRAY1};">'
             "Bars are normalised so a low-volume service with a systematic problem is "
             "as visible as a high-volume one with an occasional glitch. Absolute counts "
             "are in the tooltip.</div>",
@@ -299,7 +299,7 @@ elif view == "Latency":
             use_container_width=True,
         )
         st.markdown(
-            f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:8px;">'
+            f'<div style="font-size:13px;color:{theme.GRAY1};margin-bottom:8px;">'
             "The bar is the observed min-to-max range; the dot is the mean. A wide bar "
             "with a low mean is bursty delivery, which a mean alone hides. The axis is "
             "log-scaled because live and replayed captures differ by orders of magnitude."
@@ -313,7 +313,7 @@ elif view == "Latency":
             hide_index=True, use_container_width=True,
         )
         st.markdown(
-            f'<div style="font-size:11.5px;color:{theme.GRAY1};line-height:1.6;">'
+            f'<div style="font-size:13px;color:{theme.GRAY1};line-height:1.6;">'
             "<b>Reading a very large lag:</b> this figure is event time to ingest time. "
             "Replaying an archived capture legitimately produces lags of hours or days, "
             "because the events really are that old. It is evidence of stale data only "
@@ -416,7 +416,7 @@ else:
                 use_container_width=True,
             )
             st.markdown(
-                f'<div style="font-size:11.5px;color:{theme.GRAY1};line-height:1.6;">'
+                f'<div style="font-size:13px;color:{theme.GRAY1};line-height:1.6;">'
                 "Three bars per runway: touchdown, midpoint and rollout. The dashed line "
                 f"is the {config.RVR_LOW_THRESHOLD_FT:,} ft low-visibility threshold; any "
                 "bar crossing to its left is the operationally significant one. "

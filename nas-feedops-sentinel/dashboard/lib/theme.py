@@ -55,7 +55,7 @@ DARK_GRAY2 = "#252A31"
 DARK_GRAY3 = "#2F343C"
 DARK_GRAY4 = "#383E47"
 DARK_GRAY5 = "#404854"
-GRAY1 = "#5F6B7C"
+GRAY1 = "#8592A3"
 GRAY3 = "#8F99A8"
 GRAY5 = "#C5CBD3"
 LIGHT_GRAY5 = "#F6F7F9"
@@ -199,7 +199,7 @@ def status_chip(status: str, *, size: str = "md") -> str:
     tone = STATUS_TONE.get(key, "neutral")
     fg, border, wash = TONES[tone]
     pad = "1px 7px" if size == "sm" else "3px 10px"
-    fs = "11px" if size == "sm" else "12px"
+    fs = "13px" if size == "sm" else "14px"
     return (
         f'<span class="chip" style="color:{fg};border-color:{border};background:{wash};'
         f'padding:{pad};font-size:{fs};">{_esc(key)}</span>'
@@ -231,7 +231,7 @@ def inject_theme() -> None:
             border-right: 1px solid {DARK_GRAY3};
         }}
         section[data-testid="stSidebar"] .stMarkdown h3 {{
-            font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;
+            font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase;
             color: {GRAY3}; font-weight: 700;
         }}
 
@@ -240,12 +240,12 @@ def inject_theme() -> None:
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
                          "Helvetica Neue", Arial, sans-serif;
         }}
-        h1 {{ font-size: 25px !important; font-weight: 700 !important;
+        h1 {{ font-size: 30px !important; font-weight: 700 !important;
              letter-spacing: -0.01em; color: {LIGHT_GRAY5}; }}
-        h2 {{ font-size: 19px !important; font-weight: 650 !important; color: {LIGHT_GRAY5}; }}
-        h3 {{ font-size: 16px !important; font-weight: 650 !important; color: {GRAY5}; }}
+        h2 {{ font-size: 22px !important; font-weight: 650 !important; color: {LIGHT_GRAY5}; }}
+        h3 {{ font-size: 18px !important; font-weight: 650 !important; color: {GRAY5}; }}
         .stCaption, [data-testid="stCaptionContainer"] p {{
-            color: {GRAY1} !important; font-size: 12.5px !important; line-height: 1.5;
+            color: {GRAY1} !important; font-size: 14px !important; line-height: 1.5;
         }}
         hr {{ border-color: {DARK_GRAY3} !important; margin: 1.1rem 0 !important; }}
 
@@ -260,21 +260,41 @@ def inject_theme() -> None:
             border: 1px solid {DARK_GRAY3};
             border-radius: 4px;
         }}
-        div[data-testid="stExpander"] summary {{ font-size: 13.5px; font-weight: 600; }}
+        div[data-testid="stExpander"] summary {{ font-size: 15px; font-weight: 600; }}
 
         /* ── Section bands ──────────────────────────────────────── */
         .sec {{
-            display: flex; align-items: baseline; gap: 12px;
-            margin: 20px 0 10px 0; padding: 0 0 8px 0;
+            display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap;
+            margin: 26px 0 12px 0; padding: 0 0 10px 0;
             border-bottom: 1px solid {DARK_GRAY3};
         }}
-        .sec-bar {{ width: 3px; height: 17px; border-radius: 2px; flex: none;
-                    position: relative; top: 3px; }}
-        .sec-title {{ font-size: 15px; font-weight: 700; color: {LIGHT_GRAY5};
-                      letter-spacing: 0.01em; }}
-        .sec-q {{ font-size: 12.5px; color: {GRAY1}; font-style: italic; }}
-        .sec-right {{ margin-left: auto; font-size: 11.5px; color: {GRAY1};
+        .sec-bar {{ width: 4px; height: 22px; border-radius: 2px; flex: none;
+                    position: relative; top: 4px; }}
+        .sec-title {{ font-size: 20px; font-weight: 700; color: {LIGHT_GRAY5};
+                      letter-spacing: 0.005em; }}
+        .sec-q {{ font-size: 16px; color: {GRAY3}; line-height: 1.4; }}
+        .sec-right {{ margin-left: auto; font-size: 14px; color: {GRAY3};
                       font-variant-numeric: tabular-nums; }}
+
+        /* ── Tooltips ───────────────────────────────────────────────
+           Instant, readable, and reachable by keyboard and touch; the browser's own title=""
+           tooltip is delayed, tiny, and unavailable without a mouse. Put the text in data-tip. */
+        .tip {{ position: relative; cursor: help; outline: none; }}
+        .tip::after {{
+            content: attr(data-tip);
+            position: absolute; left: 0; top: calc(100% + 8px); z-index: 10000;
+            width: max-content; max-width: min(440px, 80vw); box-sizing: border-box;
+            padding: 10px 13px; border-radius: 5px;
+            background: {DARK_GRAY4}; color: {LIGHT_GRAY5}; border: 1px solid {DARK_GRAY5};
+            font-size: 14px; font-weight: 400; font-style: normal; letter-spacing: 0;
+            text-transform: none; line-height: 1.5; white-space: normal; text-align: left;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+            opacity: 0; visibility: hidden; pointer-events: none;
+            transition: opacity 90ms ease-out;
+        }}
+        .tip:hover::after, .tip:focus::after, .tip:focus-visible::after {{ opacity: 1; visibility: visible; }}
+        .tip:focus-visible {{ outline: 2px solid {BLUE3}; outline-offset: 2px; border-radius: 3px; }}
+        .tip--end::after {{ left: auto; right: 0; }}
 
         /* ── KPI strip ──────────────────────────────────────────── */
         .kpis {{ display: grid; gap: 10px; margin: 4px 0 6px 0; }}
@@ -290,8 +310,9 @@ def inject_theme() -> None:
         }}
         a.kpi:hover {{ background: {DARK_GRAY2}; border-color: {DARK_GRAY5}; }}
         a.kpi:hover .kpi-drill {{ opacity: 1; }}
+        a.kpi .kpi-label {{ padding-right: 64px; }}   /* room for the "OPEN →" badge, even on a narrow tile */
         .kpi-label {{
-            font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em;
+            font-size: 13px; font-weight: 700; letter-spacing: 0.07em;
             text-transform: uppercase; color: {GRAY1};
             display: flex; align-items: center; gap: 6px;
         }}
@@ -301,12 +322,12 @@ def inject_theme() -> None:
             margin-top: 6px; font-variant-numeric: tabular-nums;
             letter-spacing: -0.02em;
         }}
-        .kpi-unit {{ font-size: 15px; font-weight: 500; opacity: 0.65; margin-left: 3px; }}
-        .kpi-foot {{ font-size: 11.5px; color: {GRAY1}; margin-top: 5px; line-height: 1.4; }}
+        .kpi-unit {{ font-size: 17px; font-weight: 500; opacity: 0.65; margin-left: 3px; }}
+        .kpi-foot {{ font-size: 13px; color: {GRAY1}; margin-top: 5px; line-height: 1.4; }}
         .kpi-spark {{ position: absolute; right: 12px; bottom: 10px; opacity: 0.75; }}
         .kpi-drill {{
             position: absolute; right: 11px; top: 10px;
-            font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+            font-size: 13px; font-weight: 700; letter-spacing: 0.05em;
             color: {BLUE5}; opacity: 0.45; transition: opacity 120ms ease-out;
         }}
 
@@ -323,12 +344,12 @@ def inject_theme() -> None:
         /* ── Matrix (airport x service) ─────────────────────────── */
         .mx {{ border-collapse: separate; border-spacing: 3px; width: 100%; }}
         .mx th {{
-            font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em;
+            font-size: 13px; font-weight: 700; letter-spacing: 0.07em;
             text-transform: uppercase; color: {GRAY1}; padding: 4px 8px;
             text-align: left; white-space: nowrap;
         }}
         .mx td {{
-            padding: 9px 10px; border-radius: 3px; font-size: 12px;
+            padding: 9px 10px; border-radius: 3px; font-size: 14px;
             border: 1px solid {DARK_GRAY3}; background: {DARK_GRAY1};
             font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
             font-weight: 700; letter-spacing: 0.04em; text-align: center;
@@ -352,18 +373,18 @@ def inject_theme() -> None:
         .posture-word {{
             font-size: 30px; font-weight: 800; letter-spacing: 0.01em; line-height: 1.05;
         }}
-        .posture-sub {{ font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+        .posture-sub {{ font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
                         color: {GRAY1}; font-weight: 700; margin-top: 3px; }}
         .posture-body {{ padding: 15px 20px; flex: 1; background: {DARK_GRAY1}; }}
-        .posture-head {{ font-size: 15px; font-weight: 600; color: {LIGHT_GRAY5};
+        .posture-head {{ font-size: 17px; font-weight: 600; color: {LIGHT_GRAY5};
                          line-height: 1.45; }}
-        .posture-meta {{ font-size: 11.5px; color: {GRAY1}; margin-top: 7px;
+        .posture-meta {{ font-size: 13px; color: {GRAY1}; margin-top: 7px;
                          display: flex; gap: 16px; flex-wrap: wrap; }}
 
         /* ── Evidence list ──────────────────────────────────────── */
         .ev {{ list-style: none; padding: 0; margin: 6px 0 0 0; }}
         .ev li {{
-            font-size: 12.5px; color: {GRAY5}; line-height: 1.5;
+            font-size: 14px; color: {GRAY5}; line-height: 1.5;
             padding: 5px 0 5px 14px; border-bottom: 1px solid {DARK_GRAY2};
             position: relative;
         }}
@@ -373,13 +394,13 @@ def inject_theme() -> None:
             width: 4px; height: 4px; border-radius: 50%; background: {DARK_GRAY5};
         }}
         .ev-title {{
-            font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em;
+            font-size: 13px; font-weight: 700; letter-spacing: 0.07em;
             text-transform: uppercase; color: {GRAY1}; margin-top: 2px;
         }}
 
         /* ── Streamlit widget tuning ────────────────────────────── */
         div[data-testid="stDataFrame"] {{ border: 1px solid {DARK_GRAY3}; border-radius: 4px; }}
-        .stButton button {{ border-radius: 3px; font-size: 13px; font-weight: 600; }}
+        .stButton button {{ border-radius: 3px; font-size: 15px; font-weight: 600; }}
         div[data-testid="stMetricValue"] {{
             font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
             font-size: 26px;
@@ -393,8 +414,9 @@ def inject_theme() -> None:
 
 def help_hint(text: str, label: str = "How to read this") -> str:
     """An unobtrusive "i" whose tooltip holds the explanation, so the page shows data, not prose."""
-    return (f'<span title="{_esc(text)}" style="cursor:help;font-size:11.5px;color:{GRAY1};'
-            f'font-style:normal;white-space:nowrap;margin-left:8px;">&#9432; {_esc(label)}</span>')
+    return (f'<span class="tip" tabindex="0" role="note" aria-label="{_esc(text)}" data-tip="{_esc(text)}" '
+            f'style="font-size:14px;color:{GRAY3};font-style:normal;white-space:nowrap;margin-left:10px;">'
+            f'&#9432; {_esc(label)}</span>')
 
 
 def page_header(title: str, question: str, *, detail: str | None = None) -> None:
@@ -408,10 +430,10 @@ def page_header(title: str, question: str, *, detail: str | None = None) -> None
     answers has no reason to exist.
     """
     st.markdown(
-        f'<div style="margin:0 0 2px 0;">'
-        f'<span style="font-size:24px;font-weight:700;color:{LIGHT_GRAY5};'
+        f'<div style="margin:0 0 4px 0;">'
+        f'<span style="font-size:30px;font-weight:700;color:{LIGHT_GRAY5};'
         f'letter-spacing:-0.01em;">{_esc(title)}</span></div>'
-        f'<div style="font-size:13px;color:{GRAY3};font-style:italic;margin-bottom:14px;">'
+        f'<div style="font-size:16px;color:{GRAY3};line-height:1.45;margin-bottom:16px;">'
         f'{_esc(question)}{help_hint(detail) if detail else ""}</div>',
         unsafe_allow_html=True,
     )
@@ -494,11 +516,11 @@ def event_chips(event_ids: Sequence[str], events: dict[str, dict], limit: int = 
                 "surface": e.get("surface_event_type"), "feed": e.get("feed_status"),
             }
             about = " · ".join(parts + [f"{k} {v}" for k, v in detail.items() if v not in (None, "")])
-        chips.append(f'<span class="chip mono" title="{_esc(about)}" style="font-size:10.5px;padding:1px 7px;'
-                     f'cursor:help;">{_esc(event_id[:14])}</span>')
+        chips.append(f'<span class="chip mono tip" tabindex="0" role="note" aria-label="{_esc(about)}" '
+                     f'data-tip="{_esc(about)}" style="font-size:13px;padding:2px 8px;">{_esc(event_id[:14])}</span>')
     more = f" +{len(event_ids) - limit}" if len(event_ids) > limit else ""
-    return ('<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:11px;color:'
-            f'{GRAY1};">Evidence (hover for the event): ' + "".join(chips) + _esc(more) + "</div>")
+    return ('<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:14px;color:'
+            f'{GRAY3};">Evidence (hover or focus a chip for the event): ' + "".join(chips) + _esc(more) + "</div>")
 
 
 def kpi_row(tiles: Sequence[str], *, columns: int | None = None) -> None:
@@ -604,6 +626,6 @@ def back_link(label: str = "Overview") -> None:
     st.markdown(
         f'<div style="margin-top:18px;padding-top:12px;border-top:1px solid {DARK_GRAY3};">'
         f'<a href="/" target="_self" style="color:{BLUE5};text-decoration:none;'
-        f'font-size:12.5px;font-weight:600;">&larr; Back to {_esc(label)}</a></div>',
+        f'font-size:14px;font-weight:600;">&larr; Back to {_esc(label)}</a></div>',
         unsafe_allow_html=True,
     )

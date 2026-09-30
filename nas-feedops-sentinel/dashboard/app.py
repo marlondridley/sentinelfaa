@@ -169,10 +169,10 @@ def _verdict() -> tuple[str, str, str, str]:
 verdict_word, verdict_tone, verdict_sub, verdict_text = _verdict()
 
 st.markdown(
-    f'<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:10px;">'
-    f'<span style="font-size:24px;font-weight:700;color:{theme.LIGHT_GRAY5};'
+    f'<div style="display:flex;align-items:baseline;gap:8px 16px;flex-wrap:wrap;margin-bottom:14px;">'
+    f'<span style="font-size:30px;font-weight:700;color:{theme.LIGHT_GRAY5};'
     f'letter-spacing:-0.01em;">PCT TAIS FeedOps Sentinel</span>'
-    f'<span style="font-size:12.5px;color:{theme.GRAY1};">'
+    f'<span style="font-size:16px;color:{theme.GRAY3};">'
     f"Can PCT TRACON trust the current aircraft movement picture across "
     f"<b>{' &middot; '.join(AIRPORTS)}</b>?</span></div>",
     unsafe_allow_html=True,
@@ -307,7 +307,7 @@ for _code, _info in AIRPORTS.items():
         '<a class="kpi" href="' + theme.drill_href("health", airport=_code) + '" target="_self" '
         'style="border-left-color:' + _fg + ';">'
         '<div class="kpi-label">' + theme._esc(_code) + "</div>"
-        '<div style="font-size:12.5px;color:' + theme.GRAY5 + ';margin-top:3px;">'
+        '<div style="font-size:14px;color:' + theme.GRAY5 + ';margin-top:3px;">'
         + theme._esc(_info["name"]) + "</div>"
         '<div style="margin-top:9px;">' + theme.status_chip(str(_status), size="sm") + "</div>"
         '<div class="kpi-foot mono">' + theme._esc(_movements) + "</div>"
@@ -373,17 +373,17 @@ with st.container(border=True):
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
         'margin-bottom:10px;">'
         + theme.status_chip(_wo_latest.posture)
-        + '<span style="font-size:11.5px;color:' + theme.GRAY1 + ';">trust</span>'
+        + '<span style="font-size:13px;color:' + theme.GRAY1 + ';">trust</span>'
         + theme.status_chip(_wo_latest.trust_assessment, size="sm")
-        + '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
+        + '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
         + f"confidence {_wo_latest.confidence:.0%}</span>"
         + '<span class="chip" style="color:' + theme.TONES[_prov_tone][0]
         + ";border-color:" + theme.TONES[_prov_tone][1]
-        + ';padding:1px 7px;font-size:10.5px;">' + _prov + "</span>"
-        + '<span class="mono" style="margin-left:auto;font-size:11px;color:'
+        + ';padding:1px 7px;font-size:13px;">' + _prov + "</span>"
+        + '<span class="mono" style="margin-left:auto;font-size:13px;color:'
         + theme.GRAY1 + ';">' + _wo_latest.generated_at.strftime("%Y-%m-%d %H:%M:%S") + " UTC</span>"
         "</div>"
-        '<div style="font-size:15px;font-weight:600;color:' + theme.LIGHT_GRAY5
+        '<div style="font-size:17px;font-weight:600;color:' + theme.LIGHT_GRAY5
         + ';line-height:1.5;">' + theme._esc(_wo_latest.headline) + "</div>",
         unsafe_allow_html=True,
     )
@@ -399,7 +399,7 @@ with st.container(border=True):
     if _wo_latest.affected_airports:
         st.markdown(
             '<div style="margin-top:10px;display:flex;gap:6px;align-items:center;'
-            'flex-wrap:wrap;"><span style="font-size:10.5px;letter-spacing:0.07em;'
+            'flex-wrap:wrap;"><span style="font-size:13px;letter-spacing:0.07em;'
             'text-transform:uppercase;color:' + theme.GRAY1 + ';font-weight:700;">'
             "Affected</span>"
             + "".join(
@@ -483,9 +483,9 @@ with st.expander("AI Planner — plain-English questions over live SWIM data", e
                 _conf = brief.get("confidence")
                 _conf_str = f"{_conf:.0%}" if _conf is not None else "N/A"
                 st.markdown(
-                    f'<div class="mono" style="font-size:11px;color:{theme.GRAY1};">'
+                    f'<div class="mono" style="font-size:13px;color:{theme.GRAY1};">'
                     f"{theme._esc(_ts)} UTC · conf={_conf_str}</div>"
-                    f'<div style="font-size:12.5px;color:{theme.GRAY3};font-style:italic;">'
+                    f'<div style="font-size:14px;color:{theme.GRAY3};font-style:italic;">'
                     f'{theme._esc(brief.get("question", ""))}</div>',
                     unsafe_allow_html=True,
                 )
@@ -543,9 +543,9 @@ _rows_html = "".join(
 st.markdown(
     f"""
     <style>
-    .mq {{ width:100%; border-collapse:collapse; font-size:12.5px; }}
+    .mq {{ width:100%; border-collapse:collapse; font-size:14px; }}
     .mq th {{
-        text-align:left; padding:6px 10px; font-size:10.5px; font-weight:700;
+        text-align:left; padding:6px 10px; font-size:13px; font-weight:700;
         letter-spacing:0.07em; text-transform:uppercase; color:{theme.GRAY1};
         border-bottom:1px solid {theme.DARK_GRAY3};
     }}
@@ -572,7 +572,7 @@ st.markdown(
 
 st.markdown(
     f'<div style="margin-top:20px;padding-top:12px;border-top:1px solid {theme.DARK_GRAY3};'
-    f'font-size:11px;color:{theme.GRAY1};line-height:1.6;">'
+    f'font-size:13px;color:{theme.GRAY1};line-height:1.6;">'
     "NAS FeedOps Sentinel &middot; FAA SWIM/STDDS PCT automation demonstration.<br/>"
     "The GREEN/AMBER/RED verdict above is computed from measured conformance, lag and "
     "alert counts by fixed rules. Narrative sections are labelled with their provenance."
