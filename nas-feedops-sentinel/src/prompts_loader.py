@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from src.untrusted import NOTICE
+
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
@@ -27,7 +29,8 @@ def load_prompt(name: str) -> dict[str, Any]:
 
 
 def system_prompt(name: str) -> str:
-    return load_prompt(name)["system_prompt"]
+    """The prompt's text, and the note on what <untrusted_data> means: every model call carries it."""
+    return load_prompt(name)["system_prompt"].rstrip() + "\n\n" + NOTICE
 
 
 def tool_schema(name: str) -> dict[str, Any]:

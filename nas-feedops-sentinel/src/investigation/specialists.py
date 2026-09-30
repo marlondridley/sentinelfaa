@@ -48,6 +48,7 @@ from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.prompts_loader import load_prompt, system_prompt, tool_schema
 from src.redaction import redact_structured
+from src.untrusted import fence_fields
 
 _log = get_logger(__name__)
 
@@ -118,7 +119,7 @@ async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tu
 
     system = system_prompt(prompt_name)
     tool = tool_schema(prompt_name)
-    user = json.dumps(redact_structured(payload), default=str, sort_keys=True)
+    user = json.dumps(fence_fields(redact_structured(payload)), default=str, sort_keys=True)
     provenance = Provenance(
         method="llm",
         model=settings.INVESTIGATION_MODEL,

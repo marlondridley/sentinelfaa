@@ -13,6 +13,7 @@ from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
 from src.models import PlannerResult
 from src.prompts_loader import system_prompt, tool_schema
+from src.untrusted import fence, fence_fields
 
 
 def _airport_list() -> str:
@@ -50,7 +51,7 @@ class PlannerAgent:
     """Standalone Planner execution engine using LiteLLM and guardrail validation."""
 
     def __init__(self) -> None:
-        self._llm = build_llm_client() if settings.CRITIC_ENABLED else None
+        self._llm = build_llm_client(model=settings.PLANNER_MODEL) if settings.CRITIC_ENABLED else None
         self._guardrail = OutputGuardrail()
         self._prompt = system_prompt("planner")
         self._tool = tool_schema("planner")
@@ -142,7 +143,12 @@ class PlannerAgent:
 
     async def _call_llm(self, question: str, context: dict[str, Any]) -> dict[str, Any]:
         """Return the model's structured output, unmodified. Raises on any LLM failure."""
-        user_content = f"Question: {question}\n\nCurrent System Context:\n{json.dumps(context, indent=2, default=str)}"
+        # The question is typed by a person and the critic reviews in the context were written by a model
+        # reading feed text: both are data (src/untrusted.py).
+        user_content = (
+            f"Question: {fence(question, 'question')}\n\n"
+            f"Current System Context:\n{json.dumps(fence_fields(context), indent=2, default=str)}"
+        )
 
         # Route call through the LiteLLM client proxy, forced to structured
         # output via the planner tool schema (matches CriticAgent's pattern).

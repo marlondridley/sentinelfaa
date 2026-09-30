@@ -49,21 +49,39 @@ WATCH_OFFICER = "Watch officer"
 DUTY_MANAGER = "Duty manager"
 
 _DOWN_LIKE = frozenset({"STALE", "UNAVAILABLE", "DISCONNECTED"})
-_ARTIFACT_RVR = re.compile(r"\b0 ft\b")
+# The RVR reading is the first thing in the alert's wording ("Low RVR 0 ft at touchdown on runway 10 at KBWI").
+# Anchored there because the same sentence goes on to name a runway, which is free text from the message: a
+# runway of "10L 0 ft" made a real low-RVR alert read as a sensor code.
+_ARTIFACT_RVR = re.compile(r"^\s*Low RVR 0 ft at\b")
 # A bottom line about our data must not reach for consequences in the airspace, or imply that this console
 # feeds controllers: it does not. Whole words, and the sense that matters ("reaching controllers", not "the
 # Kafka controller").
 _OVERREACH = re.compile(
     r"\bair traffic control(?:lers?)?\b|\batc\b"
     r"|\b(?:to|reach(?:es|ing)?|for|by)\s+(?:the\s+)?controllers?\b"
-    r"|\bunsafe\b|\bcollisions?\b|\bloss of separation\b|\btactical (?:information|data|picture)\b",
+    r"|\bunsafe\b|\bcollisions?\b|\bloss of separation\b|\btactical (?:information|data|picture)\b"
+    r"|\bcontrollers?\b(?:\W+\w+){0,4}?\W+(?:affected|impacted|misled|unaware)\b"
+    r"|\bground (?:stops?|delays?)\b|\b(?:affect|impact)(?:s|ed|ing)?\s+(?:air\s+)?traffic\b",
     re.IGNORECASE)
+# A claim the console is denying is the statement the prompt asks for ("not used by controllers"), not an
+# overreach. Negation counts if it comes within a few words before the phrase, in the same sentence.
+_NEGATIONS = frozenset({"not", "no", "never", "nor", "neither", "without", "cannot", "nothing", "none", "nobody"})
+_NEGATION_WORDS = 4
+
+
+def _negated(text: str, start: int) -> bool:
+    before = re.split(r"[.;:!?]", text[:start])[-1]
+    return any(w.lower() in _NEGATIONS or w.lower().endswith("n't")
+               for w in re.findall(r"[\w']+", before)[-_NEGATION_WORDS:])
 
 
 def overreach(text: str) -> str | None:
     """The phrase in `text` that claims something about the airspace or controllers this console cannot know, if any."""
-    match = _OVERREACH.search(text or "")
-    return match.group(0).strip().lower() if match else None
+    text = text or ""
+    for match in _OVERREACH.finditer(text):
+        if not _negated(text, match.start()):
+            return match.group(0).strip().lower()
+    return None
 
 
 # -- small helpers ----------------------------------------------------------------------------------
@@ -360,6 +378,13 @@ def fit_above_the_fold(a: BriefAssessment) -> BriefAssessment:
 
 # -- a model's bottom line, accepted only if it fits the frame ----------------------------------------------------------
 
+_ALL_CLEAR = re.compile(
+    r"\ball clear\b|\ball (?:normal|good|well|ok(?:ay)?)\b|\bnormal operations\b|\beverything is (?:normal|fine|ok)\b"
+    r"|\bno (?:issues?|problems?|concerns?|alerts?|anomal\w+|action(?: is)?(?: needed| required)?)\b"
+    r"|\bnothing (?:to report|needs|is open|open)\b",
+    re.IGNORECASE)
+
+
 def accept_model_bluf(a: BriefAssessment, text: str) -> tuple[str, str | None]:
     """
     (bottom line to use, reason the model's was refused). The status, counts and actions are not the
@@ -379,4 +404,7 @@ def accept_model_bluf(a: BriefAssessment, text: str) -> tuple[str, str | None]:
         return a.bluf, f"claims something about {claim} that this console cannot know"
     if a.data_health.state == "DEGRADED" and not re.search(r"\b(data|feed|pipeline|stale|backlog)\b", lowered):
         return a.bluf, "does not say the data is degraded"
+    if a.status != "GREEN" and _ALL_CLEAR.search(text):
+        # The status is the rules', and it is not green. A headline that says the opposite would sit above it.
+        return a.bluf, f"says all is well while the status is {a.status}"
     return text, None
