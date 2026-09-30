@@ -8,7 +8,17 @@ import json
 
 import asyncpg
 
-from src.models import WatchOfficerBrief
+from src.models import BriefAssessment, WatchOfficerBrief
+
+
+def _assessment(value) -> BriefAssessment | None:
+    """The stored assessment, or None for a brief written before there was one (or one that no longer validates)."""
+    if not value:
+        return None
+    try:
+        return BriefAssessment.model_validate(json.loads(value) if isinstance(value, str) else value)
+    except Exception:  # noqa: BLE001 -- an old shape must not stop the dashboard loading its latest brief
+        return None
 
 
 def _row_to_brief(row) -> WatchOfficerBrief:
@@ -29,6 +39,7 @@ def _row_to_brief(row) -> WatchOfficerBrief:
         confidence=d.get("confidence") or 0.5,
         llm_used=bool(d.get("llm_used")),
         limitations=json.loads(d.get("limitations_json") or "[]") if isinstance(d.get("limitations_json"), str) else d.get("limitations_json", []),
+        assessment=_assessment(d.get("assessment_json")),
     )
 
 
@@ -43,8 +54,8 @@ class BriefsRepository:
                 what_changed_json, why_it_matters_json, recommended_human_review_json,
                 evidence_json, affected_airports_json,
                 pending_actions_count, critical_alert_count, confidence,
-                llm_used, limitations_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                llm_used, limitations_json, assessment_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (brief_id) DO UPDATE SET
                 generated_at = EXCLUDED.generated_at,
                 posture = EXCLUDED.posture,
@@ -59,7 +70,8 @@ class BriefsRepository:
                 critical_alert_count = EXCLUDED.critical_alert_count,
                 confidence = EXCLUDED.confidence,
                 llm_used = EXCLUDED.llm_used,
-                limitations_json = EXCLUDED.limitations_json;
+                limitations_json = EXCLUDED.limitations_json,
+                assessment_json = EXCLUDED.assessment_json;
         """
         await self._pool.execute(
             query,
@@ -67,6 +79,7 @@ class BriefsRepository:
             json.dumps(brief.what_changed), json.dumps(brief.why_it_matters), json.dumps(brief.recommended_human_review),
             json.dumps(brief.evidence), json.dumps(brief.affected_airports), brief.pending_actions_count,
             brief.critical_alert_count, brief.confidence, bool(brief.llm_used), json.dumps(brief.limitations),
+            brief.assessment.model_dump_json() if brief.assessment else None,
         )
         return brief
 
@@ -75,7 +88,7 @@ class BriefsRepository:
             """SELECT brief_id, generated_at, posture, trust_assessment, headline,
                       what_changed_json, why_it_matters_json, recommended_human_review_json,
                       evidence_json, affected_airports_json, pending_actions_count,
-                      critical_alert_count, confidence, llm_used, limitations_json
+                      critical_alert_count, confidence, llm_used, limitations_json, assessment_json
                FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT 1"""
         )
         return _row_to_brief(row) if row else None
@@ -85,7 +98,7 @@ class BriefsRepository:
             """SELECT brief_id, generated_at, posture, trust_assessment, headline,
                       what_changed_json, why_it_matters_json, recommended_human_review_json,
                       evidence_json, affected_airports_json, pending_actions_count,
-                      critical_alert_count, confidence, llm_used, limitations_json
+                      critical_alert_count, confidence, llm_used, limitations_json, assessment_json
                FROM watch_officer_briefs ORDER BY generated_at DESC LIMIT $1""",
             limit,
         )
