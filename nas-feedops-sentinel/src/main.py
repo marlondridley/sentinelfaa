@@ -133,7 +133,9 @@ def main() -> None:
         # scan_swim_folder returns (events, stats); this used to bind the whole
         # tuple to `events`, which is never falsy, so the directory fallback
         # below could not run and the pipeline was handed a 2-tuple.
-        events, stats = scan_swim_folder(target_path, defer_archive=True)
+        # Captured messages replayed once are a replay, not the live feed: stored as "live" they refreshed each
+        # feed's last-seen time and could hide a feed that had really gone quiet. --watch stays live.
+        events, stats = scan_swim_folder(target_path, defer_archive=True, data_origin="replay")
         if not events:
             _log.info("replay_scan_empty_directory_fallback", extra={"target_path": str(target_path)})
             events, parse_errors = replay_from_directory(target_path)
@@ -144,9 +146,11 @@ def main() -> None:
                 )
         if events:
             _run_pipeline(events, "REPLAY")
-            commit_scan(stats)      # archived and logged only now that the events are stored
         else:
             _log.warning("replay_scan_no_events_found", extra={"target_path": str(target_path)})
+        # Archived and logged only now that the events are stored. Also when there were none: messages that
+        # parsed to nothing are finished, and left claimed they were never logged and sat in .inflight/.
+        commit_scan(stats)
     elif args.mode == "eval":
         evaluator = AgentEvaluator(run_llm=True)
         report = evaluator.run()

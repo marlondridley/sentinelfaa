@@ -60,6 +60,7 @@ __all__ = [
     "save_alert",
     "save_events",
     "save_alerts",
+    "prune_live_events",
     "get_recent_events",
     "get_recent_alerts",
     "get_latest_rvr",
@@ -143,6 +144,11 @@ async def save_events(events: list[NASEvent]) -> None:
 async def save_alerts(alerts: list[AlertEvent]) -> None:
     repo = EventsRepository(await get_db_pool())
     await repo.save_alerts(alerts)
+
+
+async def prune_live_events(before: datetime, limit: int) -> int:
+    repo = EventsRepository(await get_db_pool())
+    return await repo.prune_live_events(before, limit)
 
 
 async def get_recent_events(limit: int = 500, *, data_origin: str | None = None) -> list[dict]:
