@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
@@ -106,7 +106,7 @@ async def _read_operating_picture(event_limit: int) -> tuple:
         await storage.get_recent_alerts(limit=200),
         await storage.get_flight_phase_counts(window_minutes=15),
         await storage.get_active_aircraft(window_minutes=5, limit=300),
-        await storage.get_latency_stats(),
+        await storage.get_latency_stats(since=datetime.now(timezone.utc) - timedelta(minutes=rules.LATENCY_WINDOW_MINUTES)),
         await storage.get_pending_staged_actions(),
         await storage.get_draft_operational_tickets(),
         await storage.get_recent_critic_results(limit=20),
@@ -345,8 +345,11 @@ def _details(context: dict[str, Any], a: BriefAssessment) -> tuple[list[str], li
     return what, why
 
 
-def _deterministic_brief(context: dict[str, Any], signals: dict[str, Any], note: str | None = None) -> WatchOfficerBrief:
-    a = rules.assess(context, signals)
+def _deterministic_brief(
+    context: dict[str, Any], signals: dict[str, Any], note: str | None = None,
+    assessment: BriefAssessment | None = None,
+) -> WatchOfficerBrief:
+    a = assessment or rules.assess(context, signals)
     what_changed, why_it_matters = _details(context, a)
     limitations = [
         "Deterministic rule-based brief: the status, counts and actions are computed, not written by a model.",
@@ -374,9 +377,8 @@ def _deterministic_brief(context: dict[str, Any], signals: dict[str, Any], note:
 
 def _overreach(raw: RawLLMNarrative) -> str | None:
     """A phrase a model used that this console cannot know or must not imply (controllers, unsafe airspace...), if any."""
-    text = " " + " ".join([raw.headline, *raw.what_changed, *raw.why_it_matters,
-                           *raw.recommended_human_review, *raw.limitations]).lower() + " "
-    return next((phrase.strip() for phrase in rules._NOT_OURS_TO_SAY if phrase in text), None)
+    return rules.overreach(" ".join([raw.headline, *raw.what_changed, *raw.why_it_matters,
+                                     *raw.recommended_human_review, *raw.limitations]))
 
 
 class OutputGuardrail:
@@ -387,6 +389,7 @@ class OutputGuardrail:
         signals: dict[str, Any],
         *,
         llm_used: bool,
+        assessment: BriefAssessment | None = None,
     ) -> WatchOfficerBrief:
         """
         The model's prose inside the computed frame. Status, counts, actions, posture and trust are the
@@ -397,10 +400,10 @@ class OutputGuardrail:
         claim = _overreach(raw_narrative)
         if claim:
             return _deterministic_brief(
-                context, signals,
+                context, signals, assessment=assessment,
                 note=f"The model's narrative was not used: it claims something about {claim} that this console cannot know.")
 
-        a = rules.assess(context, signals)
+        a = assessment or rules.assess(context, signals)
         bluf, refused = rules.accept_model_bluf(a, raw_narrative.headline)
         a.bluf = bluf
         rules.fit_above_the_fold(a)
@@ -427,7 +430,9 @@ class OutputGuardrail:
         )
 
 
-async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> RawLLMNarrative:
+async def _llm_narrative(
+    context: dict[str, Any], signals: dict[str, Any], assessment: BriefAssessment | None = None,
+) -> RawLLMNarrative:
     """
     One structured completion through the shared LiteLLM client -- the same
     redacted, error-classified path the Critic and Planner use. Raises on any
@@ -439,7 +444,7 @@ async def _llm_narrative(context: dict[str, Any], signals: dict[str, Any]) -> Ra
 
     # A projection built for the four questions the brief answers, bounded by
     # construction (src/watch_officer_projection.py), not the raw snapshot.
-    payload = redact_structured(project_for_model(context, signals))
+    payload = redact_structured(project_for_model(context, signals, assessment))
     raw = await client.acall_with_tool(
         system_prompt=system_prompt("watch_officer"),
         tool=tool_schema("watch_officer"),
@@ -468,27 +473,29 @@ async def agenerate_watch_officer_brief(
     if context is None:
         context = await build_watch_officer_context()
     signals = _detect_signals(context)
+    assessment = rules.assess(context, signals)
 
-    if use_llm and settings.CRITIC_ENABLED and rules.assess(context, signals).data_health.state in ("DOWN", "UNKNOWN"):
+    if use_llm and settings.CRITIC_ENABLED and assessment.data_health.state in ("DOWN", "UNKNOWN"):
         # Rule 2: our own pipeline is checked first. While it is down every alert is suspect, so the brief is
         # rule-written and no model is asked (it would cost a call to produce prose we would not use).
         LLM_CALLS.labels(agent="watch_officer", outcome="skipped_pipeline_down").inc()
         return _deterministic_brief(
-            context, signals, note="No model was asked: while the pipeline is down or empty the brief is rule-written.")
+            context, signals, assessment=assessment,
+            note="No model was asked: while the pipeline is down or empty the brief is rule-written.")
 
     if use_llm and settings.CRITIC_ENABLED:
         start = time.perf_counter()
         try:
-            narrative = await _llm_narrative(context, signals)
+            narrative = await _llm_narrative(context, signals, assessment)
             LLM_CALLS.labels(agent="watch_officer", outcome="success").inc()
-            return OutputGuardrail.guard(narrative, context, signals, llm_used=True)
+            return OutputGuardrail.guard(narrative, context, signals, llm_used=True, assessment=assessment)
         except Exception as exc:  # noqa: BLE001 -- advisory layer; fall back
             LLM_CALLS.labels(agent="watch_officer", outcome="error").inc()
             _log.warning("watch_officer_llm_failed", extra={"error": str(exc)})
         finally:
             LLM_CALL_LATENCY.labels(agent="watch_officer").observe(time.perf_counter() - start)
 
-    return _deterministic_brief(context, signals)
+    return _deterministic_brief(context, signals, assessment=assessment)
 
 
 def generate_watch_officer_brief(

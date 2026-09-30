@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src import watch_officer_assessment as rules
+from src.models import BriefAssessment
 
 MAX_ALERT_CONDITIONS = 15
 MAX_OPEN_REVIEWS = 10
@@ -105,7 +106,9 @@ def _compact(row: dict, fields: int = 6) -> dict:
     return dict(list(kept.items())[:fields])
 
 
-def project_for_model(context: dict[str, Any], signals: dict[str, Any]) -> dict[str, Any]:
+def project_for_model(
+    context: dict[str, Any], signals: dict[str, Any], assessment: BriefAssessment | None = None,
+) -> dict[str, Any]:
     """The bounded, decision-shaped picture the Watch Officer's model is shown."""
     alerts = list(context.get("alerts") or [])
     critical = list(context.get("critical_alerts") or [])
@@ -114,7 +117,7 @@ def project_for_model(context: dict[str, Any], signals: dict[str, Any]) -> dict[
     critic_rows = [dict(r) for r in context.get("recent_critic_results") or []]
     verdicts = {r.get("alert_id"): r for r in critic_rows if r.get("alert_id")}
 
-    assessment = rules.assess(context, signals)
+    assessment = assessment or rules.assess(context, signals)
     age_limit = (rules._dt(context.get("snapshot_time")) or datetime.now(timezone.utc)) - timedelta(hours=rules.ALERT_MAX_AGE_HOURS)
     conditions = _alert_conditions(alerts, critical)
     for c in conditions:                                       # so a four-day-old alert is never read as current

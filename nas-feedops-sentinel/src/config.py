@@ -270,6 +270,15 @@ class Settings(BaseSettings):
     MAX_CRITIC_PER_PASS: int = 5
     LLM_TIMEOUT_SECONDS: float = 90.0
 
+    # ── Watch Officer brief (src/watch_officer_assessment.py) ───────────────
+    # An alert older than WATCH_ALERT_MAX_AGE_HOURS, with no newer evidence, is history. Nothing received for
+    # WATCH_PIPELINE_DOWN_MINUTES means our pipeline is down. A recent average lag above WATCH_BACKLOG_LAG_SECONDS
+    # means it is catching up, not live. Alerts closer together than WATCH_CLUSTER_GAP_MINUTES are one incident.
+    WATCH_ALERT_MAX_AGE_HOURS: int = 6
+    WATCH_PIPELINE_DOWN_MINUTES: int = 15
+    WATCH_BACKLOG_LAG_SECONDS: int = 300
+    WATCH_CLUSTER_GAP_MINUTES: int = 30
+
     # ── Model governance and readiness ──────────────────────────────────────
     # MODEL_POLICY_PATH: the model-use policy (Microsoft Agent Governance
     # Toolkit) consulted before every model call -- src/governance.py.

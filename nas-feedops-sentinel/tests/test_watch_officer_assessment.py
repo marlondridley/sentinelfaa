@@ -67,8 +67,7 @@ def test_rule_1_and_2_a_dead_feed_leads_the_brief_and_blames_our_pipeline_not_th
     assert a.status == "RED" and a.status_line == "DATA PICTURE: DOWN — our feed, not the airports"
     assert "not the airports" in a.bluf and "Don't use this data for operational awareness" in a.bluf
     assert "about 12 h ago" in a.bluf and "all 3 airports went stale together" in a.bluf
-    text = f"{a.status_line} {a.bluf}".lower()
-    assert not any(phrase.strip() in text for phrase in wa._NOT_OURS_TO_SAY), "no claim about controllers or the airspace"
+    assert wa.overreach(f"{a.status_line} {a.bluf}") is None, "no claim about controllers or the airspace"
     assert (a.confidence_label, "stale together" in a.confidence_reason) == ("HIGH", True)
 
 
@@ -111,8 +110,8 @@ def test_rule_7_what_disagrees_is_flagged_not_published_as_if_it_agreed():
     a = wa.assess(_outage_context(), now=NOW)
     joined = " ".join(a.consistency_warnings)
     assert "1 AI escalation(s) concern alerts older than 6 h" in joined
-    assert "5 critical alert(s) are on record but none is from the last 6 h" in joined
     assert not any("Review counts disagree" in w for w in a.consistency_warnings)
+    assert "are on record but none" not in joined, "a warning that is always present would be ignored"
 
 
 def test_what_to_keep_an_eye_on_is_the_real_looking_rvr_and_the_lag():
@@ -207,7 +206,7 @@ def test_a_model_bottom_line_is_accepted_when_it_fits_and_refused_when_it_overre
     a = wa.assess(_healthy_context(alerts=[], airport_status={"KDCA": "OK", "KIAD": "STALE", "KBWI": "OK"}), now=NOW)
     assert wa.accept_model_bluf(a, "KIAD data is stale; the rest of the feed is current.") == (
         "KIAD data is stale; the rest of the feed is current.", None)
-    for text, why in [("Stale tactical information is reaching controllers at IAD.", "controller"),
+    for text, why in [("Stale tactical information is reaching controllers at IAD.", "tactical information"),
                       ("KIAD is stale " + "and so on " * 20, "longer than 40"),
                       ("All is well.", "does not say the data is degraded"), ("", "no bottom line")]:
         used, reason = wa.accept_model_bluf(a, text)
@@ -248,3 +247,75 @@ def test_the_model_is_shown_the_assessment_and_which_alerts_are_history_or_artif
     assert conditions and all(c["historical"] for c in conditions), "four days old: never current"
     assert {c["airport"] for c in conditions if c["sensor_artifact"]} == {"KBWI", "KIAD"}, "the RVR 0 ft ones"
     assert len(projection["assessment"]["incidents"]) == 2
+
+
+# -- review findings ---------------------------------------------------------------------------------------------------
+
+def test_a_healthy_brief_does_not_carry_a_warning_just_because_an_old_critical_alert_exists():
+    old = _alert("old1", "ALERT_FEED_DISCONNECTED", "KIAD", NOW - timedelta(days=3))
+    context = _healthy_context(alerts=[old], critical_alerts=[old], critical_alert_count=1)
+    a = wa.assess(context, now=NOW)
+    assert a.status == "GREEN" and a.consistency_warnings == []
+    assert a.historical_alert_count == 1, "it is counted as history, in the numbers"
+
+
+@pytest.mark.parametrize("statuses", [
+    {"KDCA": "STALE", "KIAD": "STALE", "KBWI": "STALE", "KADW": "STALE"},          # down, four reporting
+    {"KDCA": "STALE", "KIAD": "OK", "KBWI": "OK", "KADW": "NO DATA"},              # one stale
+    {"KDCA": "STALE", "KIAD": "DEGRADED", "KBWI": "STALE", "KADW": "OK"},          # three of four wrong
+    {"KDCA": "OK", "KIAD": "OK", "KBWI": "OK", "KADW": "NO DATA"}])
+@pytest.mark.parametrize("age_minutes", [1, 90, 700])
+@pytest.mark.parametrize("lag_ms", [2_000, 900_000, 42_018_000])
+@pytest.mark.parametrize("busy", [False, True])
+def test_the_length_cap_holds_in_every_shape_of_brief(statuses, age_minutes, lag_ms, busy):
+    """Feed states x how long ago x lag x whether reviews and alerts are open: at most 3 actions, each owned, <= 120 words."""
+    old = [_alert(f"o{i}", "ALERT_LOW_RVR", "KDCA", NOW - timedelta(days=2, minutes=i * 45),
+                  "Low RVR 900 ft at touchdown on runway 01 at KDCA") for i in range(3)]
+    fresh = _alert("f1", "ALERT_FEED_DISCONNECTED", "KIAD", NOW - timedelta(minutes=5))
+    alerts = [*old, fresh] if busy else []
+    context = _healthy_context(
+        airport_status=statuses, latest_event_at=(NOW - timedelta(minutes=age_minutes)).isoformat(),
+        avg_latency_ms=lag_ms, alerts=alerts, critical_alerts=alerts, critical_alert_count=len(alerts),
+        pending_actions=[_review(x["alert_id"], x["alert_type"], x["airport_code"], x["triggered_at"]) for x in alerts],
+        pending_actions_count=len(alerts))
+    a = wa.assess(context, now=NOW)
+    assert a.above_fold_words == wa.above_the_fold_words(a) <= wa.ABOVE_FOLD_MAX_WORDS, (a.status_line, a.above_fold_words)
+    assert len(a.actions) <= wa.MAX_ACTIONS and all(x.action and x.owner and x.done_when for x in a.actions)
+    assert a.bluf and a.status_line
+
+
+def test_a_review_on_a_brand_new_sensor_artifact_is_not_called_stale():
+    artifact = _alert("z1", "ALERT_LOW_RVR", "KIAD", NOW - timedelta(minutes=3), "Low RVR 0 ft at rollout on runway 19C at KIAD")
+    context = _healthy_context(alerts=[artifact], critical_alerts=[artifact], critical_alert_count=1,
+                               pending_actions=[_review("z1", "ALERT_LOW_RVR", "KIAD", NOW - timedelta(minutes=3))],
+                               pending_actions_count=1)
+    a = wa.assess(context, now=NOW)
+    assert (a.current_review_count, a.historical_review_count, a.current_critical_count) == (0, 1, 0)
+    assert a.actions[0].action == "Close 1 review(s) (1 on RVR 0 ft sensor codes) as history."
+    assert "stale" not in a.actions[0].action
+
+
+@pytest.mark.parametrize("text, claim", [
+    ("Stale tactical information is reaching controllers at IAD.", "tactical information"),
+    ("Data is reaching air traffic controllers late.", "air traffic controllers"),
+    ("The airspace is unsafe until the feed recovers.", "unsafe"),
+    ("A collision risk cannot be excluded.", "collision")])
+def test_the_overreach_check_catches_claims_about_the_airspace(text, claim):
+    assert wa.overreach(text) == claim
+
+
+@pytest.mark.parametrize("text", [
+    "The Kafka controller is down and the broker has reconnected.",
+    "Network separation between the two feeds is intact.",
+    "A tactical fix to the parser is queued; the data feed is current.",
+    "KIAD data is stale; the rest of the feed is current."])
+def test_the_overreach_check_spares_benign_uses_of_the_same_words(text):
+    assert wa.overreach(text) is None
+
+
+def test_the_thresholds_are_settings_with_documented_defaults():
+    from src.config import settings
+
+    assert (wa.ALERT_MAX_AGE_HOURS, wa.DOWN_AFTER_MINUTES, wa.BACKLOG_LAG_SECONDS, wa.CLUSTER_GAP_MINUTES) == (
+        settings.WATCH_ALERT_MAX_AGE_HOURS, settings.WATCH_PIPELINE_DOWN_MINUTES,
+        settings.WATCH_BACKLOG_LAG_SECONDS, settings.WATCH_CLUSTER_GAP_MINUTES) == (6, 15, 300, 30)
