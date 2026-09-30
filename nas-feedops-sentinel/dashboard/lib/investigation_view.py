@@ -37,14 +37,14 @@ def load_investigation(action_id: str) -> Investigation | None:
 def _ids(evidence_ids: list[str]) -> str:
     if not evidence_ids:
         return ""
-    return (f'<span class="mono" style="font-size:10.5px;color:{theme.GRAY1};"> ⟵ '
+    return (f'<span class="mono" style="font-size:13px;color:{theme.GRAY1};"> ⟵ '
             + theme._esc(", ".join(evidence_ids)) + "</span>")
 
 
 def _line(text: str, evidence_ids: list[str], *, tone: str = "info") -> None:
     st.markdown(
         f'<div style="border-left:2px solid {theme.TONES[tone][1]};padding:2px 0 2px 10px;margin:4px 0;'
-        f'font-size:13px;color:{theme.LIGHT_GRAY5};">{theme._esc(text)}{_ids(evidence_ids)}</div>',
+        f'font-size:15px;color:{theme.LIGHT_GRAY5};">{theme._esc(text)}{_ids(evidence_ids)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -61,10 +61,10 @@ def render_investigation(inv: Investigation | None) -> None:
     st.markdown(
         '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:6px 0 2px 0;">'
         f'<span class="chip" style="color:{theme.BLUE5};border-color:{theme.TONES["info"][1]};'
-        'padding:2px 8px;font-size:10.5px;">INVESTIGATION</span>'
-        f'<span style="font-size:13.5px;color:{theme.LIGHT_GRAY5};">'
+        'padding:2px 8px;font-size:13px;">INVESTIGATION</span>'
+        f'<span style="font-size:15px;color:{theme.LIGHT_GRAY5};">'
         + theme._esc(brief.bottom_line if brief else "Investigation incomplete.") + "</span>"
-        f'<span class="mono" style="margin-left:auto;font-size:11px;color:{theme.GRAY1};">'
+        f'<span class="mono" style="margin-left:auto;font-size:13px;color:{theme.GRAY1};">'
         + theme._esc(f"{len(inv.evidence)} evidence · {len(challenges)} challenges · {method}") + "</span></div>",
         unsafe_allow_html=True,
     )
@@ -98,7 +98,7 @@ def render_investigation(inv: Investigation | None) -> None:
         st.markdown("**Specialist findings**")
         for f in inv.findings:
             st.markdown(
-                f'<div style="font-size:12.5px;color:{theme.GRAY3};margin:2px 0;">'
+                f'<div style="font-size:14px;color:{theme.GRAY3};margin:2px 0;">'
                 f'<b style="color:{theme.LIGHT_GRAY5};">{theme._esc(f.agent.replace("_", " ").title())}</b> '
                 f'— {theme._esc(f.question)} <span class="mono">{theme._esc(f.conclusion)}</span> '
                 f'({theme._esc(f.provenance.method)})</div>',
@@ -119,7 +119,7 @@ def render_investigation(inv: Investigation | None) -> None:
 
         verified = inv.verify()
         st.markdown(
-            f'<div class="mono" style="font-size:11px;color:{theme.GREEN5 if verified else theme.RED5};">'
+            f'<div class="mono" style="font-size:13px;color:{theme.GREEN5 if verified else theme.RED5};">'
             + theme._esc(f"record {inv.investigation_id} · sha256 {(inv.record_sha256 or '')[:16]}… · "
                          + ("integrity verified" if verified else "INTEGRITY CHECK FAILED"))
             + "</div>",
