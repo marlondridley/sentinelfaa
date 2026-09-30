@@ -263,6 +263,9 @@ services:
       # and nothing else, instead of a typed callsign anyone reaching the public address could use. Set to 0
       # only for a lab run with no Keycloak.
       REQUIRE_SIGN_IN: ${REQUIRE_SIGN_IN:-1}
+      # How long a sign-in lasts (at most the realm's 10 h). Roles are read at sign-in and not re-checked, so this
+      # is also the longest a removed role or a disabled account can keep acting.
+      SIGN_IN_MAX_SECONDS: ${SIGN_IN_MAX_SECONDS:-14400}
     volumes:
       - ./data:/app/data
       - dashboard-secrets:/vault/secrets:ro
