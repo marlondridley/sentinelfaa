@@ -31,6 +31,21 @@ async def _read_recent_activity() -> tuple[list[dict], list[dict], list[dict]]:
     )
 
 
+_DETERMINISTIC_PREFIX = "LLM planner unavailable; deterministic summary of stored records. "
+
+
+def _with_records(answer: str, surface: dict[str, Any]) -> str:
+    """
+    A model's answer, then the surface figures that name flights. Flight identifiers are redacted
+    before a prompt leaves this system, so the model can give the numbers but not say which flight;
+    the records can, and are appended here, locally.
+    """
+    if not surface_tools.has_figures(surface):
+        return answer
+    return (answer + "\n\nFrom the records (flight identifiers are withheld from the model and listed here): "
+            + " ".join(surface_tools.describe(surface)))
+
+
 class PlannerAgent:
     """Standalone Planner execution engine using LiteLLM and guardrail validation."""
 
@@ -118,7 +133,7 @@ class PlannerAgent:
 
         return PlannerResult(
             question=question,
-            answer=str(parsed["answer"]),
+            answer=_with_records(str(parsed["answer"]), surface),
             confidence=float(parsed["confidence"]),
             citations=list(parsed.get("citations") or []),
             recommended_actions=list(parsed["recommended_actions"]),
@@ -142,6 +157,27 @@ class PlannerAgent:
 
     def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:
         """
+        No model: the alert summary, and for a taxi-time question the surface figures ahead of it.
+
+        The figures are facts the records show, so they lead. The alert summary follows, so an
+        active incident never disappears behind a taxi answer.
+        """
+        summary = self._alert_summary(question, context)
+        surface = context.get("surface_metrics")
+        if not surface:
+            return summary
+        lines = " ".join(surface_tools.describe(surface))
+        if not surface_tools.has_figures(surface):                 # a note that nothing was fetched, or a refusal
+            return summary.model_copy(update={"answer": f"{summary.answer} {lines}"})
+        actions = (["Confirm the SWIM surface feed is current before relying on these figures."]
+                   if surface_tools.is_stale(surface) else [])
+        return summary.model_copy(update={
+            "answer": _DETERMINISTIC_PREFIX + lines + " Alerts: " + summary.answer.removeprefix(_DETERMINISTIC_PREFIX),
+            "recommended_actions": actions + [a for a in summary.recommended_actions if a not in actions],
+        })
+
+    def _alert_summary(self, question: str, context: dict[str, Any]) -> PlannerResult:
+        """
         Rule-based summary for when no LLM is configured.
 
         This is a deterministic control, not a model, so it states only what
@@ -157,24 +193,7 @@ class PlannerAgent:
         event_count = context.get("recent_events_count", 0)
         has_critical = any(a.get("severity") == "CRITICAL" for a in alerts)
         has_warnings = any(a.get("severity") in ("WARNING", "HIGH") for a in alerts)
-        prefix = "LLM planner unavailable; deterministic summary of stored records. "
-
-        # A taxi-time question is answered from the surface tools' figures, which are facts
-        # the records show, whatever the alerts are.
-        surface_metrics = context.get("surface_metrics")
-        if surface_metrics:
-            stale = any(r.get("freshness", {}).get("stale")
-                        for results in surface_metrics.values() if isinstance(results, list)
-                        for r in results if isinstance(r, dict) and "freshness" in r)
-            return PlannerResult(
-                question=question,
-                answer=prefix + " ".join(surface_tools.describe(surface_metrics)),
-                confidence=None,
-                recommended_actions=(
-                    ["Confirm the SWIM surface feed is current before relying on these figures."] if stale
-                    else ["Continue routine monitoring of surface movement."]),
-                sub_queries=[],
-            )
+        prefix = _DETERMINISTIC_PREFIX
 
         if not alerts:
             if event_count == 0:
