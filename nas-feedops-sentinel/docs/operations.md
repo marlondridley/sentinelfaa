@@ -39,6 +39,7 @@ as an empty directory, which then blocks the file from being written.
 | Grafana | https://localhost:8445 |
 | Temporal UI | https://localhost:8446 |
 | Prometheus (and its alerts) | https://localhost:8447/alerts |
+| Alertmanager (what was sent, silences) | https://localhost:8448 |
 | Keycloak admin (HTTPS, loopback) | https://localhost:8081/admin |
 
 Keycloak is the identity provider; Streamlit keeps the session. "Sign in
@@ -172,11 +173,30 @@ Rules are in `monitoring/alert-rules.yml`; each has a runbook in
 - agents falling back to rules;
 - model calls refused by policy;
 - an agent blocked from deciding or writing;
-- scrape targets down.
+- scrape targets down;
+- the alerting path itself: a heartbeat (`Watchdog`), Slack refusing
+  notifications, and Prometheus unable to reach Alertmanager.
 
-Prometheus evaluates them and shows them at https://localhost:8447/alerts.
-No Alertmanager is configured yet, so nothing pages anyone. Grafana's
-"Agents" row charts the GenAI and AGT metrics.
+Prometheus evaluates them and shows them at https://localhost:8447/alerts, and
+sends what fires to Alertmanager (`monitoring/alertmanager.yml`), which groups it
+and posts it to Slack: one message per alert, a critical one after 10 seconds and
+reminded hourly, the rest after 30 seconds and reminded every 4 hours, with a
+"resolved" message when it clears. Alertmanager's own page, with silences, is
+https://localhost:8448.
+
+The destination is one variable, `SLACK_WEBHOOK_URL`, in `instraclustr/.env` or
+`nas-feedops-sentinel/.env` (a Slack Incoming Webhook; both files are passed to the
+stack). It is written to memory when Alertmanager starts and is in no image or
+file. Like the other credentials of services outside the Vault plane it is in the
+container's environment, so `docker inspect` shows it; moving it into Vault is the
+same change as for Grafana's and Keycloak's. With the variable unset Alertmanager
+still runs and says so: alerts are held and shown, and nothing is sent. Setup,
+testing and what to do when Slack stops receiving are in `docs/runbooks.md`
+("Alerts are not reaching Slack"). `python .github/scripts/check_alerting.py`
+(run by CI) checks the rule and route files with `promtool` and `amtool` and
+delivers a test alert through a real Alertmanager to a stand-in for Slack.
+
+Grafana's "Agents" row charts the GenAI and AGT metrics.
 
 ## Agent governance, telemetry and evaluation
 

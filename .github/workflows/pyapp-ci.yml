@@ -7,6 +7,8 @@ name: Sentinel CI
 #                 coverage of src/ and dashboard/, with a floor for src/
 #   audit         pip-audit over the hash-locked runtime dependencies
 #   compose       both compose files render with the example env files
+#   alerting      promtool/amtool accept the rules and routes, and a real
+#                 Alertmanager delivers a test alert to a stand-in for Slack
 #   deploy-smoke  containers, not code: a fresh checkout brings Keycloak up
 #                 over TLS, and an md5 database upgrades to SCRAM behind
 #                 PgBouncer (.github/scripts/deploy-smoke.sh)
@@ -126,6 +128,19 @@ jobs:
           docker network create nas-network
           docker compose -f instraclustr/docker-compose.yml --env-file instraclustr/.env.example config -q
           docker compose -f nas-feedops-sentinel/docker-compose.yml --env-file nas-feedops-sentinel/.env.example config -q
+
+  alerting:
+    name: Alerting path (promtool, amtool, delivery)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The rules and routes are files only a real Prometheus and Alertmanager can judge. The script reads the
+    # pinned images and the start-up command from docker-compose.yml, checks both configs with promtool and
+    # amtool, routes sample alerts, and sends a critical one and the heartbeat through a real Alertmanager to
+    # a stand-in for Slack: the critical one must arrive, the heartbeat must not.
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml
+      - run: python3 .github/scripts/check_alerting.py
 
   deploy-smoke:
     name: Deployment smoke (fresh checkout; md5 to SCRAM upgrade)

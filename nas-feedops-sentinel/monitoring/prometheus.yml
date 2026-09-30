@@ -8,8 +8,15 @@ global:
 rule_files:
   - /etc/prometheus/alert-rules.yml
 
-# No Alertmanager is configured yet: rules evaluate and show under Alerts
-# (https://localhost:8447/alerts). Routing them to on-call is the next step.
+# What fires is sent to Alertmanager (monitoring/alertmanager.yml), which groups
+# it and posts it to Slack. Prometheus still shows it under Alerts
+# (https://localhost:8447/alerts); Alertmanager's own page, with silences, is
+# https://localhost:8448.
+alerting:
+  alertmanagers:
+    - scheme: http
+      static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
   # Live SWIM watcher + reconciler (src/main.py --watch).
@@ -31,6 +38,13 @@ scrape_configs:
     static_configs:
       - targets: ["api:8000"]
         labels: {service: api, tracon: PCT}
+
+  # Alertmanager: notification failures (AlertNotificationsFailing) and, through
+  # ScrapeTargetDown, Alertmanager itself going away.
+  - job_name: nas-alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels: {service: alertmanager, tracon: PCT}
 
   - job_name: prometheus
     static_configs:
