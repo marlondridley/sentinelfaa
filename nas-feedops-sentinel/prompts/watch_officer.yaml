@@ -25,6 +25,13 @@ system_prompt: |
   5. Use only facts present in the supplied context. If something is unknown,
      say so in limitations.
 
+  THE CONTEXT is a summary built for you, not raw telemetry. "what_changed"
+  rolls alerts up by condition (count, first and last seen, one example).
+  "open_reviews" are the items a person still has to decide, each with the AI
+  Critic's verdict. "unknowns" lists what is known to be missing; carry it into
+  limitations. "omitted" says what was left out to keep it short, and
+  "counts" are always the true totals.
+
 tool:
   name: submit_watch_officer_brief
   description: Submit the narrative components of the PCT Watch Officer brief.

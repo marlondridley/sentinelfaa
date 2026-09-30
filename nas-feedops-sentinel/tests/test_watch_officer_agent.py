@@ -243,3 +243,95 @@ async def test_malformed_llm_output_falls_back(monkeypatch):
 
     brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
     assert brief.llm_used is False
+
+
+# -- The prompt is bounded ------------------------------------------------------
+
+def _fat_context() -> dict:
+    """A big incident: every alert critical, many reviews open, long Critic reasoning."""
+    def alert(i: int) -> dict:
+        return {"alert_id": f"a{i}", "alert_type": "ALERT_LOW_RVR", "severity": "CRITICAL",
+                "airport_code": "KDCA", "service_name": "APDS_RVR",
+                "description": "Low RVR " + "x" * 600, "triggered_at": "2026-09-25T19:52:51+00:00"}
+
+    critical = [alert(i) for i in range(200)]
+    return {
+        "snapshot_time": "2026-09-29T00:00:00+00:00", "airport_status": {}, "per_airport": {},
+        "alerts": critical[:50], "critical_alerts": critical, "critical_alert_count": 200,
+        "pending_actions": [{"action_id": f"p{i}", "alert_id": f"a{i}", "rationale": "r" * 700,
+                             "recommended_action": "y" * 300} for i in range(60)],
+        "pending_actions_count": 60, "draft_tickets": [], "draft_tickets_count": 0,
+        "recent_critic_results": [{"alert_id": f"a{i}", "confidence": 0.8, "escalate": True, "pattern": "P",
+                                   "reasoning": "z" * 2500, "citations": ["c" * 200] * 5, "bluf": "b" * 100}
+                                  for i in range(10)],
+        "active_aircraft": 0, "events_in_window": 0,
+    }
+
+
+async def test_the_model_prompt_stays_under_the_policy_ceiling_however_big_the_incident(monkeypatch):
+    """The model-use policy refuses any prompt over 120,000 characters, and the brief then fell back unannounced."""
+    import json
+
+    import src.watch_officer_agent as wo
+
+    client = _Client(output=_NARRATIVE)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: client)
+    context = _fat_context()
+    assert len(json.dumps(context)) > 120_000, "the scenario must exceed the ceiling or this test measures nothing"
+
+    await wo._llm_narrative(context, wo._detect_signals(context))
+
+    [call] = client.calls
+    assert len(call["system_prompt"] + call["user_message"]) < 120_000
+    assert '"critical_alerts": 200' in call["user_message"], "the true count is still stated"
+    for section in ("what_changed", "open_reviews", "unknowns", "omitted"):
+        assert f'"{section}"' in call["user_message"], f"the projection answers with {section}"
+    assert context == _fat_context(), "the full context is untouched: the deterministic brief still sees everything"
+
+
+def test_two_hundred_readings_of_one_condition_are_one_line_with_a_count():
+    from src.watch_officer_projection import project_for_model
+
+    context = _fat_context()
+    projection = project_for_model(context, wo_signals(context))
+    [condition] = projection["what_changed"]["alert_conditions"]
+    assert condition["count"] == 200 and condition["severity"] == "CRITICAL"
+    assert condition["airport"] == "KDCA" and len(condition["example"]) <= 200
+
+
+def test_the_projection_says_what_it_does_not_know_and_what_it_left_out():
+    from src.watch_officer_projection import MAX_OPEN_REVIEWS, project_for_model
+
+    context = _fat_context()
+    context["recent_critic_results"] = context["recent_critic_results"][:1]      # one verdict, many reviews
+    context["failed_reconstruction_count"] = 4
+    signals = wo_signals(context)
+    signals["missing_airports"] = ["KIAD"]
+    projection = project_for_model(context, signals)
+
+    assert len(projection["open_reviews"]) == MAX_OPEN_REVIEWS
+    assert projection["omitted"]["open_reviews"] == 60 - MAX_OPEN_REVIEWS
+    text = " ".join(projection["unknowns"])
+    assert "No data has been received for KIAD" in text
+    assert "4 events could not be rebuilt" in text
+    assert "have no AI verdict" in text
+    assert "open reviews were left out" in text
+    assert projection["counts"]["open_reviews"] == 60, "the true total, not the shown ones"
+
+
+def test_an_open_review_carries_the_critics_verdict_on_it():
+    from src.watch_officer_projection import project_for_model
+
+    context = _fat_context()
+    context["pending_actions"] = context["pending_actions"][:1]                   # alert a0
+    context["recent_critic_results"] = [{"alert_id": "a0", "confidence": 0.85, "escalate": True,
+                                         "pattern": "ISOLATED_FAULT", "bluf": "Feed down at KDCA.", "reasoning": "long"}]
+    [review] = project_for_model(context, wo_signals(context))["open_reviews"]
+    assert review["ai_verdict"] == {"escalate": True, "confidence": 0.85, "pattern": "ISOLATED_FAULT",
+                                    "summary": "Feed down at KDCA."}
+
+
+def wo_signals(context: dict) -> dict:
+    import src.watch_officer_agent as wo
+
+    return wo._detect_signals(context)
