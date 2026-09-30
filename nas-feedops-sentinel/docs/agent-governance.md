@@ -182,8 +182,10 @@ and reliability figure is computed from evidence the agents do not control:
 A figure that cannot be computed honestly reads "no data".
 
 **Enforced in.**
-- `src/evaluation.py`: per-investigation measures and gates, and window
-  aggregates.
+- `src/evaluation.py`: per-investigation measures, loading, and the window
+  evaluation. The gates are in `src/evaluation_gates.py` (one function per
+  gate), the window metric groups in `src/evaluation_metrics.py`, and the
+  records and status names in `src/evaluation_types.py`.
 - `src/agt_metrics.py`: the AGT adapters. They build fresh AGT objects per
   window and read them only through paths shown to be correct.
 - `src/readiness.py`: the objectives in `policies/model-slos.yaml` and one
@@ -348,14 +350,14 @@ must not depend on an optional collector's retention.
 | Agents never decide or stage | `src/execution_gate.py` `guard_human_gate()` | `PolicyEvaluator` block/deny rules | `AgentBlockedFromDecidingOrWriting` alert |
 | Fail closed on a bad policy | `src/governance.py` `_load()` | hardens `PolicyDocument` (bugs K, L, M) | every call refused, `policy=None` in the record |
 | Governance audit trail | `src/governance.py` `_audit()` | `GovernanceAuditLogger` + `OTelLogsBackend` | `agt.audit.*` OTel log records |
-| Per-investigation cost and latency gates | `src/evaluation.py` | `BudgetTracker` | Cost and Latency gates; gate pass rates |
-| Decision quality | `src/evaluation.py`, `src/agt_metrics.py` | `EvaluationEngine` with Sentinel's evidence judge | decision quality, grounding and accuracy scores |
+| Per-investigation cost and latency gates | `src/evaluation_gates.py` | `BudgetTracker` | Cost and Latency gates; gate pass rates |
+| Decision quality | `src/evaluation_metrics.py`, `src/agt_metrics.py` | `EvaluationEngine` with Sentinel's evidence judge | decision quality, grounding and accuracy scores |
 | Unsupported claims (hallucination rate) | grounding gate in `src/investigation/specialists.py` | `HallucinationRate` via `collect()` | unsupported-claim rate |
-| Latency objectives | `src/evaluation.py` | `ResponseLatency` | P50/P95/P99 per agent, stage and investigation |
-| Cost accounting | `src/evaluation.py` | `CostGuard` | cost per invocation, investigation, alert and model |
-| Reliability | `src/evaluation.py` | `FleetManager`, `TaskSuccessRate` | success per agent and provider; completion |
-| Orchestration depth | `src/evaluation.py` | `DelegationChainDepth` | depth within limit |
-| Policy compliance | `src/evaluation.py` | `GovernanceMetrics` | policy-compliance objective |
+| Latency objectives | `src/evaluation_metrics.py` | `ResponseLatency` | P50/P95/P99 per agent, stage and investigation |
+| Cost accounting | `src/evaluation_metrics.py` | `CostGuard` | cost per invocation, investigation, alert and model |
+| Reliability | `src/evaluation_metrics.py` | `FleetManager`, `TaskSuccessRate` | success per agent and provider; completion |
+| Orchestration depth | `src/evaluation_metrics.py` | `DelegationChainDepth` | depth within limit |
+| Policy compliance | `src/evaluation_metrics.py` | `GovernanceMetrics` | policy-compliance objective |
 | Deployment readiness | `src/readiness.py` | none (`ErrorBudget` bugs A, B) | READY / AT RISK / NOT READY / INSUFFICIENT DATA; `--gate` exit code |
 | Human decision by a verified person | `src/execution_gate.py`, `src/auth.py`, Keycloak | none | Safety gate; `action_audit_log` actor with roles and verification |
 | Sealed, verifiable investigations | `src/investigation/record.py`, `investigations_repo.py` | none | Audit gate; integrity failure forces NOT READY |
@@ -377,7 +379,7 @@ must not depend on an optional collector's retention.
 | Decision-quality scoring | AGT `EvaluationEngine` | `EvidenceJudge`, "no data" and fail-closed guards | the judge must use independent evidence; bugs H, I, J |
 | Error budget and readiness verdict | none used (AGT `ErrorBudget`, `SLO` are wrong) | `src/readiness.py` (AGT-compatible) | bugs A, B |
 | Calibration | none used (AGT `CalibrationDeltaSLI` is wrong) | ECE in `src/agt_metrics.py` (AGT-compatible) | bug G |
-| Escalation, override, contradiction, handoff, retry-cost metrics | none | `src/evaluation.py` (Sentinel-specific) | AGT defines no such metric |
+| Escalation, override, contradiction, handoff, retry-cost metrics | none | `src/evaluation_metrics.py` (Sentinel-specific) | AGT defines no such metric |
 | Human approval | Keycloak (identity), Temporal (durable runs) | `src/execution_gate.py`, `src/auth.py` | AGT's `EscalationManager` is in-memory; decisions here must be durable and role-checked |
 | Model gateway | LiteLLM proxy | alias-only settings, scoped key | none |
 | Orchestration | Temporal for API runs | `src/investigation/workflow.py` | a fixed, deterministic order; no model decides the flow |
