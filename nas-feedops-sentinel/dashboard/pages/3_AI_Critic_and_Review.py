@@ -142,12 +142,12 @@ def _review_detail(action) -> None:
     st.markdown(
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">'
         + theme.status_chip(ticket.posture if ticket else "ACTION")
-        + '<span style="font-size:15px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+        + '<span style="font-size:17px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
         + theme._esc(ticket.title if ticket else f"{action.alert_type} at {action.airport_code or '—'}") + "</span>"
         + ('<span class="chip" style="color:' + theme.ORANGE5 + ";border-color:" + theme.TONES["warn"][1]
-           + ';padding:2px 8px;font-size:10.5px;">' + theme._esc(origin.upper()) + " DATA</span>"
+           + ';padding:2px 8px;font-size:13px;">' + theme._esc(origin.upper()) + " DATA</span>"
            if origin != "live" else "")
-        + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:' + theme.GRAY1 + ';">AI suggests '
+        + '<span class="mono" style="margin-left:auto;font-size:13px;color:' + theme.GRAY1 + ';">AI suggests '
         + theme._esc(_suggests(action).lower()) + (f" · {conf:.0%}" if conf is not None else "") + "</span></div>",
         unsafe_allow_html=True,
     )
@@ -183,7 +183,7 @@ def _review_detail(action) -> None:
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.BLUE5};'
         f'background:{theme.TONES["info"][2]};border-radius:3px;padding:7px 10px;margin:10px 0;'
-        f'font-size:11.5px;color:{theme.GRAY3};">This decision will be signed and attributed in the '
+        f'font-size:13px;color:{theme.GRAY3};">This decision will be signed and attributed in the '
         f'audit log as <b class="mono" style="color:{theme.BLUE5};">{theme._esc(format_actor(_principal))}</b></div>',
         unsafe_allow_html=True,
     )
@@ -342,23 +342,23 @@ else:
         with _latest_verdicts, st.container(border=True):
             st.markdown(
                 '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
-                '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+                '<span style="font-size:16px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
                 + theme._esc(alert_type) + "</span>"
-                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
+                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
                 + theme._esc(airport) + " · " + theme._esc(service) + "</span>"
                 '<span class="chip" style="color:' + theme.TONES[_ptone][0]
                 + ";border-color:" + theme.TONES[_ptone][1]
-                + ';padding:2px 8px;font-size:10.5px;">' + theme._esc(pattern) + "</span>"
-                '<span class="mono" style="font-size:11.5px;color:' + theme.GRAY1 + ';">'
+                + ';padding:2px 8px;font-size:13px;">' + theme._esc(pattern) + "</span>"
+                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
                 "confidence " + theme._esc(conf_str) + "</span>"
                 + (
                     '<span class="chip" style="color:' + theme.RED5
                     + ";border-color:" + theme.TONES["bad"][1]
                     + ";background:" + theme.TONES["bad"][2]
-                    + ';margin-left:auto;padding:2px 9px;font-size:10.5px;">'
+                    + ';margin-left:auto;padding:2px 9px;font-size:13px;">'
                     "ESCALATE TO SUPERVISOR</span>"
                     if escalate else
-                    '<span class="mono" style="margin-left:auto;font-size:11px;color:'
+                    '<span class="mono" style="margin-left:auto;font-size:13px;color:'
                     + theme.GRAY1 + ';">no escalation proposed</span>'
                 )
                 + "</div>",
@@ -393,8 +393,8 @@ if not _pending_actions:
     st.markdown(
         f'<div style="border:1px solid {theme.TONES["ok"][1]};border-left:3px solid '
         f'{theme.GREEN5};background:{theme.TONES["ok"][2]};border-radius:4px;padding:14px 16px;">'
-        f'<div style="color:{theme.GREEN5};font-size:14px;font-weight:700;">Queue empty</div>'
-        f'<div style="color:{theme.GRAY3};font-size:12.5px;margin-top:4px;">'
+        f'<div style="color:{theme.GREEN5};font-size:16px;font-weight:700;">Queue empty</div>'
+        f'<div style="color:{theme.GRAY3};font-size:14px;margin-top:4px;">'
         "All staged actions have been decided, or no CRITICAL alert has produced one."
         "</div></div>",
         unsafe_allow_html=True,

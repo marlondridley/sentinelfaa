@@ -264,7 +264,7 @@ with map_col:
                 "style": {
                     "backgroundColor": theme.DARK_GRAY2,
                     "color": theme.LIGHT_GRAY5,
-                    "fontSize": "12px",
+                    "fontSize": "14px",
                     "border": f"1px solid {theme.DARK_GRAY4}",
                     "borderRadius": "3px",
                 },
@@ -277,12 +277,12 @@ with map_col:
         f'<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;">'
         f'<span style="width:9px;height:9px;border-radius:50%;background:{hexcol};'
         f'display:inline-block;"></span>'
-        f'<span style="font-size:11px;color:{theme.GRAY3};">{name.title()}</span></span>'
+        f'<span style="font-size:13px;color:{theme.GRAY3};">{name.title()}</span></span>'
         for name, hexcol in _PHASE_HEX.items()
     )
     st.markdown(
         f'<div style="margin-top:6px;">{_legend}</div>'
-        f'<div style="font-size:11px;color:{theme.GRAY1};margin-top:6px;line-height:1.6;">'
+        f'<div style="font-size:13px;color:{theme.GRAY1};margin-top:6px;line-height:1.6;">'
         f"Rings are 10 NM from the field. Aircraft are drawn as points because TAIS "
         f"track records carry no heading &mdash; a directional symbol here would be "
         f"invented. Airport marker colour is feed status, not traffic."
@@ -392,7 +392,7 @@ else:
     )
     if focus_id:
         st.markdown(
-            f'<div style="font-size:12px;color:{theme.BLUE5};">'
+            f'<div style="font-size:14px;color:{theme.BLUE5};">'
             f"Highlighted on the map: <b>{theme._esc(focus_id)}</b></div>",
             unsafe_allow_html=True,
         )

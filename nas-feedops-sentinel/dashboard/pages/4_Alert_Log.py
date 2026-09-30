@@ -63,9 +63,9 @@ if not alerts_raw:
         f'<div style="border:1px solid {theme.TONES["ok"][1]};border-left:3px solid '
         f'{theme.GREEN5};background:{theme.TONES["ok"][2]};border-radius:4px;'
         f'padding:16px 18px;">'
-        f'<div style="color:{theme.GREEN5};font-size:16px;font-weight:700;">'
+        f'<div style="color:{theme.GREEN5};font-size:18px;font-weight:700;">'
         "No alerts in the log</div>"
-        f'<div style="color:{theme.GRAY3};font-size:12.5px;margin-top:5px;">'
+        f'<div style="color:{theme.GRAY3};font-size:14px;margin-top:5px;">'
         "Either the system is healthy or nothing has been ingested yet. Check "
         "messages ingested on the Overview page to tell the two apart."
         "</div></div>",
@@ -214,16 +214,16 @@ def _record_card(record: pd.Series) -> None:
         st.markdown(
             '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
             + theme.status_chip(_sev)
-            + '<span style="font-size:14px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+            + '<span style="font-size:16px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
             + theme._esc(record.get("alert_type")) + "</span>"
-            + '<span class="mono" style="margin-left:auto;font-size:11.5px;color:'
+            + '<span class="mono" style="margin-left:auto;font-size:13px;color:'
             + theme.GRAY1 + ';">'
             + theme._esc(
                 record["triggered_at"].strftime("%Y-%m-%d %H:%M:%S UTC")
                 if pd.notna(record.get("triggered_at")) else "no timestamp"
             )
             + "</span></div>"
-            '<div style="font-size:13.5px;color:' + theme.GRAY5
+            '<div style="font-size:15px;color:' + theme.GRAY5
             + ';margin-top:10px;line-height:1.55;">'
             + theme._esc(record.get("description")) + "</div>",
             unsafe_allow_html=True,
@@ -241,14 +241,14 @@ def _record_card(record: pd.Series) -> None:
         )
         d3.markdown(
             f'<div class="ev-title">Source event</div><div class="mono" '
-            f'style="color:{theme.GRAY5};font-size:11px;">'
+            f'style="color:{theme.GRAY5};font-size:13px;">'
             f'{theme._esc(record.get("event_id") or "—")}</div>',
             unsafe_allow_html=True,
         )
         if record.get("airport_code"):
             st.markdown(
                 f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
-                f'target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
+                f'target="_self" style="color:{theme.BLUE5};font-size:14px;'
                 f'text-decoration:none;font-weight:600;">'
                 f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>',
                 unsafe_allow_html=True,
@@ -299,7 +299,7 @@ if _focus:
         _record_card(view.iloc[0])
     _records("Drill-down: " + _describe(view), "Select a row to read the full description.")
     st.markdown(
-        f'<a href="{_link()}" target="_self" style="color:{theme.BLUE5};font-size:12.5px;'
+        f'<a href="{_link()}" target="_self" style="color:{theme.BLUE5};font-size:14px;'
         f'text-decoration:none;font-weight:600;">Close the drill-down &times;</a>',
         unsafe_allow_html=True,
     )
@@ -317,7 +317,7 @@ _SEV_SCALE = alt.Scale(
 with c_left:
     st.markdown(
         f'<div class="ev-title">Alerts over time</div>'
-        f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:4px;">'
+        f'<div style="font-size:13px;color:{theme.GRAY1};margin-bottom:4px;">'
         "Hourly buckets. A single tall bar is an incident; a flat band is a rule "
         "firing continuously, which usually means a threshold needs revisiting."
         "</div>",
@@ -353,7 +353,7 @@ with c_left:
 with c_right:
     st.markdown(
         f'<div class="ev-title">Which rules are firing</div>'
-        f'<div style="font-size:11.5px;color:{theme.GRAY1};margin-bottom:4px;">'
+        f'<div style="font-size:13px;color:{theme.GRAY1};margin-bottom:4px;">'
         "Alerts per rule in this view. One rule far ahead of the rest points at a single root cause."
         "</div>",
         unsafe_allow_html=True,
@@ -380,7 +380,7 @@ with c_right:
         color=alt.Color("severity:N", scale=_SEV_SCALE, legend=None),
         tooltip=["alert_type:N", "severity:N", alt.Tooltip("sum(count):Q", title="alerts")],
     )
-    counts = alt.Chart(totals).mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
+    counts = alt.Chart(totals).mark_text(align="left", dx=6, fontSize=15, fontWeight="bold",
                                          color=theme.LIGHT_GRAY5).encode(
         y=_y, x=alt.X("total:Q"), text=alt.Text("total:Q", format=","),
         tooltip=["alert_type:N", alt.Tooltip("total:Q", title="alerts", format=","),
