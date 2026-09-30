@@ -199,9 +199,13 @@ this is true.
    paste the URL into a chat, an issue or a commit: anyone who has it can post
    to the channel.
 4. Send a test alert through the real route:
-   `docker exec nas-alertmanager amtool --alertmanager.url=http://localhost:9093 alert add alertname=TestAlert severity=warning --annotation=summary="Test alert"`.
-   It arrives after about 30 seconds (10 seconds for `severity=critical`) and
-   resolves by itself after 5 minutes.
+   `docker exec nas-alertmanager amtool --alertmanager.url=http://localhost:9093 alert add alertname=TestAlert severity=warning --annotation=summary=TestAlert`.
+   It arrives after about 30 seconds (10 seconds for `severity=critical`), and
+   a "RESOLVED" message follows after 5 minutes. Keep annotation values free of
+   spaces: `amtool` warns about unquoted ones, and quoting differs between
+   PowerShell and sh. To check delivery without the channel, read
+   `alertmanager_notifications_total{integration="slack"}` (and the
+   `..._failed_total` series) from `docker exec nas-alertmanager wget -q -O - http://localhost:9093/metrics`.
 5. To mute a known noisy alert while you fix it, use Alertmanager's Silences
    (https://localhost:8448/#/silences), with an expiry.
 
