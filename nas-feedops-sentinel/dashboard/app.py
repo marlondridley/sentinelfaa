@@ -52,7 +52,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 
 import streamlit as st
 
-from lib import agent_eval, theme
+from lib import agent_eval, brief_view, theme
 from lib.data import (
     AIRPORTS,
     bucket_counts,
@@ -336,7 +336,7 @@ agent_eval.render_card(
 # ── Watch Officer brief ───────────────────────────────────────────────────────
 theme.section(
     "Watch Officer brief",
-    "What changed, why it matters, and what a human should review.",
+    "Can we trust our own data right now, and what should someone do next?",
     tone="info",
 )
 
@@ -362,57 +362,10 @@ if _wo_b2.button(
     run(storage.save_watch_officer_brief(_wo_latest))
     st.rerun()
 
+# The brief has one fixed shape (lib/brief_view.py): status, bottom line, at most three owned actions,
+# what to watch, and the detail behind one expander. The provenance is inside it, not decoration.
 with st.container(border=True):
-    # The provenance badge is not decoration. A brief drafted by a model and
-    # a brief produced by fixed rules carry different weight, and an operator
-    # deciding whether to escalate on the strength of one of them needs to
-    # know which they are reading without opening a menu.
-    _prov = "LLM-ASSISTED" if _wo_latest.llm_used else "DETERMINISTIC"
-    _prov_tone = "info" if _wo_latest.llm_used else "neutral"
-    st.markdown(
-        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
-        'margin-bottom:10px;">'
-        + theme.status_chip(_wo_latest.posture)
-        + '<span style="font-size:13px;color:' + theme.GRAY1 + ';">trust</span>'
-        + theme.status_chip(_wo_latest.trust_assessment, size="sm")
-        + '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
-        + f"confidence {_wo_latest.confidence:.0%}</span>"
-        + '<span class="chip" style="color:' + theme.TONES[_prov_tone][0]
-        + ";border-color:" + theme.TONES[_prov_tone][1]
-        + ';padding:1px 7px;font-size:13px;">' + _prov + "</span>"
-        + '<span class="mono" style="margin-left:auto;font-size:13px;color:'
-        + theme.GRAY1 + ';">' + _wo_latest.generated_at.strftime("%Y-%m-%d %H:%M:%S") + " UTC</span>"
-        "</div>"
-        '<div style="font-size:17px;font-weight:600;color:' + theme.LIGHT_GRAY5
-        + ';line-height:1.5;">' + theme._esc(_wo_latest.headline) + "</div>",
-        unsafe_allow_html=True,
-    )
-
-    _wc1, _wc2 = st.columns(2)
-    with _wc1:
-        theme.evidence_list("What changed", _wo_latest.what_changed)
-        theme.evidence_list("Recommended human review", _wo_latest.recommended_human_review, limit=5)
-    with _wc2:
-        theme.evidence_list("Why it matters", _wo_latest.why_it_matters, limit=5)
-        theme.evidence_list("Evidence", _wo_latest.evidence, limit=5)
-
-    if _wo_latest.affected_airports:
-        st.markdown(
-            '<div style="margin-top:10px;display:flex;gap:6px;align-items:center;'
-            'flex-wrap:wrap;"><span style="font-size:13px;letter-spacing:0.07em;'
-            'text-transform:uppercase;color:' + theme.GRAY1 + ';font-weight:700;">'
-            "Affected</span>"
-            + "".join(
-                '<a href="' + theme.drill_href("health", airport=a) + '" target="_self" '
-                'style="text-decoration:none;">' + theme.status_chip(a, size="sm") + "</a>"
-                for a in _wo_latest.affected_airports
-            )
-            + "</div>",
-            unsafe_allow_html=True,
-        )
-    if _wo_latest.limitations:
-        with st.expander("What this brief does not establish"):
-            theme.evidence_list("Limitations", _wo_latest.limitations, limit=10)
+    brief_view.render(_wo_latest)
 
 # ── AI Planner ────────────────────────────────────────────────────────────────
 theme.section("Ask the planner", "Questions the fixed panels above do not answer.", tone="info")

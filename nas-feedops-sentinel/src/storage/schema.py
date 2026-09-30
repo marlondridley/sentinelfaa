@@ -221,6 +221,11 @@ _MIGRATIONS: list[tuple[str, str]] = [
             SELECT alert_id, action_id, coalesce(created_at, now()) FROM staged_actions WHERE alert_id IS NOT NULL
             ON CONFLICT (alert_id) DO NOTHING;
     """),
+    # The Watch Officer brief's computed frame (status, bottom line, owned actions, data health,
+    # incidents): src/watch_officer_assessment.py. Null on briefs written before it existed.
+    ("2026_09_watch_officer_assessment", """
+        ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS assessment_json JSONB;
+    """),
 ]
 
 

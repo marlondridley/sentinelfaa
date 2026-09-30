@@ -212,6 +212,7 @@ async def test_llm_brief_uses_model_narrative_but_deterministic_posture(monkeypa
     client = _Client(output=_NARRATIVE)
     monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
     monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: client)
+    await _healthy_feed()
 
     context = await build_watch_officer_context()
     brief = await wo.agenerate_watch_officer_brief(context, use_llm=True)
@@ -222,15 +223,24 @@ async def test_llm_brief_uses_model_narrative_but_deterministic_posture(monkeypa
     expected = _deterministic_brief(context, _detect_signals(context))
     assert (brief.posture, brief.trust_assessment) == (expected.posture, expected.trust_assessment)
     assert client.calls and client.calls[0]["tool"]["name"] == "submit_watch_officer_brief"
+    assert '"assessment"' in client.calls[0]["user_message"], "the model is told what was settled by rules"
+
+
+async def _healthy_feed() -> None:
+    """Fresh events at three airports: the pipeline is up, so the model may be asked."""
+    await storage.save_events([_fresh_event(ap) for ap in ("KDCA", "KIAD", "KBWI")])
 
 
 async def test_llm_failure_falls_back_to_the_deterministic_brief(monkeypatch):
     import src.watch_officer_agent as wo
 
     monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
-    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(exc=RuntimeError("down")))
+    client = _Client(exc=RuntimeError("down"))
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: client)
+    await _healthy_feed()
 
     brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert client.calls, "the feed was healthy, so the model was asked and failed"
     assert brief.llm_used is False
     assert any("Deterministic" in item for item in brief.limitations)
 
@@ -240,9 +250,137 @@ async def test_malformed_llm_output_falls_back(monkeypatch):
 
     monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
     monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(output={"confidence": 9}))
+    await _healthy_feed()
 
     brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
     assert brief.llm_used is False
+
+
+# -- The frame: rules first, prose inside it ------------------------------------------
+
+async def test_no_model_is_asked_while_the_pipeline_is_down(monkeypatch):
+    """Rule 2: our own feed is checked first. Down means every alert is suspect, and a model would only cost a call."""
+    import src.watch_officer_agent as wo
+
+    client = _Client(output=_NARRATIVE)
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: client)
+    old = _now_minus(180)                                            # three hours of silence
+    await storage.save_events([NASEvent(airport_code=ap, tracon="PCT", service_name="ISMC", message_type="link_status",
+                                        event_time_utc=old, received_time_utc=old, feed_status="operational",
+                                        latency_ms=200.0, validation_status="PASSED") for ap in ("KDCA", "KIAD", "KBWI")])
+
+    brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+
+    assert client.calls == [], "the model was not asked"
+    assert brief.llm_used is False and brief.assessment.status == "RED"
+    assert brief.assessment.status_line == "DATA PICTURE: DOWN — our feed, not the airports"
+    assert any("No model was asked" in item for item in brief.limitations)
+    assert brief.headline == brief.assessment.bluf and "not the airports" in brief.headline
+
+
+async def test_a_narrative_that_reaches_for_the_airspace_is_discarded_whole(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    overreach = dict(_NARRATIVE, why_it_matters=["Stale tactical information is reaching controllers."])
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(output=overreach))
+    await _healthy_feed()
+
+    brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert brief.llm_used is False
+    assert "controller" not in " ".join([brief.headline, *brief.why_it_matters, *brief.what_changed]).lower()
+    assert any("claims something about tactical information" in item for item in brief.limitations)
+
+
+async def test_a_too_long_model_bottom_line_is_replaced_but_its_prose_is_kept(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    wordy = dict(_NARRATIVE, headline="The data feed is fine " + "and nothing is happening " * 12)
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(output=wordy))
+    await _healthy_feed()
+
+    brief = await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert brief.llm_used is True and brief.headline == brief.assessment.bluf
+    assert brief.what_changed == _NARRATIVE["what_changed"], "the prose around it is the model's"
+    assert any("longer than 40 words" in item for item in brief.limitations)
+    assert brief.recommended_human_review == wo._action_lines(brief.assessment), "actions are the rules', never the model's"
+
+
+async def test_the_assessment_is_stored_with_the_brief_and_an_older_brief_without_one_still_loads():
+    await _healthy_feed()
+    brief = await _brief_from_current_state()
+    assert brief.assessment is not None
+    await storage.save_watch_officer_brief(brief)
+    latest = await storage.get_latest_watch_officer_brief()
+    assert latest.assessment == brief.assessment
+
+    older = WatchOfficerBrief(headline="written before the frame existed")            # assessment=None
+    await storage.save_watch_officer_brief(older)
+    reloaded = await storage.get_latest_watch_officer_brief()
+    assert reloaded.headline == older.headline and reloaded.assessment is None
+
+
+async def test_lag_is_judged_on_what_arrived_recently_not_on_the_average_of_everything():
+    """A ten hour backlog replayed days ago must not leave a healthy live feed 'catching up' for ever."""
+    old_received = _now_minus(60 * 24 * 3)
+    await storage.save_events([NASEvent(
+        airport_code="KDCA", tracon="PCT", service_name="ISMC", message_type="link_status",
+        event_time_utc=old_received - timedelta(hours=10), received_time_utc=old_received,
+        feed_status="operational", latency_ms=36_000_000.0, validation_status="PASSED")])
+    await _healthy_feed()
+
+    context = await build_watch_officer_context()
+    assert (await storage.get_latency_stats())["avg_ms"] > 5_000, "the lifetime average is what used to be read"
+    assert context["avg_latency_ms"] is not None and context["avg_latency_ms"] < 5_000
+    import src.watch_officer_agent as wo
+
+    assert wo.rules.assess(context).data_health.state == "OK"
+
+
+async def test_with_nothing_received_recently_there_is_no_lag_to_report():
+    old = _now_minus(60 * 24)
+    await storage.save_events([NASEvent(
+        airport_code="KDCA", tracon="PCT", service_name="ISMC", message_type="link_status",
+        event_time_utc=old, received_time_utc=old, feed_status="operational", latency_ms=36_000_000.0,
+        validation_status="PASSED")])
+    assert (await build_watch_officer_context())["avg_latency_ms"] is None
+
+
+async def test_the_assessment_is_computed_once_per_brief(monkeypatch):
+    import src.watch_officer_agent as wo
+
+    calls = []
+    real = wo.rules.assess
+    monkeypatch.setattr(wo.rules, "assess", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    monkeypatch.setattr(wo.settings, "CRITIC_ENABLED", True)
+    monkeypatch.setattr(wo, "build_llm_client", lambda *a, **k: _Client(output=_NARRATIVE))
+    await _healthy_feed()
+
+    await wo.agenerate_watch_officer_brief(await build_watch_officer_context(), use_llm=True)
+    assert len(calls) == 1, "gate, prompt and guardrail share one"
+
+
+async def test_a_database_the_assessment_migration_has_not_reached_still_saves_and_loads_briefs():
+    """The app can be rebuilt without its migrate job; the Overview page must degrade, not fail on a missing column."""
+    from src.storage.pool import get_db_pool
+    from src.storage.repositories.briefs_repo import BriefsRepository
+
+    pool = await get_db_pool()
+    await pool.execute("ALTER TABLE watch_officer_briefs DROP COLUMN IF EXISTS assessment_json")
+    try:
+        await _healthy_feed()
+        brief = await _brief_from_current_state()
+        assert brief.assessment is not None
+        await storage.save_watch_officer_brief(brief)
+
+        latest = await storage.get_latest_watch_officer_brief()
+        assert latest.brief_id == brief.brief_id and latest.assessment is None, "saved and loaded in the older layout"
+        recent = await BriefsRepository(pool).get_recent(5)
+        assert [b.brief_id for b in recent] == [brief.brief_id]
+    finally:
+        await pool.execute("ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS assessment_json JSONB")
 
 
 # -- The prompt is bounded ------------------------------------------------------
