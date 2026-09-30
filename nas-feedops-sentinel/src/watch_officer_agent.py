@@ -21,6 +21,7 @@ from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import BriefAssessment, NASEvent, WatchOfficerBrief
 from src.prompts_loader import system_prompt, tool_schema
 from src.redaction import redact_structured
+from src.untrusted import fence_fields
 from src.watch_officer_projection import project_for_model
 
 _log = get_logger(__name__)
@@ -444,7 +445,7 @@ async def _llm_narrative(
 
     # A projection built for the four questions the brief answers, bounded by
     # construction (src/watch_officer_projection.py), not the raw snapshot.
-    payload = redact_structured(project_for_model(context, signals, assessment))
+    payload = fence_fields(redact_structured(project_for_model(context, signals, assessment)))
     raw = await client.acall_with_tool(
         system_prompt=system_prompt("watch_officer"),
         tool=tool_schema("watch_officer"),

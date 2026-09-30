@@ -17,6 +17,7 @@ from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
 from src.prompts_loader import system_prompt, tool_schema
+from src.untrusted import fence
 
 _router = ContextRouter()
 _log = get_logger(__name__)
@@ -28,7 +29,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
         lat = ""
         if "avg_latency_ms" in s:
             lat = f" | avg_lat={s['avg_latency_ms']}ms max_lat={s['max_latency_ms']}ms"
-        status = f" | feed_statuses={s['feed_statuses']}" if s["feed_statuses"] else ""
+        status = f" | feed_statuses={fence(s['feed_statuses'], 'feed_status', limit=200)}" if s["feed_statuses"] else ""
         ids = f" | sample_ids={s['sample_event_ids']}"
         svc_lines.append(f"  {svc:20s} count={s['count']}{lat}{status}{ids}")
 
@@ -48,7 +49,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
         f"Airport    : {alert.airport_code or 'N/A'}\n"
         f"Service    : {alert.service_name or 'N/A'}\n"
         f"Source evt : {alert.event_id or 'N/A'}\n"
-        f"Description: {alert.description}\n"
+        f"Description: {fence(alert.description, 'description')}\n"
         f"\n"
         f"EVIDENCE CONTEXT (last {context['window_minutes']} min at "
         f"{alert.airport_code or 'all airports'}, "
@@ -65,7 +66,7 @@ class CriticAgent:
     """Async engine wrapper for non-CrewAI direct agentic queries (Temporal / Pipeline)."""
 
     def __init__(self) -> None:
-        self._llm = build_llm_client() if settings.CRITIC_ENABLED else None
+        self._llm = build_llm_client(model=settings.CRITIC_MODEL) if settings.CRITIC_ENABLED else None
         self._guardrail = OutputGuardrail()
         self._prompt = system_prompt("critic")
         self._tool = tool_schema("critic")
