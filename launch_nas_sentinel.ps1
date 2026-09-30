@@ -284,6 +284,7 @@ Write-Host "  - API                : https://localhost:8444/health" -ForegroundC
 Write-Host "  - Grafana            : https://localhost:8445" -ForegroundColor Cyan
 Write-Host "  - Temporal UI        : https://localhost:8446" -ForegroundColor Cyan
 Write-Host "  - Prometheus (alerts): https://localhost:8447/alerts" -ForegroundColor Cyan
+Write-Host "  - Alertmanager       : https://localhost:8448" -ForegroundColor Cyan
 Write-Host "  - Keycloak admin     : https://localhost:8081/admin" -ForegroundColor DarkGray
 Write-Host "  - LiteLLM admin UI   : http://localhost:4000/ui" -ForegroundColor DarkGray
 Write-Host ""

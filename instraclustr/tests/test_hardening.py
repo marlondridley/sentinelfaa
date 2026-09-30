@@ -26,6 +26,8 @@ needs_app = pytest.mark.skipif(not (APP / "docker-compose.yml").is_file(),
 # and exits; it is not a long-running service and is named here so a new service has to be a deliberate choice.
 HARDENED = ("migrate", "temporal-worker", "api", "sentinel", "dashboard")
 NOT_HARDENED = {"edge-certs": "one-shot: writes the edge CA into ./tls as root, then exits"}
+# Not built from the application image, but they take the same hardened settings.
+HARDENED_OTHER_IMAGES = ("alertmanager",)
 
 
 def _services(compose: str) -> dict:
@@ -60,10 +62,21 @@ def test_every_service_built_from_the_application_image_is_hardened_or_named_as_
 
 
 @needs_app
-def test_the_hardened_settings_are_one_definition_not_five_copies():
+def test_the_hardened_settings_are_one_definition_not_a_copy_per_service():
     text = compose_text("app")
     assert text.count("x-hardened: &hardened") == 1
-    assert text.count("*hardened") == len(HARDENED)
+    assert text.count("*hardened") == len(HARDENED) + len(HARDENED_OTHER_IMAGES)
+
+
+@needs_app
+@pytest.mark.parametrize("name", HARDENED_OTHER_IMAGES)
+def test_a_service_from_another_image_that_shares_the_hardened_settings_has_them(name):
+    svc = _services("app")[name]
+
+    assert svc["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in svc["security_opt"]
+    assert svc["read_only"] is True
+    assert re.search(r"@sha256:[0-9a-f]{64}$", svc["image"]), "pinned by digest, not by a tag"
 
 
 @pytest.mark.parametrize("name", ["spire-server", "spire-agent"])
@@ -86,6 +99,14 @@ def test_the_spire_agent_keeps_only_what_the_docker_attestor_needs_and_is_read_o
     writable = [v for v in agent["volumes"] if not v.endswith(":ro")]
     assert {v.split(":")[1] for v in writable} == {"/opt/spire/data", "/tmp/spire-agent/public"}, \
         "the two volumes a read-only agent has to write to"
+
+
+def test_the_slack_webhook_is_a_documented_empty_variable_in_the_example_env():
+    lines = (INFRA / ".env.example").read_text(encoding="utf-8").splitlines()
+
+    assert "SLACK_WEBHOOK_URL=" in lines, "documented, with no value"
+    assert not any(line.startswith(("SLACK_CLIENT_SECRET", "SLACK_SIGNING_SECRET", "SLACK_VERIFICATION_TOKEN"))
+                   for line in lines), "a Slack app's other credentials are not used by anything here"
 
 
 # ── the ACL script ────────────────────────────────────────────────────────────

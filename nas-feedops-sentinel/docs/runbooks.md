@@ -1,8 +1,9 @@
 # Runbooks
 
 What to do when something needs attention:
-- one runbook per alert rule in `monitoring/alert-rules.yml`, which
-  Prometheus shows at https://localhost:8447/alerts;
+- one runbook per alert rule in `monitoring/alert-rules.yml` (a test holds it
+  to that), which Prometheus shows at https://localhost:8447/alerts and
+  Alertmanager posts to Slack, naming the runbook in each message;
 - then the recurring procedures.
 
 How people use the system is in `docs/playbook.md`. Deployment and
@@ -132,7 +133,77 @@ Prometheus cannot scrape a service. `docker ps` and the service's logs. The
 agent metrics (`gen_ai_*`, `agent_*`) are on the same `/metrics` endpoint, so
 they stop too.
 
+### SwimBacklogNearJanitorAge (warning)
+
+The oldest SWIM message waiting to be ingested is over 3 minutes old. The kit
+folder's janitors delete by age (default 5 minutes) whether or not a message
+was ingested, so after that it is gone.
+1. Is `nas-sentinel` running and keeping up?
+   `docker logs nas-sentinel --since 10m`. The watcher survives a failing scan
+   and backs off, so look for `swim_watch_scan_failures_total` rising.
+2. `nas_swim_folder_backlog_files` says how many are waiting. A backlog that
+   only grows means ingest is slower than the feed; check the database
+   (`docker logs nas-pgbouncer`).
+3. If it cannot be fixed in time, raise the janitor's age (see "The FAA SWIM
+   Jumpstart kit" in `docs/operations.md`) so nothing is dropped meanwhile.
+
+### SwimFilesDroppedUnprocessed (warning)
+
+The janitor deleted messages that were never ingested: the ingest fell behind
+its age. Those records are gone; the broker was already told they were handled.
+1. Work out when: `nas_swim_files_dropped_unprocessed_total` and the ingest log
+   on Ingest & Replay.
+2. Fix why ingest fell behind, as for `SwimBacklogNearJanitorAge`, and raise the
+   janitor's age if a backlog must be survivable.
+3. Tell the watch officer which window has a gap. Feed Health and the alert
+   log for that window are incomplete, not clear.
+
+### Watchdog (none)
+
+Not a fault. It fires all the time so you can tell the alerting path is alive:
+Alertmanager holds it and sends nothing.
+- Present in Alertmanager (https://localhost:8448) = Prometheus is evaluating
+  rules and handing them over.
+- Missing there = the alerting path is broken; see `AlertsNotReachingAlertmanager`
+  and "Alerts are not reaching Slack".
+
+### AlertNotificationsFailing (warning)
+
+Alertmanager has alerts to send and Slack is not accepting them. This one
+cannot reach Slack either: it shows at https://localhost:8447/alerts and in
+Alertmanager.
+- Go to "Alerts are not reaching Slack".
+
+### AlertsNotReachingAlertmanager (critical)
+
+Prometheus fired something and could not hand it over. Nothing is paged while
+this is true.
+1. `docker ps`: is `nas-alertmanager` up and healthy?
+2. `docker logs nas-prometheus --since 15m | grep -i alertmanager`
+3. `docker compose up -d alertmanager` starts it again. Silences and
+   notification state are in the `alertmanager-data` volume and survive.
+
 ## Procedures
+
+### Alerts are not reaching Slack
+
+1. Open Alertmanager (https://localhost:8448). Are alerts listed? If `Watchdog`
+   is not, see `AlertsNotReachingAlertmanager`.
+2. `docker logs nas-alertmanager --since 30m`. "SLACK_WEBHOOK_URL is not set"
+   at the top means no destination is configured. `Notify for alerts failed`
+   names the reason (a revoked webhook answers 403 or 404).
+3. Put the webhook URL in `instraclustr/.env` (or `nas-feedops-sentinel/.env`)
+   as `SLACK_WEBHOOK_URL=`. Create it in the Slack app: Incoming Webhooks,
+   activate, Add New Webhook to Workspace, pick the channel. Then
+   `docker compose up -d alertmanager` (the variable is read at start). Never
+   paste the URL into a chat, an issue or a commit: anyone who has it can post
+   to the channel.
+4. Send a test alert through the real route:
+   `docker exec nas-alertmanager amtool --alertmanager.url=http://localhost:9093 alert add alertname=TestAlert severity=warning --annotation=summary="Test alert"`.
+   It arrives after about 30 seconds (10 seconds for `severity=critical`) and
+   resolves by itself after 5 minutes.
+5. To mute a known noisy alert while you fix it, use Alertmanager's Silences
+   (https://localhost:8448/#/silences), with an expiry.
 
 ### Readiness says NOT READY or AT RISK
 

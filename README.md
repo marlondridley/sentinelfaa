@@ -138,6 +138,7 @@ Requires Windows with Docker Desktop and PowerShell. The live feed also needs Ja
 | https://localhost:8445 | Grafana |
 | https://localhost:8446 | Temporal UI |
 | https://localhost:8447/alerts | Prometheus and its alert rules |
+| https://localhost:8448 | Alertmanager: what was sent to Slack, and silences |
 | https://localhost:8081/admin | Keycloak admin (loopback only; Keycloak serves HTTPS only) |
 
 ---

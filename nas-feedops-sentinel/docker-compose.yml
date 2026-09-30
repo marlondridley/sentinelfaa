@@ -3,7 +3,7 @@
 # Runs on the external nas-network created by launch_nas_sentinel.ps1,
 # alongside the infrastructure stack in ../instraclustr (Postgres, PgBouncer,
 # Vault, LiteLLM). The `edge` nginx proxy is the way in: HTTPS on
-# 127.0.0.1:8443-8447 (docker/edge/nginx.conf). Service ports are not
+# 127.0.0.1:8443-8448 (docker/edge/nginx.conf). Service ports are not
 # published, except Keycloak, which serves HTTPS itself on
 # https://localhost:8081 (admin console) and https://keycloak:8443 (the
 # dashboard's sign-in, server to server). Nothing in the stack speaks plain
@@ -38,7 +38,7 @@ x-app-image: &app-image
     dockerfile: docker/Dockerfile
   image: nas-feedops-sentinel:latest
 
-# What the services built from that image run with: no Linux capabilities, no privilege escalation, a read-only
+# What the services built from that image (and the Alertmanager) run with: no Linux capabilities, no privilege escalation, a read-only
 # root filesystem (they write to the volumes they mount and to /tmp), and ceilings several times what each
 # uses (docker stats: 220-290 MiB, under 30 processes), so a runaway process cannot take the host with it.
 # Each command was run this way against a throwaway Postgres before this was turned on: the pool and
@@ -301,6 +301,44 @@ services:
     depends_on:
       - api
 
+  # Takes what Prometheus fires (monitoring/alert-rules.yml), groups it and posts
+  # it to Slack (monitoring/alertmanager.yml). SLACK_WEBHOOK_URL comes from the
+  # .env files, like the other credentials of the services outside the Vault
+  # plane; it is written to memory (/tmp is a tmpfs) for `api_url_file` to read,
+  # and is never in an image or a file on disk. With it unset the service still
+  # runs and says so: alerts are held and shown, nothing is sent.
+  # Reached only through the edge proxy (https://localhost:8448), which is
+  # unauthenticated and can silence alerts: loopback-only publication is its control.
+  alertmanager:
+    <<: *hardened
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    container_name: nas-alertmanager
+    restart: unless-stopped
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -n "$$SLACK_WEBHOOK_URL" ]; then
+          printf '%s' "$$SLACK_WEBHOOK_URL" > /tmp/slack_api_url
+        else
+          : > /tmp/slack_api_url
+          echo "SLACK_WEBHOOK_URL is not set: alerts are held and shown here, and nothing is sent to Slack" >&2
+        fi
+        exec /bin/alertmanager \
+          --config.file=/etc/alertmanager/alertmanager.yml \
+          --storage.path=/alertmanager \
+          --web.external-url=https://localhost:8448/ \
+          --cluster.listen-address=
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager     # silences and notification state survive a restart
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   grafana:
     image: grafana/grafana@sha256:3fd54ae1214669f8355f065ec9f6445d5279a3d77095ab048ca045685272429b
     container_name: nas-grafana
@@ -481,6 +519,7 @@ services:
       - "127.0.0.1:8445:8445"   # Grafana
       - "127.0.0.1:8446:8446"   # Temporal UI
       - "127.0.0.1:8447:8447"   # Prometheus
+      - "127.0.0.1:8448:8448"   # Alertmanager
     healthcheck:
       test: ["CMD-SHELL", "wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8444/health || exit 1"]
       interval: 15s
@@ -667,6 +706,7 @@ services:
 
 volumes:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
   temporal-postgres-data:
   keycloak-postgres-data:
