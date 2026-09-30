@@ -68,8 +68,14 @@ async def get_db_pool() -> asyncpg.Pool:
             # schema is owned and migrated by `python -m src.storage.migrate`,
             # and the application role has no DDL rights to run this with.
             if settings.RUN_MIGRATIONS_ON_CONNECT:
-                await init_schema(pool)
-                await run_migrations(pool)
+                try:
+                    await init_schema(pool)
+                    await run_migrations(pool)
+                except BaseException:
+                    # The pool was never stored, so nothing else can close it: every retry that failed here
+                    # left a pool of open connections behind.
+                    await pool.close()
+                    raise
             _POOLS[loop] = pool
     return pool
 
