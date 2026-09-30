@@ -61,21 +61,38 @@ if (-not (Test-Path $envFile)) {
 }
 
 # --- Load SWIM_* from .env -------------------------------------------------
-$settings = @{}
-foreach ($line in Get-Content $envFile) {
-    $trimmed = $line.Trim()
-    if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
-    $idx = $trimmed.IndexOf('=')
-    if ($idx -lt 1) { continue }
-    $key = $trimmed.Substring(0, $idx).Trim()
-    $val = $trimmed.Substring($idx + 1).Trim()
-    # Strip one layer of surrounding quotes if present.
-    if ($val.Length -ge 2 -and
-        (($val.StartsWith('"') -and $val.EndsWith('"')) -or
-         ($val.StartsWith("'") -and $val.EndsWith("'")))) {
-        $val = $val.Substring(1, $val.Length - 2)
+# The application's .env wins. A SWIM_* setting it lacks or leaves empty is
+# taken from instraclustr\.env, as the launcher does for the stack: a secret
+# may live in either file, and the kit needs no copy of it in the other.
+function Read-EnvFile([string]$Path) {
+    $found = @{}
+    foreach ($line in Get-Content $Path) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $idx = $trimmed.IndexOf('=')
+        if ($idx -lt 1) { continue }
+        $key = $trimmed.Substring(0, $idx).Trim()
+        $val = $trimmed.Substring($idx + 1).Trim()
+        # Strip one layer of surrounding quotes if present.
+        if ($val.Length -ge 2 -and
+            (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+             ($val.StartsWith("'") -and $val.EndsWith("'")))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        $found[$key] = $val
     }
-    $settings[$key] = $val
+    return $found
+}
+
+$settings = Read-EnvFile $envFile
+$infraEnvFile = Join-Path (Split-Path -Parent $repoRoot) 'instraclustr\.env'
+if (Test-Path $infraEnvFile) {
+    foreach ($entry in (Read-EnvFile $infraEnvFile).GetEnumerator()) {
+        if ($entry.Key.StartsWith('SWIM_') -and
+            (-not $settings.ContainsKey($entry.Key) -or $settings[$entry.Key] -eq '')) {
+            $settings[$entry.Key] = $entry.Value
+        }
+    }
 }
 
 $required = @(
