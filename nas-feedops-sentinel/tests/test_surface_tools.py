@@ -246,3 +246,53 @@ async def test_the_description_of_no_flights_does_not_read_as_a_zero_minute_taxi
         lines = surface_tools.describe(await surface_tools.gather("average taxi-out at BWI", as_of=AS_OF))
     assert lines and all("average taxi-out 0" not in line for line in lines)
     assert any("no taxi-out completed" in line for line in lines)
+
+
+# ── phrasings that used to be misrouted ───────────────────────────────────────
+
+def _tools(question: str) -> set[str]:
+    return {tool for tool, _ in surface_tools.route(question)}
+
+
+def test_still_taxiing_in_the_departure_queue_is_the_queue_not_a_taxi_in():
+    """The preposition matched 'taxiing in' and suppressed the queue tool."""
+    tools = _tools("Who is still taxiing in the departure queue at BWI?")
+    assert "read_departure_queue" in tools and "read_taxi_in_stats" not in tools
+    assert "read_taxi_in_stats" in _tools("What is the average taxi-in time at BWI?"), "a real taxi-in still is one"
+
+
+def test_an_aircraft_type_is_not_a_callsign():
+    """'CRJ700' and 'ATR72' have the shape of a callsign; they are types."""
+    tools = _tools("Which CRJ700 and ATR72 flights have departed from BWI?")
+    assert "read_flight_timeline" not in tools
+    assert "read_flight_timeline" in _tools("When did UAL1234 push back?"), "a real callsign still is one"
+
+
+def test_a_curly_apostrophe_is_read_like_a_straight_one():
+    assert _tools("Which flights haven’t taken off at IAD?") == _tools("Which flights haven't taken off at IAD?")
+    assert "read_departure_queue" in _tools("Which flights haven’t taken off at IAD?")
+
+
+async def test_a_question_about_departures_that_matches_no_tool_says_nothing_was_fetched():
+    """It used to return nothing at all, and the model answered as if it had consulted the surface data."""
+    results = await surface_tools.gather("Have any flights departed the area recently?")
+    assert "not_fetched" in results
+
+
+@pytest.mark.parametrize("question, minutes", [
+    ("average taxi-out at IAD over the last 1.5 hours", 90),
+    ("average taxi-out at IAD over the last 2 hours", 120),
+    ("average taxi-out at IAD over the last 45 minutes", 45),
+    ("average taxi-out at IAD over the last 2 days", surface_tools.MAX_WINDOW_MINUTES),   # capped, not 15
+    ("average taxi-out at IAD", surface_tools.DEFAULT_WINDOW_MINUTES)])
+def test_the_window_asked_for_is_the_window_used(question, minutes):
+    assert surface_tools._window_minutes(question) == minutes
+
+
+def test_an_absurdly_long_number_is_not_parsed():
+    """int() refuses more than 4,300 digits and raised out of the router."""
+    question = "average taxi-out at IAD over the last " + "9" * 5000 + " minutes"
+
+    assert surface_tools._window_minutes(question) == surface_tools.DEFAULT_WINDOW_MINUTES
+    assert "read_taxi_out_stats" in _tools(question)
+    assert "read_departure_queue" in _tools("queue at BWI longer than " + "9" * 5000 + " min")

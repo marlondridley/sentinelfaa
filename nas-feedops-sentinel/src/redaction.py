@@ -57,7 +57,22 @@ SENSITIVE_FIELDS: frozenset[str] = frozenset({
     "lon",
     "altitude",
     "raw_payload",
+    # The feeds' own names for the same things, and other ways to say "this flight": a flight id, a plan's
+    # acid or gufi, a registration. Compared without regard to case, so aircraftId and AIRCRAFT_ID are one.
+    "flight_id",
+    "flightid",
+    "acid",
+    "gufi",
+    "tail_number",
+    "registration",
+    "aircraftid",
+    "acaddress",
+    "beaconcode",
+    "reportedbeaconcode",
+    "assignedbeaconcode",
+    "tracknum",
 })
+_SENSITIVE_LOWER = frozenset(f.lower() for f in SENSITIVE_FIELDS)
 
 
 def redact_structured(obj: Any) -> Any:
@@ -67,7 +82,7 @@ def redact_structured(obj: Any) -> Any:
     unchanged. Safe to call on arbitrarily nested structures.
     """
     if isinstance(obj, dict):
-        return {k: redact_structured(v) for k, v in obj.items() if k not in SENSITIVE_FIELDS}
+        return {k: redact_structured(v) for k, v in obj.items() if str(k).lower() not in _SENSITIVE_LOWER}
     if isinstance(obj, list):
         return [redact_structured(item) for item in obj]
     return obj
@@ -79,9 +94,31 @@ def redact_structured(obj: Any) -> Any:
 # an *already-serialized* prompt string, where redact_structured() can no
 # longer help because the dict has already become text by the time
 # critic_agent.py / planner_agent.py hand it to the LLM client.
+#
+# The value is a quoted string (escaped quotes inside it included, so a JSON document carried as a string
+# value, as raw_payload is, is taken whole rather than cut at its first inner quote), or a bare token up to
+# the next space or separator: `aircraft_id: AAL123` and `callsign=UAL1234` are not quoted by a person
+# writing a sentence, and used to pass through.
 _FIELD_VALUE_RE = re.compile(
     r'(?P<prefix>["\']?(?:' + "|".join(re.escape(f) for f in sorted(SENSITIVE_FIELDS)) + r')["\']?\s*[:=]\s*)'
-    r'(?P<value>"[^"]*"|\'[^\']*\'|-?\d+(?:\.\d+)?)',
+    r'(?P<value>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,;}\])"\']+)',
+    re.IGNORECASE,
+)
+
+# The same fields as XML elements: <aircraftId>AAL123</aircraftId>.
+_XML_FIELD_RE = re.compile(
+    r"<(?P<tag>" + "|".join(re.escape(f) for f in sorted(SENSITIVE_FIELDS)) + r")(?P<attrs>\s[^>]*)?>"
+    r"(?P<value>[^<]*)</(?P=tag)>",
+    re.IGNORECASE,
+)
+
+# A flight's callsign: three letters and one to four digits, and possibly a letter (AAL123, UAL1234, RPA4451A),
+# in any case. Not the codes that look like one but are not a flight: runway, RVR, ILS and the like, and the
+# aircraft types written the same way (CRJ700, ATR72). A hyphen counts as part of the word, so a segment of a
+# UUID (abc1-...) that happens to have the same shape is left alone: those are the ids a prompt must cite.
+_CALLSIGN_RE = re.compile(
+    r"(?<![\w-])(?!(?:RWY|RVR|ILS|UTC|GMT|VOR|SID|MSL|AGL|TWY|FAA|CRJ|ATR|EMB|DHC|BAE)\d)"
+    r"[A-Za-z]{3}\d{1,4}[A-Za-z]?(?![\w-])",
     re.IGNORECASE,
 )
 
@@ -89,7 +126,7 @@ _FIELD_VALUE_RE = re.compile(
 # digits and up to 2 trailing letters. Catches a tail number mentioned in
 # narrative text even when it isn't attached to a recognized field name
 # (e.g. "...aircraft N12345 diverted to...").
-_TAIL_NUMBER_RE = re.compile(r"\bN[0-9]{1,5}[A-Z]{0,2}\b")
+_TAIL_NUMBER_RE = re.compile(r"\bN[0-9]{1,5}[A-Z]{0,2}\b", re.IGNORECASE)
 
 # A bare "lat,lon"-shaped decimal coordinate pair in narrative text, for
 # the case where it isn't attached to a "latitude"/"longitude" key that
@@ -174,7 +211,14 @@ def redact_text(text: str) -> str:
     if not text:
         return text
     text = _FIELD_VALUE_RE.sub(lambda m: f"{m.group('prefix')}\"{REDACTED}\"", text)
+    text = _XML_FIELD_RE.sub(lambda m: f"<{m.group('tag')}{m.group('attrs') or ''}>{REDACTED}</{m.group('tag')}>", text)
     text = _redact_input_values(text)
     text = _TAIL_NUMBER_RE.sub(REDACTED, text)
+    text = _CALLSIGN_RE.sub(REDACTED, text)
     text = _COORD_PAIR_RE.sub(REDACTED, text)
     return text
+
+
+def is_redacted(text: str) -> bool:
+    """True when redact_text() would change nothing: there is nothing left in `text` that it removes."""
+    return redact_text(text) == text
