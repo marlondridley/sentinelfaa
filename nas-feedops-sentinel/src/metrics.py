@@ -132,6 +132,16 @@ RECONCILED_ALERTS = Counter(
     ["outcome"],  # staged_pending | recorded_expired
 )
 
+RETENTION_PRUNED = Counter(
+    "nas_retention_pruned_total",
+    "Items the retention pass aged out.",
+    ["kind"],  # processed_files | failed_files | live_events
+)
+SWIM_WATCH_SCAN_FAILURES = Counter(
+    "nas_swim_watch_scan_failures_total",
+    "Watcher scans that raised (a database error, say); the watcher backs off and keeps running.",
+)
+
 AIRPORT_OVERALL_STATUS = Gauge(
     "nas_airport_overall_status",
     "Worst-wins feed status per airport (0=OK, 1=STALE, 2=DEGRADED, 3=UNAVAILABLE, 4=DISCONNECTED).",
@@ -143,8 +153,24 @@ _STATUS_LEVEL = {
 }
 
 
+_airport_level: dict[str, int] = {}
+
+
 def set_airport_status(airport: str, status: str) -> None:
-    AIRPORT_OVERALL_STATUS.labels(airport=airport).set(_STATUS_LEVEL.get(status, 0))
+    level = _STATUS_LEVEL.get(status, 0)
+    _airport_level[airport] = level
+    AIRPORT_OVERALL_STATUS.labels(airport=airport).set(level)
+
+
+def raise_airport_status(airport: str, status: str) -> None:
+    """
+    Raise an airport's status, never lower it. The pipeline sets the gauge only when a batch has that
+    airport in it, so an airport that goes silent would show its last status forever; the reconciler,
+    which has the clock, calls this for a feed that has gone quiet.
+    """
+    level = max(_airport_level.get(airport, 0), _STATUS_LEVEL.get(status, 0))
+    _airport_level[airport] = level
+    AIRPORT_OVERALL_STATUS.labels(airport=airport).set(level)
 
 
 # ── /metrics HTTP server ──────────────────────────────────────────────────────

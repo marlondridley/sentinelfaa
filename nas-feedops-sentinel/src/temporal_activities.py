@@ -11,7 +11,7 @@ from src import config
 from src.logging_config import bind_correlation_id, get_logger
 from src.models import NASEvent
 from src.pipeline import run_pipeline
-from src.swim_file_ingest import commit_scan, scan_swim_folder
+from src.swim_file_ingest import commit_scan, run_retention, scan_swim_folder
 
 _log = get_logger(__name__)
 
@@ -55,6 +55,7 @@ async def ingest_folder_activity(
     events, stats = await asyncio.to_thread(scan_swim_folder, source, defer_archive=True)
     summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
     await asyncio.to_thread(commit_scan, stats)
+    await asyncio.to_thread(run_retention)      # rate-limited; a thread, because it reaches storage through the bridge
     _log.info(
         "ingest_folder_complete",
         extra={"stats": stats.as_dict(), "pipeline": summary},

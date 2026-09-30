@@ -61,3 +61,39 @@ def test_replay_with_nothing_anywhere_does_not_run_the_pipeline(monkeypatch, run
     monkeypatch.setattr(main, "replay_from_directory", lambda path: ([], []))
 
     assert run_replay() == []
+
+
+def test_a_single_shot_replay_stores_what_it_reads_as_a_replay(monkeypatch, run_replay):
+    """Stored as "live" it refreshed each feed's last-seen time and could hide a feed that had gone quiet."""
+    seen: dict = {}
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: seen.update(kw) or ([], IngestStats()))
+    monkeypatch.setattr(main, "replay_from_directory", lambda path: ([], []))
+
+    run_replay()
+
+    assert seen["data_origin"] == "replay"
+
+
+def test_the_scan_is_committed_even_when_it_found_no_events(monkeypatch, run_replay):
+    """Messages that parsed to nothing are finished; left claimed they were never logged."""
+    committed: list = []
+    stats = IngestStats()
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: ([], stats))
+    monkeypatch.setattr(main, "replay_from_directory", lambda path: ([], []))
+    monkeypatch.setattr(main, "commit_scan", committed.append)
+
+    run_replay()
+
+    assert committed == [stats]
+
+
+def test_the_scan_is_committed_after_the_pipeline_has_stored_the_events(monkeypatch, run_replay):
+    order: list[str] = []
+    events = generate_cascade_failure_scenario()
+    monkeypatch.setattr(main, "scan_swim_folder", lambda path, **kw: (events, IngestStats()))
+    monkeypatch.setattr(main, "_run_pipeline", lambda evs, label="": order.append("pipeline"))
+    monkeypatch.setattr(main, "commit_scan", lambda stats: order.append("commit"))
+
+    run_replay()
+
+    assert order == ["pipeline", "commit"]

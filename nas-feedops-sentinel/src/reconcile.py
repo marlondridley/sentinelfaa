@@ -31,7 +31,9 @@ from src.alert_engine import stale_feed_alerts
 from src.config import settings
 from src.execution_gate import _idempotency_key, stage_critical_alert
 from src.logging_config import get_logger
-from src.metrics import CRITICAL_ALERTS_UNSTAGED, HITL_OLDEST_PENDING_SECONDS, HITL_QUEUE_DEPTH, RECONCILED_ALERTS
+from src.metrics import (
+    CRITICAL_ALERTS_UNSTAGED, HITL_OLDEST_PENDING_SECONDS, HITL_QUEUE_DEPTH, RECONCILED_ALERTS, raise_airport_status,
+)
 from src.models import AlertEvent, StagedAction
 
 _log = get_logger(__name__)
@@ -60,6 +62,11 @@ async def reconcile_unstaged(*, limit: int = 1000) -> dict[str, int]:
         await storage.get_last_seen_by_feed(now - timedelta(seconds=settings.STALE_FEED_LOOKBACK_SECONDS)), now)
     if stale:
         await storage.save_alerts(stale)
+        # The pipeline sets an airport's gauge only when a batch has that airport in it; an airport that has
+        # gone quiet would keep its last status. This job has the clock.
+        for alert in stale:
+            if alert.airport_code:
+                raise_airport_status(alert.airport_code, "STALE")
 
     for row in await pool.fetch(_UNSTAGED_SQL, limit):
         alert = AlertEvent(**dict(row))

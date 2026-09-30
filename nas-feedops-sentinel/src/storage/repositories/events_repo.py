@@ -22,12 +22,7 @@ def _critic_window(window_minutes: int, as_of: datetime | None) -> tuple[datetim
     return as_of - timedelta(minutes=window_minutes), as_of + timedelta(minutes=1)
 
 
-class EventsRepository:
-    def __init__(self, pool: asyncpg.Pool):
-        self._pool = pool
-
-    async def save_event(self, event: NASEvent) -> None:
-        query = """
+_UPSERT_EVENT_SQL = """
             INSERT INTO nas_events (
                 event_id, airport_code, tracon, service_name, message_type,
                 event_time_utc, received_time_utc, latency_ms, runway,
@@ -73,48 +68,91 @@ class EventsRepository:
                 status_code = EXCLUDED.status_code,
                 data_origin = EXCLUDED.data_origin;
         """
-        await self._pool.execute(
-            query,
-            event.event_id, event.airport_code, event.tracon, event.service_name, event.message_type,
-            event.event_time_utc, event.received_time_utc, event.latency_ms, event.runway,
-            event.rvr_touchdown, event.rvr_midpoint, event.rvr_rollout, event.track_id,
-            event.aircraft_id, event.vehicle_id, event.surface_event_type,
-            event.lat, event.lon, event.altitude_ft, event.ground_speed_kt, event.vertical_speed_fpm,
-            event.flight_phase, event.flight_rules, event.beacon_code,
-            event.feed_status, event.validation_status, json.dumps(event.validation_errors), event.raw_message_path,
-            event.status_code, event.data_origin,
-        )
+
+
+def _event_args(event: NASEvent) -> tuple:
+    return (
+        event.event_id, event.airport_code, event.tracon, event.service_name, event.message_type,
+        event.event_time_utc, event.received_time_utc, event.latency_ms, event.runway,
+        event.rvr_touchdown, event.rvr_midpoint, event.rvr_rollout, event.track_id,
+        event.aircraft_id, event.vehicle_id, event.surface_event_type,
+        event.lat, event.lon, event.altitude_ft, event.ground_speed_kt, event.vertical_speed_fpm,
+        event.flight_phase, event.flight_rules, event.beacon_code,
+        event.feed_status, event.validation_status, json.dumps(event.validation_errors), event.raw_message_path,
+        event.status_code, event.data_origin,
+    )
+
+
+_UPSERT_ALERT_SQL = """
+    INSERT INTO alert_events (
+        alert_id, alert_type, severity, airport_code, service_name,
+        description, triggered_at, event_id, data_origin
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (alert_id) DO UPDATE SET
+        alert_type = EXCLUDED.alert_type,
+        severity = EXCLUDED.severity,
+        airport_code = EXCLUDED.airport_code,
+        service_name = EXCLUDED.service_name,
+        description = EXCLUDED.description,
+        triggered_at = EXCLUDED.triggered_at,
+        event_id = EXCLUDED.event_id,
+        data_origin = EXCLUDED.data_origin;
+"""
+
+
+def _alert_args(alert: AlertEvent) -> tuple:
+    return (
+        alert.alert_id, alert.alert_type, alert.severity, alert.airport_code,
+        alert.service_name, alert.description, alert.triggered_at, alert.event_id,
+        alert.data_origin,
+    )
+
+
+class EventsRepository:
+    def __init__(self, pool: asyncpg.Pool):
+        self._pool = pool
+
+    async def save_event(self, event: NASEvent) -> None:
+        await self._pool.execute(_UPSERT_EVENT_SQL, *_event_args(event))
 
     async def save_alert(self, alert: AlertEvent) -> None:
-        query = """
-            INSERT INTO alert_events (
-                alert_id, alert_type, severity, airport_code, service_name,
-                description, triggered_at, event_id, data_origin
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (alert_id) DO UPDATE SET
-                alert_type = EXCLUDED.alert_type,
-                severity = EXCLUDED.severity,
-                airport_code = EXCLUDED.airport_code,
-                service_name = EXCLUDED.service_name,
-                description = EXCLUDED.description,
-                triggered_at = EXCLUDED.triggered_at,
-                event_id = EXCLUDED.event_id,
-                data_origin = EXCLUDED.data_origin;
-        """
-        await self._pool.execute(
-            query,
-            alert.alert_id, alert.alert_type, alert.severity, alert.airport_code,
-            alert.service_name, alert.description, alert.triggered_at, alert.event_id,
-            alert.data_origin,
-        )
+        await self._pool.execute(_UPSERT_ALERT_SQL, *_alert_args(alert))
 
     async def save_events(self, events: list[NASEvent]) -> None:
-        for event in events:
-            await self.save_event(event)
+        """
+        Upsert a batch in one transaction and one round trip's worth of statements, not one autocommit round
+        trip per event: a pass of 500 files is thousands of events, and at one round trip each the writer
+        could not keep up with the feed. All or nothing, which the upsert makes safe to retry.
+        """
+        if not events:
+            return
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.executemany(_UPSERT_EVENT_SQL, [_event_args(e) for e in events])
 
     async def save_alerts(self, alerts: list[AlertEvent]) -> None:
-        for alert in alerts:
-            await self.save_alert(alert)
+        if not alerts:
+            return
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.executemany(_UPSERT_ALERT_SQL, [_alert_args(a) for a in alerts])
+
+    async def prune_live_events(self, before: datetime, limit: int) -> int:
+        """
+        Delete up to `limit` live events received before `before`; returns how many went.
+
+        Only live ones (replay, API and synthetic events were put there by an operator), and never one that an
+        alert or a staged review points at: those are the evidence for a decision. The foreign keys from both
+        are ON DELETE SET NULL, so skipping them also means nothing here rewrites a reviewed row.
+        """
+        status = await self._pool.execute(
+            """DELETE FROM nas_events WHERE event_id IN (
+                   SELECT e.event_id FROM nas_events e
+                   WHERE e.data_origin = 'live' AND e.received_time_utc < $1
+                     AND NOT EXISTS (SELECT 1 FROM alert_events a WHERE a.event_id = e.event_id)
+                     AND NOT EXISTS (SELECT 1 FROM staged_actions s WHERE s.event_id = e.event_id)
+                   LIMIT $2)""",
+            before, limit,
+        )
+        return int(status.rsplit(" ", 1)[-1])
 
     async def get_recent_events(self, limit: int = 500, *, data_origin: str | None = None) -> list[dict]:
         """The newest events, of every origin or only of `data_origin`."""

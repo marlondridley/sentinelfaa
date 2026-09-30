@@ -121,6 +121,20 @@ class Settings(BaseSettings):
     SWIM_WATCH_POLLING: bool = False
     SWIM_WATCH_POLL_SECONDS: float = 2.0
 
+    # ── Retention (src/retention.py) ────────────────────────────────────────
+    # The feed never stops (~20 files a second), so what it leaves behind has to age out or the disk fills and
+    # the Kit halts. Archived messages live a few hours: the parsed events are in the database, and the file is
+    # only for looking at what arrived. Rejected ones live longer, because they are what you read to write the
+    # next extractor. Live events age out of nas_events after LIVE_EVENT_RETENTION_DAYS, except those an alert
+    # or a review points at. Replay, API and synthetic events are never aged out: an operator put them there.
+    # 0 turns a rule off.
+    PROCESSED_RETENTION_HOURS: int = 6
+    FAILED_RETENTION_DAYS: int = 7
+    LIVE_EVENT_RETENTION_DAYS: int = 7
+    RETENTION_INTERVAL_MINUTES: int = 5
+    # One pass stops after this long, so a large backlog is worked off over several passes, not one stall.
+    RETENTION_BUDGET_SECONDS: float = 20.0
+
     # ── Database / PgBouncer ────────────────────────────────────────────────
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 6432
