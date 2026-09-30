@@ -89,6 +89,21 @@ LLM_CALLS = Counter(
     ["agent", "outcome"],  # outcome: success | error | disabled | guardrail_rejected
 )
 
+LLM_CIRCUIT_STATE = Gauge(
+    "nas_llm_circuit_state",
+    "Circuit breaker per model alias: 0 closed, 1 half-open (probing), 2 open (calls refused).",
+    ["model"],
+)
+LLM_CIRCUIT_OPENED = Counter(
+    "nas_llm_circuit_opened_total",
+    "Times a model alias's circuit breaker opened after consecutive gateway failures.",
+    ["model"],
+)
+LLM_BUDGET_REFUSALS = Counter(
+    "nas_llm_budget_refusals_total",
+    "Model calls refused because the pipeline pass's token budget was spent.",
+)
+
 
 # Agent metrics are computed by the Agent Governance Toolkit and carried by
 # OpenTelemetry (src/telemetry.py): gen_ai.client.operation.duration and

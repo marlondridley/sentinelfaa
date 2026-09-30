@@ -12,7 +12,9 @@ from src.config import settings
 from src.context_router import ContextRouter
 from src.execution_gate import _strict_bool
 from src.guardrails import OutputGuardrail
-from src.llm_client import build_llm_client
+from src.config import proxy_model
+from src.llm_client import LLMBudgetExceeded, LLMCircuitOpen, build_llm_client
+from src.llm_guard import circuit_is_open
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
@@ -86,6 +88,15 @@ class CriticAgent:
             )
             return CriticResult(alert_id=alert.alert_id, reasoning=reason)
 
+        if circuit_is_open(proxy_model(settings.CRITIC_MODEL)):
+            # The gateway has failed repeatedly (src/llm_guard.py): say so now instead of reading the
+            # database and paying a timeout per alert. The alert is still staged; only the advisory is missing.
+            LLM_CALLS.labels(agent="critic", outcome="circuit_open").inc()
+            return CriticResult(
+                alert_id=alert.alert_id,
+                reasoning="Critic unavailable: the model circuit is open after repeated gateway failures.",
+            )
+
         start = time.perf_counter()
         try:
             context = await agent_tools.invoke("read_alert_context", _router.build_alert_context, alert.airport_code, as_of=alert.triggered_at)
@@ -136,6 +147,11 @@ class CriticAgent:
                 },
             )
             return result
+        except (LLMCircuitOpen, LLMBudgetExceeded) as exc:
+            # Refused before it was sent (src/llm_guard.py): the model was not asked, and nothing is wrong with it.
+            outcome = "circuit_open" if isinstance(exc, LLMCircuitOpen) else "budget_exhausted"
+            LLM_CALLS.labels(agent="critic", outcome=outcome).inc()
+            return CriticResult(alert_id=alert.alert_id, reasoning=f"Critic unavailable: {exc}")
         except Exception as exc:  # noqa: BLE001
             LLM_CALLS.labels(agent="critic", outcome="error").inc()
             _log.error(

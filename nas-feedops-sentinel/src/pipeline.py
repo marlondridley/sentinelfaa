@@ -10,6 +10,7 @@ from src.critic_agent import CriticAgent
 from src.execution_gate import condition_key, stage_critical_alert
 from src.feed_health import compute_feed_health
 from src.investigation import investigate_staged
+from src.llm_guard import pass_budget
 from src.logging_config import bind_correlation_id, get_logger
 from src.metrics import ALERTS_TRIGGERED, EVENTS_INGESTED, EVENTS_VALIDATED, set_airport_status
 from src.models import NASEvent
@@ -60,7 +61,20 @@ async def run_pipeline(
     label: str = "PIPELINE",
     correlation_id: str | None = None,
 ) -> dict:
-    """Validate, persist, alert, and summarise a batch of NASEvents."""
+    """
+    Validate, persist, alert, and summarise a batch of NASEvents.
+
+    Everything the model layer does in the pass -- the Critic and the investigations -- draws on one
+    token budget (LLM_TOKEN_BUDGET_PER_PASS); once it is spent, calls are refused and the agents fall
+    back to rules, and staging is unaffected.
+    """
+    with pass_budget() as budget:
+        summary = await _run_pipeline(events, label, correlation_id)
+    summary["llm_tokens_spent"] = budget.spent
+    return summary
+
+
+async def _run_pipeline(events: list[NASEvent], label: str, correlation_id: str | None) -> dict:
     cid = bind_correlation_id(correlation_id)
     _log.info(
         "pipeline_start",
