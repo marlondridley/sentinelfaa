@@ -53,46 +53,57 @@ _MIGRATIONS: list[tuple[str, str]] = [
         WHERE brief_id IS NOT NULL
           AND brief_id NOT IN (SELECT brief_id FROM watch_officer_briefs);
 
-        -- Step 2: Apply constraints to enforce referential integrity moving forward
+        -- Step 2: Apply constraints to enforce referential integrity moving forward.
+        -- Whether a constraint exists is asked by what it does (this column references that table), not by
+        -- the name given here: on a fresh database the tables were created with the same foreign keys inline
+        -- (auto-named), so checking for a fk_* name added a second, identical one to each.
+        CREATE FUNCTION pg_temp.has_fk(child regclass, parent regclass, col text) RETURNS boolean AS $f$
+            SELECT EXISTS (
+                SELECT 1 FROM pg_constraint c
+                WHERE c.contype = 'f' AND c.conrelid = child AND c.confrelid = parent
+                  AND c.conkey = ARRAY[(SELECT a.attnum FROM pg_attribute a WHERE a.attrelid = child AND a.attname = col)]::int2[]
+            )
+        $f$ LANGUAGE sql;
+
         DO $$
         BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_alert_events_event') THEN
+            IF NOT pg_temp.has_fk('alert_events', 'nas_events', 'event_id') THEN
                 ALTER TABLE alert_events
                 ADD CONSTRAINT fk_alert_events_event
                 FOREIGN KEY (event_id) REFERENCES nas_events(event_id) ON DELETE SET NULL;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_critic_results_alert') THEN
+            IF NOT pg_temp.has_fk('critic_results', 'alert_events', 'alert_id') THEN
                 ALTER TABLE critic_results
                 ADD CONSTRAINT fk_critic_results_alert
                 FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE CASCADE;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_staged_actions_alert') THEN
+            IF NOT pg_temp.has_fk('staged_actions', 'alert_events', 'alert_id') THEN
                 ALTER TABLE staged_actions
                 ADD CONSTRAINT fk_staged_actions_alert
                 FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE SET NULL;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_staged_actions_event') THEN
+            IF NOT pg_temp.has_fk('staged_actions', 'nas_events', 'event_id') THEN
                 ALTER TABLE staged_actions
                 ADD CONSTRAINT fk_staged_actions_event
                 FOREIGN KEY (event_id) REFERENCES nas_events(event_id) ON DELETE SET NULL;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_action') THEN
+            IF NOT pg_temp.has_fk('operational_tickets', 'staged_actions', 'action_id') THEN
                 ALTER TABLE operational_tickets
                 ADD CONSTRAINT fk_operational_tickets_action
                 FOREIGN KEY (action_id) REFERENCES staged_actions(action_id) ON DELETE SET NULL;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_alert') THEN
+            IF NOT pg_temp.has_fk('operational_tickets', 'alert_events', 'alert_id') THEN
                 ALTER TABLE operational_tickets
                 ADD CONSTRAINT fk_operational_tickets_alert
                 FOREIGN KEY (alert_id) REFERENCES alert_events(alert_id) ON DELETE SET NULL;
             END IF;
 
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_operational_tickets_brief') THEN
+            IF NOT pg_temp.has_fk('operational_tickets', 'watch_officer_briefs', 'brief_id') THEN
                 ALTER TABLE operational_tickets
                 ADD CONSTRAINT fk_operational_tickets_brief
                 FOREIGN KEY (brief_id) REFERENCES watch_officer_briefs(brief_id) ON DELETE SET NULL;
@@ -225,6 +236,27 @@ _MIGRATIONS: list[tuple[str, str]] = [
     # incidents): src/watch_officer_assessment.py. Null on briefs written before it existed.
     ("2026_09_watch_officer_assessment", """
         ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS assessment_json JSONB;
+    """),
+    # A database built from scratch had each foreign key twice: inline in CREATE TABLE, and again from the
+    # referential-integrity migration above, which looked for its own constraint names. Every insert and delete
+    # paid for both checks. Drop the fk_* copy wherever an identical inline one exists.
+    ("2026_09_drop_duplicate_foreign_keys", """
+        DO $$
+        DECLARE dup RECORD;
+        BEGIN
+            FOR dup IN
+                SELECT c.conrelid::regclass AS tbl, c.conname
+                FROM pg_constraint c
+                WHERE c.contype = 'f' AND c.conname LIKE 'fk!_%' ESCAPE '!'
+                  AND EXISTS (
+                      SELECT 1 FROM pg_constraint o
+                      WHERE o.contype = 'f' AND o.oid <> c.oid AND o.conname NOT LIKE 'fk!_%' ESCAPE '!'
+                        AND o.conrelid = c.conrelid AND o.confrelid = c.confrelid
+                        AND o.conkey = c.conkey AND o.confkey = c.confkey AND o.confdeltype = c.confdeltype)
+            LOOP
+                EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', dup.tbl, dup.conname);
+            END LOOP;
+        END $$;
     """),
 ]
 

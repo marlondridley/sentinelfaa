@@ -117,3 +117,38 @@ def test_old_self_signed_certificate_is_replaced(tmp_path: Path):
     ca = x509.load_pem_x509_certificate((tmp_path / devcert.CA_CERT).read_bytes())
     leaf = x509.load_pem_x509_certificates((tmp_path / devcert.EDGE_DIR / devcert.CERT_NAME).read_bytes())[0]
     assert leaf.issuer == ca.subject and (tmp_path / devcert.CA_CERT).read_bytes() != ca_before
+
+
+# ── An airport that goes quiet ────────────────────────────────────────────────
+
+def test_a_quiet_feed_raises_an_airports_gauge_and_never_lowers_it():
+    """The pipeline sets the gauge only when a batch has that airport in it; silence needs the reconciler."""
+    from src.metrics import AIRPORT_OVERALL_STATUS, raise_airport_status, set_airport_status
+
+    def level(airport):
+        return AIRPORT_OVERALL_STATUS.labels(airport=airport)._value.get()
+
+    set_airport_status("KQT1", "OK")
+    raise_airport_status("KQT1", "STALE")
+    assert level("KQT1") == 1
+
+    set_airport_status("KQT2", "DEGRADED")
+    raise_airport_status("KQT2", "STALE")
+    assert level("KQT2") == 2, "a worse status is not lowered by the reconciler"
+
+
+async def test_the_reconciler_marks_the_airport_of_a_stale_feed(db, monkeypatch):
+    from src.metrics import AIRPORT_OVERALL_STATUS, set_airport_status
+    from src.models import NASEvent
+    from src.reconcile import reconcile_unstaged
+
+    when = datetime.now(timezone.utc) - timedelta(seconds=settings.STALE_FEED_SECONDS + 120)
+    await db.save_events([NASEvent(airport_code="KDCA", tracon="PCT", service_name="ISMC", message_type="STATUS",
+                                   event_time_utc=when, received_time_utc=when, latency_ms=1.0,
+                                   feed_status="operational", validation_status="PASSED", data_origin="live")])
+    set_airport_status("KDCA", "OK")               # the last thing a pipeline batch said about it
+
+    summary = await reconcile_unstaged()
+
+    assert summary["stale_feeds"] == 1
+    assert AIRPORT_OVERALL_STATUS.labels(airport="KDCA")._value.get() == 1

@@ -48,9 +48,11 @@ import defusedxml.ElementTree as SafeET
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from src import config, storage
+from src import config, retention, storage
 from src.async_bridge import run_async
-from src.metrics import SWIM_FOLDER_BACKLOG, SWIM_FOLDER_OLDEST_WAITING_SECONDS, SWIM_MESSAGES_WITHHELD
+from src.metrics import (
+    SWIM_FOLDER_BACKLOG, SWIM_FOLDER_OLDEST_WAITING_SECONDS, SWIM_MESSAGES_WITHHELD, SWIM_WATCH_SCAN_FAILURES,
+)
 from src.models import NASEvent, content_key, stable_id
 from src.raw_message import (
     ENVELOPE_EXTENSION,
@@ -83,6 +85,10 @@ def shutdown_requested() -> bool:
 
 PROCESSED_DIR: Path = config.PROCESSED_DIR
 FAILED_DIR: Path = config.DATA_DIR / "failed"
+
+# While scans keep failing the watcher waits 2 s, 4 s, 8 s ... up to a minute between attempts.
+WATCH_BACKOFF_BASE_SECONDS = 2.0
+WATCH_BACKOFF_CAP_SECONDS = 60.0
 
 # Accept .json/.xml/.txt AND extension-less files (Kit's MessageFileOutput
 # writes one file per JMS message named by epoch millis, no extension).
@@ -343,11 +349,14 @@ def records_from_raw(message: RawMessage, path: Path | None = None) -> list[dict
 
 
 def _jms_headers_only_record(headers: dict[str, str], path: Path) -> dict:
-    """Fallback when there's no JSON body -- synthesize a metadata-only event."""
+    """
+    Fallback when there's no JSON body: a record of the headers alone.
+
+    It names no airport (the TRACON is not one) and is marked so that _normalise_record reports what it is,
+    instead of failing validation on an airport it was never given.
+    """
     return {
-        "airport_code": _normalise_icao(
-            headers.get("tracon") or headers.get("srcTracon") or config.SUPPORTED_TRACON
-        ),
+        "_headers_only": True,
         "tracon": headers.get("tracon", config.SUPPORTED_TRACON),
         "service_name": _service_from_mex(headers.get("mex", "")),
         "message_type": headers.get("msgType", "unknown"),
@@ -1073,8 +1082,10 @@ def _extract_tais(headers: dict[str, str], payload: dict) -> list[dict]:
             "aircraft_id": fp.get("acid") or track.get("acAddress"),
             "track_id": str(track.get("trackNum")) if track.get("trackNum") is not None else None,
             "runway": runway,
-            "lat": float(lat) if lat is not None else None,
-            "lon": float(lon) if lon is not None else None,
+            # One track's unreadable coordinate is that track's problem: float() raised out of the whole
+            # message and quarantined every other track in it.
+            "lat": _coerce_float(lat),
+            "lon": _coerce_float(lon),
             "altitude_ft": altitude_ft,
             "ground_speed_kt": ground_speed_kt,
             "vertical_speed_fpm": v_vert,
@@ -1143,6 +1154,13 @@ def _normalise_record(
     """
     now = received_at or datetime.now(timezone.utc)
     raw = dict(raw)
+
+    if raw.pop("_headers_only", False):
+        # A message with routing headers and no readable body (empty, or truncated so it is not JSON) has no airport and no observation. It used to be
+        # given the TRACON as an airport ("PCT" became "KPCT"), which validation rejected as "airport not
+        # supported": true, and no help to whoever was looking at why the message failed.
+        return None, (f"no readable payload: the message has headers only, or a body that is not JSON "
+                      f"(mex={raw.get('service_name')}, msgType={raw.get('message_type')}), so there is nothing to record")
 
     # Stable identity: the same message ingested twice is the same event.
     # Key = the SWIM message identity (mex:globalID:msgSeqID) or, lacking one,
@@ -1592,9 +1610,11 @@ def watch_swim_folder(
 
     scan_lock = threading.Lock()
     trigger = threading.Event()
+    failures = 0        # consecutive scans that raised; the loop backs off while it is non-zero
 
     def _run_scan(reason: str) -> int:
-        """Scan once; returns how many files it consumed (0 if another scan held the lock)."""
+        """Scan once; returns how many files it consumed (0 if another scan held the lock, or the scan failed)."""
+        nonlocal failures
         if not scan_lock.acquire(blocking=False):
             # A scan is already in flight; whatever prompted this call will
             # be picked up by that scan (or the next reconciliation pass) --
@@ -1602,18 +1622,46 @@ def watch_swim_folder(
             return 0
         try:
             (_log.debug if reason == "poll" else _log.info)("swim_watch_scan_triggered", extra={"reason": reason})
-            events, stats = scan_swim_folder(source_dir, max_files=max_files, defer_archive=True)
-            if events and on_events is not None:
-                try:
-                    on_events(events, stats)
-                except Exception:  # noqa: BLE001 -- the events were not stored; keep watching
-                    _log.exception("swim_pipeline_failed_files_left_claimed",
-                                   extra={"files": len(stats.pending), "events": len(events)})
-                    return 0
-            commit_scan(stats)
+            try:
+                events, stats = scan_swim_folder(source_dir, max_files=max_files, defer_archive=True)
+                if events and on_events is not None:
+                    try:
+                        on_events(events, stats)
+                    except Exception:  # noqa: BLE001 -- the events were not stored; keep watching
+                        _log.exception("swim_pipeline_failed_files_left_claimed",
+                                       extra={"files": len(stats.pending), "events": len(events)})
+                        failures += 1
+                        return 0
+                commit_scan(stats)
+            except Exception:  # noqa: BLE001 -- a database error in the scan or its commit must not end the watcher
+                # The watcher used to die here, and with it the feed's only consumer until the container was
+                # restarted. Files the scan had claimed are released after CLAIM_TIMEOUT_SECONDS and scanned
+                # again; stable event ids make that safe.
+                failures += 1
+                SWIM_WATCH_SCAN_FAILURES.inc()
+                _log.exception("swim_watch_scan_failed", extra={"reason": reason, "consecutive_failures": failures})
+                return 0
+            finally:
+                run_retention()
+            failures = 0
             return stats.files_processed + stats.files_failed
         finally:
             scan_lock.release()
+
+    def _backoff_seconds() -> float:
+        """How long to wait before the next scan: the poll interval, or longer while scans are failing."""
+        if not failures:
+            return config.SWIM_WATCH_POLL_SECONDS
+        return min(WATCH_BACKOFF_CAP_SECONDS, WATCH_BACKOFF_BASE_SECONDS * 2 ** (failures - 1))
+
+    def _drain(reason: str) -> None:
+        """
+        Scan until a pass finds fewer than max_files. A pass takes at most max_files, so when it takes that
+        many there is probably more waiting, and an event-driven watcher would otherwise leave it until the
+        next file arrives or the next reconcile tick: 500 files per five minutes once the feed went quiet.
+        """
+        while _run_scan(reason) >= max_files and not _shutdown_requested.is_set():
+            pass
 
     # Native file events do not cross a Docker Desktop bind mount from a
     # Windows or macOS host into a Linux container: the kit writes on the
@@ -1645,7 +1693,7 @@ def watch_swim_folder(
             if observer is None:
                 # Straight back in while a backlog remains; otherwise idle one poll.
                 if not _run_scan("poll"):
-                    _shutdown_requested.wait(config.SWIM_WATCH_POLL_SECONDS)
+                    _shutdown_requested.wait(_backoff_seconds())
                 continue
             fired = trigger.wait(timeout=1.0)
             if _shutdown_requested.is_set():
@@ -1657,10 +1705,12 @@ def watch_swim_folder(
                 # per file.
                 time.sleep(debounce_seconds)
                 trigger.clear()
-                _run_scan("fs_event")
+                _drain("fs_event")
                 last_reconcile = time.monotonic()
+                if failures:
+                    _shutdown_requested.wait(_backoff_seconds())
             elif time.monotonic() - last_reconcile >= reconcile_interval:
-                _run_scan("reconcile")
+                _drain("reconcile")
                 last_reconcile = time.monotonic()
     finally:
         if observer is not None:
@@ -1703,6 +1753,11 @@ def commit_scan(stats: IngestStats) -> int:
         source.commit(delivery)
     _append_log_entries([entry for *_rest, entry in pending])
     return len(pending)
+
+
+def run_retention() -> None:
+    """Age out what scans have left behind (see src/retention.py); rate-limited, and never raises."""
+    retention.run_due(PROCESSED_DIR, FAILED_DIR)
 
 
 def read_ingest_log(limit: int = 100) -> list[dict]:

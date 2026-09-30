@@ -993,3 +993,146 @@ def test_tais_track_without_a_flight_plan_keeps_its_reported_code(tmp_path: Path
         "track": {"reportedBeaconCode": "1200", "lat": 38.85, "lon": -77.04},
     })
     assert [r["beacon_code"] for r in records] == ["1200"]
+
+
+# ── Messages with no readable payload ─────────────────────────────────────────
+
+def test_a_message_with_no_readable_payload_says_so_instead_of_blaming_the_airport(tmp_path: Path):
+    """It used to be given the TRACON as an airport ("PCT" became "KPCT") and fail as 'airport not supported'."""
+    path = _kit_file(tmp_path, "1789928000004", "ISMC", "linkStatus", None)
+    (record,) = _parse_file(path)[0]
+
+    event, error = _normalise_record(record, path.name)
+
+    assert event is None
+    assert "no readable payload" in error and "ISMC" in error and "linkStatus" in error
+    assert "not supported" not in error
+
+
+def test_a_truncated_message_is_reported_the_same_way(tmp_path: Path):
+    path = tmp_path / "1789928000005"
+    path.write_text(_HEADERS.format(mex="TAIS", msg_type="track") + '{"ns2:TATrackAndFlightPlan": {"rec', encoding="utf-8")
+    (record,) = _parse_file(path)[0]
+
+    assert "no readable payload" in _normalise_record(record, path.name)[1]
+
+
+# ── One bad track ─────────────────────────────────────────────────────────────
+
+def test_one_unreadable_coordinate_does_not_quarantine_the_other_tracks_in_the_message(tmp_path: Path):
+    good = {"flightPlan": {"airport": "KDCA", "acid": "AAL1"}, "track": {"lat": 38.85, "lon": -77.04}}
+    bad = {"flightPlan": {"airport": "KDCA", "acid": "AAL2"}, "track": {"lat": "not-a-number", "lon": -77.05}}
+    path = _kit_file(tmp_path, "1789928000101", "TAIS", "FP", {"ns2:TATrackAndFlightPlan": {"record": [good, bad]}})
+
+    records, error = _parse_file(path)
+
+    assert error is None and len(records) == 2
+    by_id = {r["aircraft_id"]: r for r in records}
+    assert (by_id["AAL1"]["lat"], by_id["AAL1"]["lon"]) == (38.85, -77.04)
+    assert (by_id["AAL2"]["lat"], by_id["AAL2"]["lon"]) == (None, -77.05)
+
+
+# ── The watcher keeps going ───────────────────────────────────────────────────
+
+def test_a_scan_that_raises_does_not_end_the_watcher(tmp_path: Path, monkeypatch):
+    """A database error in a scan used to propagate out of watch_swim_folder and stop the feed's only consumer."""
+    from prometheus_client import REGISTRY
+
+    from src import swim_file_ingest
+
+    calls: list[int] = []
+
+    def flaky_scan(source_dir, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is down")
+        swim_file_ingest.request_shutdown()
+        return [], swim_file_ingest.IngestStats()
+
+    monkeypatch.setattr(swim_file_ingest, "scan_swim_folder", flaky_scan)
+    monkeypatch.setattr(swim_file_ingest, "run_retention", lambda: None)
+    monkeypatch.setattr(swim_file_ingest, "WATCH_BACKOFF_BASE_SECONDS", 0.01)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.01)
+    before = REGISTRY.get_sample_value("nas_swim_watch_scan_failures_total") or 0.0
+    folder = tmp_path / "log"
+
+    try:
+        swim_file_ingest.watch_swim_folder(folder, reconcile_interval=3600)
+    finally:
+        swim_file_ingest._shutdown_requested.clear()
+
+    assert len(calls) == 2, "it scanned again after the failure"
+    assert REGISTRY.get_sample_value("nas_swim_watch_scan_failures_total") == before + 1
+
+
+def test_a_failing_commit_is_survived_too(tmp_path: Path, monkeypatch):
+    from src import swim_file_ingest
+
+    calls: list[int] = []
+
+    def scan(source_dir, **kwargs):
+        calls.append(1)
+        if len(calls) > 1:
+            swim_file_ingest.request_shutdown()
+        return [], swim_file_ingest.IngestStats()
+
+    def broken_commit(stats):
+        raise RuntimeError("could not write the ingest log")
+
+    monkeypatch.setattr(swim_file_ingest, "scan_swim_folder", scan)
+    monkeypatch.setattr(swim_file_ingest, "commit_scan", broken_commit)
+    monkeypatch.setattr(swim_file_ingest, "run_retention", lambda: None)
+    monkeypatch.setattr(swim_file_ingest, "WATCH_BACKOFF_BASE_SECONDS", 0.01)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.01)
+
+    try:
+        swim_file_ingest.watch_swim_folder(tmp_path / "log", reconcile_interval=3600)
+    finally:
+        swim_file_ingest._shutdown_requested.clear()
+
+    assert len(calls) == 2
+
+
+def test_an_event_driven_watcher_keeps_scanning_while_a_full_pass_says_there_is_more(tmp_path: Path, monkeypatch):
+    """A pass takes at most max_files. Without draining, the rest waited for the next file or the next reconcile."""
+    import threading
+    import time
+
+    from src import swim_file_ingest
+
+    calls: list[int] = []
+    done = threading.Event()
+    processed_per_call = [0, 2, 2, 0]           # startup finds nothing; then two full passes; then the last one
+
+    def scan(source_dir, **kwargs):
+        n = len(calls)
+        calls.append(n)
+        stats = swim_file_ingest.IngestStats()
+        stats.files_processed = processed_per_call[n] if n < len(processed_per_call) else 0
+        if n == len(processed_per_call) - 1:
+            done.set()
+        return [], stats
+
+    monkeypatch.setattr(swim_file_ingest, "scan_swim_folder", scan)
+    monkeypatch.setattr(swim_file_ingest, "run_retention", lambda: None)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", False)
+    folder = tmp_path / "log"
+    folder.mkdir()
+    worker = threading.Thread(
+        target=swim_file_ingest.watch_swim_folder, args=(folder,),
+        kwargs={"max_files": 2, "reconcile_interval": 3600, "debounce_seconds": 0.05}, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.3)                                       # the observer is watching by now
+        (folder / "1789928000200").write_text("x", encoding="utf-8")
+        assert done.wait(10), f"only {len(calls)} scan(s) ran: the watcher did not keep draining"
+        assert len(calls) == 4
+    finally:
+        swim_file_ingest.request_shutdown()
+        worker.join(timeout=10)
+        swim_file_ingest._shutdown_requested.clear()
