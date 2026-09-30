@@ -46,6 +46,7 @@ from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
 from src.storage.repositories.model_calls_repo import ModelCallsRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
+from src.storage.repositories.surface_repo import SurfaceRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
 from src.storage.test_support import override_db_path, reset_db
 from src.storage.unit_of_work import UnitOfWork
@@ -152,6 +153,30 @@ async def get_recent_events(limit: int = 500, *, data_origin: str | None = None)
 async def get_recent_alerts(limit: int = 200, *, data_origin: str | None = None) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
     return await repo.get_recent_alerts(limit, data_origin=data_origin)
+
+
+async def get_taxi_out_pairs(airport_code: str | None, since: datetime, as_of: datetime | None = None) -> list[dict]:
+    return await SurfaceRepository(await get_db_pool()).get_taxi_out_pairs(airport_code, since, as_of)
+
+
+async def get_taxi_in_pairs(airport_code: str | None, since: datetime, as_of: datetime | None = None) -> list[dict]:
+    return await SurfaceRepository(await get_db_pool()).get_taxi_in_pairs(airport_code, since, as_of)
+
+
+async def get_departure_queue(airport_code: str | None, as_of: datetime | None = None) -> list[dict]:
+    return await SurfaceRepository(await get_db_pool()).get_departure_queue(airport_code, as_of)
+
+
+async def get_gate_returns(airport_code: str | None, since: datetime, as_of: datetime | None = None) -> list[dict]:
+    return await SurfaceRepository(await get_db_pool()).get_gate_returns(airport_code, since, as_of)
+
+
+async def get_flight_surface_events(aircraft_id: str, lookback: timedelta, as_of: datetime | None = None) -> list[dict]:
+    return await SurfaceRepository(await get_db_pool()).get_flight_surface_events(aircraft_id, lookback, as_of)
+
+
+async def get_latest_surface_event(airport_code: str | None, as_of: datetime | None = None) -> datetime | None:
+    return await SurfaceRepository(await get_db_pool()).get_latest_surface_event(airport_code, as_of)
 
 
 async def get_alerts_by_ids(alert_ids: list[str]) -> list[dict]:
