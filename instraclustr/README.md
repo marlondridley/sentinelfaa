@@ -95,6 +95,13 @@ Edit [`vault-policies/`](vault-policies) or [`terraform/main.tf`](terraform/main
 
 Copy `.env.example` to `.env`; it is gitignored. The stack will not start without `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD`. The seed job copies the database passwords into Vault, the only place the application stack reads them from. `../nas-feedops-sentinel/.env` holds no database credential. Provider keys (`DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and `GEMINI_API_KEY_2` or `_3` if used) belong here, since only the gateway needs them.
 
+## Hardening
+
+- **Application services** (`migrate`, `api`, `sentinel`, `temporal-worker`, `dashboard`) run with no Linux capabilities, `no-new-privileges`, a read-only root filesystem with a 256 MiB `/tmp`, and ceilings of 256 processes and 2 GiB. One definition, `x-hardened`, in `../nas-feedops-sentinel/docker-compose.yml`. Each command was run that way against a throwaway Postgres before it was turned on.
+- **`spire-agent`** is the one container that holds the Docker socket and the host PID namespace, because the docker workload attestor needs both. `:ro` on the socket limits the file, not the Docker API behind it, so a compromised agent can still ask Docker for anything. What is taken away: every capability, privilege escalation and a writable root (it writes only to its data and socket volumes). A labelled workload still receives its SVID and an unlabelled one still receives none, checked in a scratch trust domain. Both SPIRE images are pinned by digest. `tests/test_hardening.py` holds all of this.
+- **Key files and folder permissions.** The CA keys, the Vault unseal share and bootstrap secret-id, the `.env` files, `secrets.toml` and the Terraform state inherit their permissions from the folder the repository was cloned into. If another local group can read that folder, it can read them. `scripts/Protect-KeyMaterial.ps1` reports who can read each of them and changes nothing; `-Apply` restricts them to you, SYSTEM and Administrators. It reads no file's contents.
+- **Not done here:** one flat `nas-network` shared by everything, plaintext service-to-service traffic (the application to LiteLLM, Temporal with no authentication), and third-party images (nginx, Keycloak, Postgres, Grafana, Temporal) that run with Docker's default capabilities. Each of those needs its own change and its own test against the real image.
+
 ## Models
 
 The application names aliases only. `litellm-config.yaml` decides which provider serves each one:
