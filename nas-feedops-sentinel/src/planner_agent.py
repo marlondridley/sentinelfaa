@@ -1,6 +1,6 @@
 """
 Planner Agent (Layer 2) — Operational Advisory & Query Synthesis.
-Refactored for CrewAI Flow capability & unified LiteLLM client execution.
+Runs through the unified LiteLLM client.
 """
 from __future__ import annotations
 
