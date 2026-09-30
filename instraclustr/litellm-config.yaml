@@ -4,22 +4,24 @@
 # the proxy's OpenAI-compatible route; src/config.proxy_model() refuses any
 # direct provider route. Swapping providers happens here, not in app code.
 #
-# Current routing is a low-cost TEST configuration: DeepSeek primary, Gemini
-# fallback. Neither is an authorized boundary for FAA operational data --
+# Current routing is a TEST configuration: Claude Haiku 4.5 (direct from
+# Anthropic) primary, then Gemini, then Claude Sonnet. None of them is an
+# authorized boundary for FAA operational data --
 # before real feed data is sent, primary-model must move to an approved
 # endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
 # OpenAI Government, or on-prem inference).
 model_list:
-  # Low-cost primary for testing. If DeepSeek rejects its key, LiteLLM
-  # surfaces that as a 400 and does NOT fall back to gemini-backup (it treats
-  # 400s as client errors), so a bad DEEPSEEK_API_KEY breaks primary-model
-  # outright; the Gemini deployments below only cover provider outages,
-  # timeouts and rate limits.
+  # Primary: Claude Haiku 4.5. The application only ever names primary-model
+  # (its LiteLLM key and policies/model-use.yaml allow nothing else), so which
+  # provider answers is decided here. DeepSeek was the primary until its key
+  # was rejected (401); to go back, swap this entry for:
+  #   model: deepseek/deepseek-chat
+  #   api_key: "os.environ/DEEPSEEK_API_KEY"
+  #   api_base: "https://api.deepseek.com"
   - model_name: primary-model
     litellm_params:
-      model: deepseek/deepseek-chat
-      api_key: "os.environ/DEEPSEEK_API_KEY"
-      api_base: "https://api.deepseek.com"
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: "os.environ/ANTHROPIC_API_KEY"
 
   # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
   # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
@@ -50,12 +52,10 @@ model_list:
   #     model: gemini/gemini-3.8-flash
   #     api_key: "os.environ/GEMINI_API_KEY_3"
 
-  # Claude, direct from Anthropic (a service-account key scoped to the
-  # sentinelfaa workspace). Nothing routes here yet: to use it, set
-  # ANTHROPIC_API_KEY in .env and point LLM_MODEL (or a per-agent model) at
-  # "claude-model", or add it to router_settings.fallbacks. Like the other
-  # providers here it is a TEST route, not an authorized boundary for FAA
-  # operational data (see the note at the top).
+  # Claude Sonnet 5.5, direct from Anthropic (the same service-account key,
+  # scoped to the sentinelfaa workspace): the last stop in the fallback chain.
+  # Like the other providers here it is a TEST route, not an authorized
+  # boundary for FAA operational data (see the note at the top).
   - model_name: claude-model
     litellm_params:
       model: anthropic/claude-sonnet-5-5
@@ -65,14 +65,6 @@ model_list:
       # no content. "thinking: disabled" is ignored by this model; a low
       # reasoning effort leaves room for the answer.
       reasoning_effort: low
-
-  # Haiku 4.5: the cheaper, faster Claude, under its own alias. A separate
-  # model_name, not a second claude-model entry: entries under one alias are
-  # load-balanced, which would send some calls to each model.
-  - model_name: claude-haiku
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: "os.environ/ANTHROPIC_API_KEY"
 
   - model_name: gemini-flash
     litellm_params:
@@ -84,7 +76,10 @@ model_list:
 # where the proxy does not read them, so a DeepSeek failure had no fallback.
 router_settings:
   fallbacks:
-    - primary-model: ["gemini-backup","claude-haiku", "claude-model"]
+    # Haiku (primary-model), then Gemini (free-tier keys), then Claude Sonnet, when
+    # the one before is down, out of quota or refusing the key. Names must match
+    # model_name above exactly (hyphens). Claude is paid.
+    - primary-model: ["gemini-backup", "claude-model"]
   # One retry: a second key gets a chance, without multiplying calls against
   # a quota that is already gone. A failing key is benched for a minute.
   num_retries: 1
