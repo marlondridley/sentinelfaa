@@ -72,6 +72,12 @@ rules:
         # Operator-question Planner
         - planner:read_recent_activity
         - planner:submit_operational_brief
+        # ... and the taxi-time reads it uses to answer surface questions
+        - planner:read_taxi_out_stats
+        - planner:read_taxi_in_stats
+        - planner:read_departure_queue
+        - planner:read_gate_returns
+        - planner:read_flight_timeline
         # Watch Officer: the overview brief, and the investigation brief
         - watch_officer:read_operating_picture
         - watch_officer:submit_watch_officer_brief
