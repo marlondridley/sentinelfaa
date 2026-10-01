@@ -35,7 +35,7 @@ allows unverified decisions; the evaluation flags it.
 
 ## Start of shift
 
-1. **Overview.**
+1. **Dashboard.**
    - Read the verdict first (GREEN, AMBER, RED or NO DATA). Rules compute
      it from schema conformance, ingest lag and open CRITICAL alerts of the last
      hour, from live data only (replays and synthetic data are never counted);
@@ -55,12 +55,17 @@ allows unverified decisions; the evaluation flags it.
    The coloured status is the worst of that investigation's governance
    gates. Any red means open Agent Evaluation before trusting the AI output
    for the shift.
-4. **Review queue** (AI Critic & Review): how many actions are pending, and
-   the oldest. The `HumanReviewQueueStale` alert fires past one hour.
+4. **Review queue.** The Dashboard lists each review awaiting a decision, one
+   line each; the line opens that review. The Review Queue page counts the
+   same reviews: *Awaiting decision* (nobody has answered), *AI suggests
+   escalation* (those of them the Critic would escalate) and *Monitoring*
+   (someone answered "continue monitoring": out of the queue, still open).
+   Every number counts reviews, one per condition, never readings. The
+   `HumanReviewQueueStale` alert fires past one hour.
 
 ## Deciding on a staged action
 
-For each PENDING action on the Review page:
+For each review awaiting a decision on the Review Queue:
 1. **Read the alert and the recommendation.** The recommendation is the AI's
    suggestion, labelled with its provenance.
 2. **Read the investigation's bottom line**, then open it:
@@ -103,12 +108,12 @@ missed and false escalations, and calibration. Decide on the evidence.
 
 ## When not to trust the AI layer
 
-- The card or the Review page shows **"rules only"**. The model was
+- The card or the Review Queue shows **"rules only"**. The model was
   unavailable or refused and the agents fell back to their rules. The
   investigation still stands, on rules alone.
 - **Evidence quality is well below 95%**, or the Unsupported claims
   dimension is red on Agent Evaluation.
-- The Overview verdict is **RED**, or the data-origin banner shows **non-live
+- The Dashboard verdict is **RED**, or the data-origin banner shows **non-live
   data** (replay or synthetic). The Red-Team Critic challenges non-live
   alerts too.
 - Agent Evaluation reads **NOT READY**. The rules, the staging and your

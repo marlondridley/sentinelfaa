@@ -5,9 +5,16 @@ Run headlessly through Streamlit's AppTest against a test database: one row
 per review, not per reading; filter pills counted by facility and AI
 suggestion; the AI summary, or an honest line saying why there is none. No sign-in is
 configured here, so the page runs with a self-declared operator.
+
+Every number on the page is rows of its table: a review someone answered
+"continue monitoring" leaves the queue for the Monitoring view, and each tile
+opens the rows it counts. The page used to lead with a tile counting Critic
+verdicts per reading ("25 escalations suggested, awaiting a human decision
+below") over a queue of four reviews, none of which it opened.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -16,10 +23,12 @@ pytest.importorskip("streamlit", reason="the page renders through Streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from src import storage  # noqa: E402
-from src.execution_gate import stage_critical_alert  # noqa: E402
+from src.auth import Decision, Principal, PrincipalSource  # noqa: E402
+from src.execution_gate import decide_staged_action, stage_critical_alert  # noqa: E402
 from src.models import AlertEvent, CriticResult  # noqa: E402
 
 PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "pages" / "3_AI_Critic_and_Review.py"
+SUPERVISOR = Principal("smith", "Supervisor", PrincipalSource.OIDC, roles=frozenset({"supervisor"}))
 
 
 @pytest.fixture
@@ -105,3 +114,93 @@ async def test_a_link_that_names_a_review_opens_it(db):
     assert not at.exception, [e.value for e in at.exception]
     assert any(m.value.startswith("**AI summary:**") for m in at.markdown), "the review drawer opened"
     assert "review" not in at.query_params, "once: closing the drawer must not reopen it"
+
+
+# ── Every number is rows of the table ─────────────────────────────────────────
+
+def _run(**query: str) -> AppTest:
+    at = AppTest.from_file(str(PAGE), default_timeout=60)
+    for key, value in query.items():
+        at.query_params[key] = value
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    return at
+
+
+def _queue(at: AppTest):
+    [queue] = [d.value for d in at.dataframe if "AI suggests" in d.value.columns]
+    return queue
+
+
+def _tiles(at: AppTest) -> dict[str, tuple[str, str | None]]:
+    """KPI tile label -> (its number, the link it opens or None)."""
+    html = "\n".join(m.value for m in at.markdown)
+    return {m.group(3): (m.group(4), m.group(2)) for m in re.finditer(
+        r'<(a|div) class="kpi"(?: href="([^"]*)")?[^>]*>.*?<div class="kpi-label">([^<]+)</div>'
+        r'<div class="kpi-value"[^>]*>([^<]*)', html, re.S)}
+
+
+async def _three_reviews(db) -> None:
+    """KBWI: the AI would escalate. KIAD: it would not. KDCA: it would, and someone is already monitoring it."""
+    alerts = {airport: _rvr(airport) for airport in ("KBWI", "KIAD", "KDCA")}
+    await db.save_alerts(list(alerts.values()))
+    reviews = {airport: await stage_critical_alert(alert) for airport, alert in alerts.items()}
+    for airport, escalate in (("KBWI", True), ("KIAD", False), ("KDCA", True)):
+        await db.save_critic_result(CriticResult(
+            alert_id=alerts[airport].alert_id, confidence=0.9, escalate=escalate, pattern="WEATHER_CORRELATED",
+            reasoning="r", bluf=f"{airport} summary"))
+    await decide_staged_action(reviews["KDCA"].action_id, Decision.MONITOR, SUPERVISOR, "watching the weather")
+
+
+async def test_a_monitored_review_leaves_the_queue_and_is_listed_under_monitoring(db):
+    await _three_reviews(db)
+
+    assert sorted(_queue(_run())["Facility"]) == ["KBWI", "KIAD"], "what was answered is not asked again"
+
+    [watched] = _queue(_run(show="monitoring")).to_dict("records")
+    assert (watched["Facility"], watched["Note"]) == ("KDCA", "watching the weather")
+    assert "smith" in watched["By"] and watched["Monitoring since (UTC)"] is not None
+
+
+async def test_each_tile_counts_reviews_and_opens_the_rows_it_counts(db):
+    await _three_reviews(db)
+
+    tiles = _tiles(_run())
+
+    assert tiles["Awaiting decision"] == ("2", "AI_Critic_and_Review?show=awaiting")
+    assert tiles["AI suggests escalation"] == ("1", "AI_Critic_and_Review?show=escalate"), \
+        "KDCA's escalation is being monitored: it is not awaiting anyone"
+    assert tiles["Monitoring"] == ("1", "AI_Critic_and_Review?show=monitoring")
+    for show, facilities in (("awaiting", ["KBWI", "KIAD"]), ("escalate", ["KBWI"]), ("monitoring", ["KDCA"])):
+        assert sorted(_queue(_run(show=show))["Facility"]) == facilities, show
+        assert len(facilities) == int(tiles[{"awaiting": "Awaiting decision", "escalate": "AI suggests escalation",
+                                             "monitoring": "Monitoring"}[show]][0])
+
+
+async def test_with_nothing_awaiting_the_page_opens_on_what_is_being_monitored(db):
+    alert = _rvr("KDCA")
+    await db.save_alerts([alert])
+    review = await stage_critical_alert(alert)
+    await decide_staged_action(review.action_id, Decision.MONITOR, SUPERVISOR, "watching")
+
+    at = _run()
+
+    assert _tiles(at)["Awaiting decision"] == ("0", None), "nothing to open"
+    assert list(_queue(at)["Facility"]) == ["KDCA"] and "Monitoring since (UTC)" in _queue(at).columns
+
+
+async def test_the_critics_activity_counts_readings_and_is_not_the_queue(db):
+    readings = [_rvr("KBWI") for _ in range(3)]
+    await db.save_alerts(readings)
+    for alert in readings:
+        await stage_critical_alert(alert)
+        await db.save_critic_result(CriticResult(
+            alert_id=alert.alert_id, confidence=0.9, escalate=True, pattern="WEATHER_CORRELATED", reasoning="r"))
+
+    at = _run()
+
+    assert _tiles(at)["AI suggests escalation"][0] == "1", "three escalate verdicts on one condition are one review"
+    assert len(_queue(at)) == 1
+    [activity] = [c.value for c in at.caption if "the Critic assessed" in c.value]
+    assert activity.startswith("Of the last 3 readings the Critic assessed: 3 said escalate")
+    assert "Escalations suggested" not in "\n".join(m.value for m in at.markdown), "no per-reading tile over the queue"

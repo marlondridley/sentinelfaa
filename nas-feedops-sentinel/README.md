@@ -47,8 +47,8 @@ src/
   temporal_worker.py  temporal_workflows.py  temporal_activities.py
   main.py                 the CLI
   config.py  vault_config.py  metrics.py  logging_config.py  devcert.py
-dashboard/                app.py (Overview) and pages/: Live Airspace, Feed Health,
-                          AI Critic & Review, Alert Log, Ingest & Replay, Agent Evaluation
+dashboard/                app.py (the navigation) and pages/: Dashboard, Review Queue, Alert Log,
+                          Live Airspace, Feed Health, Ingest & Replay, Agent Evaluation
                           (lib/agent_eval.py: the three layers of the agent evaluation)
 policies/                 model-use.yaml and tool-use.yaml (AGT policies); model-slos.yaml
                           (readiness objectives and per-investigation gate limits)

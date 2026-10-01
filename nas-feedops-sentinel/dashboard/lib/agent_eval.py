@@ -2,7 +2,7 @@
 Agent evaluation on the dashboard, in three layers of progressive disclosure:
 mission first, AI second, telemetry on demand.
 
-  Layer 1  Overview           one "AI investigation" card, five indicators,
+  Layer 1  Dashboard          one "AI investigation" card, five indicators,
                               for the most recent investigation
   Layer 2  Review page        the investigation's evaluation and its
                               governance gates, next to the record itself
@@ -73,7 +73,7 @@ def load_for_action(action_id: str):
         return None
 
 
-# ── Layer 1: the Overview card ───────────────────────────────────────────────
+# ── Layer 1: the Dashboard card ───────────────────────────────────────────────
 
 def render_card(ev: Any, *, sla_s: float | None, budget_usd: float | None) -> None:
     """Five indicators for the latest investigation, each one click from its detail."""
