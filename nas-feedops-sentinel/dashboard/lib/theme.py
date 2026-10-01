@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import html as _html
 from typing import Any, Sequence
+from urllib.parse import quote, urlsplit
 
 import streamlit as st
 
@@ -145,6 +146,17 @@ def _esc(value: Any) -> str:
     return _html.escape("" if value is None else str(value), quote=True)
 
 
+def _attr_href(href: str | None) -> str:
+    """
+    A link value made safe to put inside href="...": only a relative link or an http(s) one is kept (anything
+    else, javascript: above all, becomes "#"), and the result is escaped for the attribute.
+    """
+    value = "" if href is None else str(href).strip()
+    if urlsplit(value).scheme.lower() not in ("", "http", "https"):
+        value = "#"
+    return _html.escape(value, quote=True)
+
+
 def drill_href(page: str, **params: Any) -> str:
     """
     Build a same-tab link into another page, carrying filter state.
@@ -158,7 +170,7 @@ def drill_href(page: str, **params: Any) -> str:
     """
     slug = PAGES.get(page, page)
     pairs = [
-        f"{_html.escape(str(k))}={_html.escape(str(v))}"
+        f"{quote(str(k), safe='')}={quote(str(v), safe='')}"
         for k, v in params.items()
         if v is not None and v != ""
     ]
@@ -474,7 +486,7 @@ def kpi(
     """
     fg, border, _wash = TONES.get(tone, TONES["neutral"])
     tag = "a" if href else "div"
-    attrs = f' href="{href}" target="_self"' if href else ""
+    attrs = f' href="{_attr_href(href)}" target="_self"' if href else ""
     drill_badge = (
         f'<span class="kpi-drill">{_esc(drill or "OPEN →")}</span>' if href else ""
     )
@@ -607,7 +619,7 @@ def status_matrix(
                 link = href_for(r, c)
                 if link:
                     inner = (
-                        f'<a href="{link}" target="_self" '
+                        f'<a href="{_attr_href(link)}" target="_self" '
                         f'style="color:inherit;text-decoration:none;">{inner}</a>'
                     )
             cells.append(

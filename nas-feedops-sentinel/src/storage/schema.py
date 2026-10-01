@@ -258,6 +258,19 @@ _MIGRATIONS: list[tuple[str, str]] = [
             END LOOP;
         END $$;
     """),
+    # What went out with each model call, without the text: the prompt's hash and version, the
+    # redacted input's hash, and how many substitutions redaction made. The Critic's verdict and
+    # a brief carry the id of the call behind them. Plain TEXT, no foreign key: the row in
+    # model_calls is written best-effort and must never make saving a verdict fail.
+    # ALTER TABLE is not an UPDATE, so the append-only trigger on model_calls does not see it.
+    ("2026_10_model_call_provenance", """
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS prompt_hash      TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS prompt_version   TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS input_hash       TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS redaction_count  INTEGER;
+        ALTER TABLE critic_results       ADD COLUMN IF NOT EXISTS call_id TEXT;
+        ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS call_id TEXT;
+    """),
 ]
 
 

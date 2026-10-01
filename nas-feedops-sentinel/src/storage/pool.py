@@ -16,8 +16,8 @@ get_db_pool() first owned it and every other loop that touched storage failed
 with "another operation is in progress" or "attached to a different loop".
 
 This process has more than one loop by design. src/async_bridge.py keeps a
-long-lived loop for synchronous callers (the dashboard, CrewAI's sync kickoff,
-the SWIM file scanner), while async callers bring their own: the Temporal
+long-lived loop for synchronous callers (the dashboard and the SWIM
+file scanner), while async callers bring their own: the Temporal
 worker, the FastAPI server, and pytest-asyncio's per-test loop. So pools are
 cached per loop. Each loop gets its own pool, created once and reused for the
 life of that loop, and close_db_pool() closes the calling loop's pool.
