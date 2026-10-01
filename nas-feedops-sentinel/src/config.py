@@ -56,6 +56,21 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 # whenever DATABASE_URL is empty.
 
 
+def _is_loopback_url(url: str) -> bool:
+    """True when the URL's host is this machine: localhost, 127.0.0.0/8, ::1 or 0.0.0.0."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    host = (urlparse(url if "://" in url else f"//{url}").hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
 def proxy_model(value: str, *, setting: str = "model") -> str:
     """
     Normalize a model setting to the LiteLLM proxy's OpenAI-compatible route.
@@ -338,6 +353,11 @@ class Settings(BaseSettings):
         default="http://localhost:4000/v1",
         validation_alias=AliasChoices("LITELLM_PROXY_URL", "LLM_BASE_URL"),
     )
+    # Opt-in guard for a deployed container, where "localhost" is the container
+    # itself and nothing listens there. docker-compose.yml turns it on; it is off
+    # by default because the test image is a container too, and a test or a
+    # laptop run legitimately talks to a proxy on localhost.
+    REQUIRE_REMOTE_LLM_PROXY: bool = False
 
     # ── Temporal ─────────────────────────────────────────────────────────────
     TEMPORAL_HOST: str = "localhost:7233"
@@ -354,7 +374,7 @@ class Settings(BaseSettings):
     # Disabled by default: no OTel collector is wired into docker-compose.yml
     # yet (Grafana only has a Prometheus datasource provisioned, no Tempo/Jaeger),
     # so leaving this True with nothing listening on OTEL_EXPORTER_OTLP_ENDPOINT
-    # just means every crewai/Flow span export batch times out against a dead
+    # just means every span export batch times out against a dead
     # address on every run. Flip to True once a real trace backend is added.
     OTEL_TRACING_ENABLED: bool = False
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
@@ -469,7 +489,7 @@ class Settings(BaseSettings):
             return _json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
-    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", mode="before")
+    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", "REQUIRE_REMOTE_LLM_PROXY", mode="before")
     @classmethod
     def _parse_bool(cls, value: Any) -> bool:
         if isinstance(value, str):
@@ -505,6 +525,14 @@ class Settings(BaseSettings):
 
         if not self.INVESTIGATION_MODEL:
             self.INVESTIGATION_MODEL = self.LLM_MODEL
+
+        if self.REQUIRE_REMOTE_LLM_PROXY and _is_loopback_url(self.LITELLM_PROXY_URL):
+            raise ValueError(
+                f"LITELLM_PROXY_URL ({self.LITELLM_PROXY_URL!r}) points at this container's own "
+                "loopback, where no gateway runs, so every model call would fail and the Critic "
+                "and Watch Officer would degrade quietly. Set LLM_BASE_URL to the gateway "
+                "(http://nas-litellm:4000/v1) or unset REQUIRE_REMOTE_LLM_PROXY."
+            )
 
         for name in ("LLM_MODEL", "CRITIC_MODEL", "PLANNER_MODEL", "WATCH_OFFICER_MODEL", "INVESTIGATION_MODEL"):
             setattr(self, name, proxy_model(getattr(self, name), setting=name))

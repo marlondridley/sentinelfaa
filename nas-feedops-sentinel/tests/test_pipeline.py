@@ -4,8 +4,7 @@ whatever the LLM does.
 
 This is the product's headline control. Before these tests the pipeline
 existed in three copies. src/pipeline.py staged correctly; src/main.py's copy
-(the live SWIM watcher's path) raised out of CrewAI's kickoff() before
-staging; the dashboard's ingest buttons never staged at all. The live
+(the live SWIM watcher's path) raised before staging; the dashboard's ingest buttons never staged at all. The live
 database held 84 CRITICAL alerts and 0 staged actions. So these tests pin
 two things: run_pipeline() stages every CRITICAL alert under every LLM
 outcome, and every entry point goes through run_pipeline().
