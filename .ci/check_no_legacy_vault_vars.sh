@@ -22,8 +22,12 @@ RULES='
 approle-app-credential~VAULT_ROLE_ID|VAULT_SECRET_ID|VAULT_APPROLE_DIR~.ci/* instraclustr/tests/test_identity_wiring.py scripts/smoke/01_zero_static_creds_probe.sh~an application AppRole credential (retired: services use SPIFFE identities)
 # A Vault token belongs only to the bootstrap jobs, the root ceremony (and the
 # Terraform provider it feeds), the probes, the retired vault-init.sh, and the
-# throwaway dev Vault in the guardrails workflow.
-vault-token~VAULT_TOKEN~instraclustr/vault-unseal-and-seed.bash instraclustr/litellm-bootstrap.sh instraclustr/terraform/ceremony.sh instraclustr/terraform/main.tf scripts/smoke/*.sh instraclustr/scripts/vault-init.sh .ci/* instraclustr/tests/test_identity_wiring.py .github/workflows/guardrails.yml~a Vault token outside the bootstrap jobs, the root ceremony and the probes
+# throwaway dev Vault in the guardrails workflow, and the read-only custody check
+# (instraclustr/scripts/vault_custody.py): an operator tool, run on the host, that asks
+# a token the operator passes in the standard VAULT_TOKEN variable what it is (live root,
+# live and not root, or revoked). It is never in a container, never reads a token from a
+# file, and never prints one; its test names the variable to prove that.
+vault-token~VAULT_TOKEN~instraclustr/vault-unseal-and-seed.bash instraclustr/litellm-bootstrap.sh instraclustr/terraform/ceremony.sh instraclustr/terraform/main.tf scripts/smoke/*.sh instraclustr/scripts/vault-init.sh .ci/* instraclustr/tests/test_identity_wiring.py .github/workflows/guardrails.yml instraclustr/scripts/vault_custody.py instraclustr/tests/test_vault_custody.py~a Vault token outside the bootstrap jobs, the root ceremony and the probes
 approle-login~auth/approle/login~instraclustr/vault-unseal-and-seed.bash instraclustr/litellm-bootstrap.sh .ci/*~an AppRole login outside the vault-bootstrap identity
 # Only the ceremony names them, to delete them.
 app-approle-role~approle/role/sentinel-(app|migrate)~instraclustr/terraform/ceremony.sh .ci/*~a retired application AppRole role
