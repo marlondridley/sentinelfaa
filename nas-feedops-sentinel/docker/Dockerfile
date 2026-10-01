@@ -93,6 +93,7 @@ COPY docker-compose.yml ./
 COPY keycloak/realm-nas-sentinel.json ./keycloak/
 COPY .streamlit/secrets.toml.example .streamlit/config.toml ./.streamlit/
 COPY docs/ ./docs/
+COPY monitoring/ ./monitoring/
 COPY jumpstart/ ./jumpstart/
 RUN chown -R sentinel:sentinel /app/tests /app/scripts
 USER sentinel
