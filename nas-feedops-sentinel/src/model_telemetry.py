@@ -33,6 +33,8 @@ Outcome classes -- the failure modes readiness reports on:
   bad_request      the request itself was rejected (400/404/422, context window)
   provider_error   5xx, connection failures, anything else upstream
   policy_denied    refused by the model-use policy; nothing was sent
+  circuit_open     the alias's circuit breaker was open (src/llm_guard.py); nothing was sent
+  budget_exhausted the pipeline pass's token budget was spent; nothing was sent
   cancelled        the caller cancelled it (an activity timeout, a shutdown) before an answer came back; the
                    request may already have been sent and billed
 """
@@ -62,7 +64,10 @@ RETURNED_OUTCOMES = ("ok", "repaired", "incomplete")
 OUTCOMES = (
     "ok", "repaired", "incomplete", "invalid_output", "timeout", "rate_limited",
     "quota_exhausted", "auth_error", "bad_request", "provider_error", "policy_denied", "cancelled",
+    "circuit_open", "budget_exhausted",
 )
+# Outcomes of calls this system refused itself: nothing was sent, so they say nothing about the model.
+NOT_SENT_OUTCOMES = ("policy_denied", "circuit_open", "budget_exhausted")
 
 # Messages src/llm_client.py raises itself when the model's reply is unusable.
 _INVALID_OUTPUT_MARKERS = (
@@ -170,10 +175,14 @@ def response_cost(response: Any) -> float | None:
 
 def classify_outcome(exc: BaseException) -> str:
     """Map a failed call's exception onto an outcome class."""
-    from src.llm_client import LLMPolicyDenied
+    from src.llm_client import LLMBudgetExceeded, LLMCircuitOpen, LLMPolicyDenied
 
     if isinstance(exc, LLMPolicyDenied):
         return "policy_denied"
+    if isinstance(exc, LLMCircuitOpen):
+        return "circuit_open"
+    if isinstance(exc, LLMBudgetExceeded):
+        return "budget_exhausted"
     text = str(exc)
     if any(marker in text for marker in _INVALID_OUTPUT_MARKERS):
         return "invalid_output"
