@@ -32,6 +32,20 @@ scrape_configs:
       - targets: ["api:8000"]
         labels: {service: api, tracon: PCT}
 
+  # Streamlit dashboard (dashboard/lib/page_setup.py serves /metrics on 9108). Without this the dashboard could
+  # be down and nothing here would say so.
+  - job_name: nas-dashboard
+    static_configs:
+      - targets: ["dashboard:9108"]
+        labels: {service: dashboard, tracon: PCT}
+
+  # Temporal server's own metrics (PROMETHEUS_ENDPOINT in docker-compose.yml): task queue latency, workflow and
+  # activity failures. The worker's metrics above say what ran; these say whether the server can run it.
+  - job_name: nas-temporal
+    static_configs:
+      - targets: ["temporal:8000"]
+        labels: {service: temporal, tracon: PCT}
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
