@@ -1,7 +1,7 @@
 # Findings gitleaks reports in this repository's history that were read and are not secrets.
 # One line each: <commit>:<file>:<rule>:<line>. Add a line only after reading the finding, with the reason.
 
-# a README line listing empty variables to export (VAULT_TOKEN= with no value), not a token
+# a README line listing empty variables to export (the Vault token variable, with no value), not a token
 6954fe514e0df278eb91eee98f1a35cb725e575d:nas-feedops-sentinel/README.md:generic-api-key:62
 # a JDBC URL with a host and database name and no password
 6ea6910b5c566f30b7613bbece985038938a9ebb:nas-feedops-sentinel/docker-compose.yml:generic-api-key:282
@@ -9,3 +9,5 @@
 45deb1b36191fadf89c39d8bdd30672b4d8f7025:.env.example:generic-api-key:6
 # ANTHROPIC_API_KEY= with no value, in an example file
 45deb1b36191fadf89c39d8bdd30672b4d8f7025:nas-feedops-sentinel/.env.example:generic-api-key:7
+# a made-up token in a test fixture for the custody check (never a secret); the fixture now assembles it at run time
+731673394f18e6f731c511dbe6a618684ddee960:instraclustr/tests/test_vault_custody.py:generic-api-key:105
