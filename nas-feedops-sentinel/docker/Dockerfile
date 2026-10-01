@@ -21,6 +21,13 @@ RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements-dev.lock
 # Stage 2: runtime image
 FROM python:3.12-slim AS runtime
 
+# Security fixes Debian has published since the base image was built. python:3.12-slim lags the security archive
+# (on 2026-10-01 it still carried openssl 3.5.7-1~deb13u2 while u3 fixed two HIGH CVEs), and the image-scan job
+# fails the build on any fixable HIGH or CRITICAL finding. Upgrading installed packages only: nothing is added.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user, uid/gid 999 pinned: the Vault Agent and spiffe-helper
 # sidecars run as this same uid and share memory-only volumes with the
 # service, owner-only (docker-compose.yml, x-secret-tmpfs).
