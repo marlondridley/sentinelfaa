@@ -93,7 +93,7 @@ Edit [`vault-policies/`](vault-policies) or [`terraform/main.tf`](terraform/main
 
 ## Configuration
 
-Copy `.env.example` to `.env`; it is gitignored. The stack will not start without `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD`. The seed job copies the database passwords into Vault, the only place the application stack reads them from. `../nas-feedops-sentinel/.env` holds no database credential. Provider keys (`DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and `GEMINI_API_KEY_2` or `_3` if used) belong here, since only the gateway needs them.
+Copy `.env.example` to `.env`; it is gitignored. The stack will not start without `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD`. The seed job copies the database passwords into Vault, the only place the application stack reads them from. `../nas-feedops-sentinel/.env` holds no database credential. The provider key (`ANTHROPIC_API_KEY`) belongs here, since only the gateway needs it.
 
 ## Hardening
 
@@ -106,10 +106,9 @@ Copy `.env.example` to `.env`; it is gitignored. The stack will not start withou
 
 The application names aliases only. `litellm-config.yaml` decides which provider serves each one:
 
-- `primary-model` is Claude Haiku 4.5, falling back to `gemini-backup`, then `claude-model` (Sonnet), on outages, timeouts and rate limits.
-- `gemini-backup` has one deployment per Gemini key, so the proxy spreads calls and benches a key that hits its quota.
+- `primary-model` is Claude Haiku 4.5, direct from Anthropic. It is the only model, and there is no fallback: when it is unavailable the Critic says so and every alert is still staged for a person.
 
-Pointing an alias at Claude, OpenAI or another Gemini model is an edit to that file; nothing in the application changes. The application's key can call only `primary-model` and `gemini-backup`, within `LITELLM_APP_BUDGET_USD` per 30 days and `LITELLM_APP_RPM` requests per minute.
+Adding another provider is an edit to that file and to `tests/test_model_provider.py`, which holds the gateway to Haiku. The application's key can call only `primary-model`, within `LITELLM_APP_BUDGET_USD` per 30 days and `LITELLM_APP_RPM` requests per minute.
 
 ## Retired files
 

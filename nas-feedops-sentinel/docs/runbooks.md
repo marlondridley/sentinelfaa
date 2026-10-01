@@ -64,8 +64,9 @@ series). The AI layer is falling back to rules. This is safe, but the advice is 
 2. Break down by outcome on Agent Evaluation, under Reliability → outcome
    classes: `quota_exhausted`, `rate_limited`, `auth_error`, `timeout`,
    `provider_error`.
-3. Quota: the gateway falls back to `gemini-backup`. If both are exhausted,
-   wait or raise the budget (`LITELLM_APP_BUDGET_USD`).
+3. Quota: there is no fallback provider. Wait for the quota to reset, raise it
+   with Anthropic, or raise the budget (`LITELLM_APP_BUDGET_USD`). Meanwhile
+   every alert is still staged and the Critic reports itself unavailable.
 
 ### ModelCircuitOpen (warning)
 
@@ -173,6 +174,8 @@ they stop too.
 1. Edit `instraclustr/litellm-config.yaml`: point the `primary-model` alias
    at the new provider (for example `anthropic/claude-…`, `openai/gpt-…`,
    `gemini/…`). The application does not change; it only knows aliases.
+   Haiku is the only approved model: also change the allow-list in
+   `instraclustr/tests/test_model_provider.py`, which is the review gate.
 2. Restart the gateway: `docker compose restart litellm` in `instraclustr/`.
 3. On Agent Evaluation, the new provider appears under Reliability →
    Providers, and its model under Cost → By served model. Every metric uses
