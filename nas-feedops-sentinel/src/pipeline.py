@@ -16,7 +16,7 @@ from src.models import NASEvent
 from src.storage import (
     get_covering_actions, get_ongoing_condition_keys, save_alerts, save_critic_result, save_events,
 )
-from src.validators import validate_event
+from src.validators import validate_batch
 
 _log = get_logger(__name__)
 
@@ -67,10 +67,8 @@ async def run_pipeline(
         extra={"label": label, "event_count": len(events), "correlation_id": cid},
     )
 
+    validate_batch(events)
     for event in events:
-        result = validate_event(event)
-        event.validation_status = "PASSED" if result.passed else "FAILED"
-        event.validation_errors = result.errors
         EVENTS_INGESTED.labels(
             source=label.lower(),
             airport=event.airport_code or "unknown",

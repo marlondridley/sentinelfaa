@@ -17,7 +17,7 @@ LLM call site:
 
 - ``redact_structured(obj)`` -- for a dict/list payload *before* it is
   serialized. Use this wherever a caller controls the payload directly
-  (e.g. watch_officer_agent.py's CrewAI ``Task`` payload).
+  (e.g. watch_officer_agent.py's context payload).
 - ``redact_text(text)`` -- for an already-built free-text prompt string.
   This is applied unconditionally inside
   ``LiteLLMClient.acall_with_tool()`` (see llm_client.py) so *every*
