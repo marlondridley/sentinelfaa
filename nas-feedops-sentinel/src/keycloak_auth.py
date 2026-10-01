@@ -22,8 +22,11 @@ The TLS path, traced against the running stack:
 What stays Sentinel's, and lives here without importing Streamlit:
 - which realm roles count (only this application's, KNOWN_ROLES);
 - how long a sign-in lasts. Streamlit's cookie is valid for 30 days; a
-  sign-in here is valid for the realm's maximum SSO session from the moment
-  the operator authenticated (auth_time), no longer;
+  sign-in here is valid for SIGN_IN_MAX_SECONDS (at most the realm's maximum
+  SSO session) from the moment the operator authenticated (auth_time), no
+  longer. Nothing asks Keycloak again in between: roles and the guest expiry
+  are the ones in the ID token, so a removed role or a disabled account keeps
+  acting until the session ends;
 - that identity URLs are HTTPS, because the realm's sign-in carries the
   operator's password;
 - when a login's access ends. Keycloak has no account expiry, so a login
@@ -40,6 +43,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from src.auth import KNOWN_ROLES, Principal, PrincipalSource
+from src.config import settings
 
 # The provider's name under [auth] in .streamlit/secrets.toml.
 PROVIDER = "keycloak"
@@ -72,8 +76,19 @@ def roles_from_claims(claims: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(str(r) for r in (roles or []) if str(r) in KNOWN_ROLES)
 
 
-def session_expires_at(claims: Mapping[str, Any], max_seconds: int = SESSION_MAX_SECONDS) -> float:
-    """When this sign-in ends: authentication time plus the realm's maximum session. 0 if unknown."""
+def session_max_seconds() -> int:
+    """
+    The longest a sign-in lasts: SIGN_IN_MAX_SECONDS, never more than the realm's own maximum. Roles and the
+    guest expiry are read from the ID token when the operator signs in and not again, so this is also the
+    longest a removed role or a disabled account can keep acting.
+    """
+    return max(0, min(SESSION_MAX_SECONDS, int(settings.SIGN_IN_MAX_SECONDS)))
+
+
+def session_expires_at(claims: Mapping[str, Any], max_seconds: int | None = None) -> float:
+    """When this sign-in ends: authentication time plus the session maximum. 0 if unknown."""
+    if max_seconds is None:
+        max_seconds = session_max_seconds()
     authenticated = claims.get("auth_time") or claims.get("iat")
     try:
         return float(authenticated) + max_seconds if authenticated else 0.0

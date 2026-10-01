@@ -37,10 +37,28 @@ def check_alerts(events: list[NASEvent]) -> list[AlertEvent]:
 
     alerts.extend(_surface_spike_alerts(events, now))
 
-    return [_with_origin(_with_stable_id(a, now), events) for a in alerts]
+    origins = _OriginIndex(events)
+    return [_with_origin(_with_stable_id(a, now), origins) for a in alerts]
 
 
-def _with_origin(alert: AlertEvent, events: list[NASEvent]) -> AlertEvent:
+class _OriginIndex:
+    """
+    Where each alert's provenance is read from: built once per batch. It was a scan of every event for every
+    alert, O(alerts x events) on the event loop: a replay of old captures, or clock skew that made every event
+    exceed the latency threshold, could hold the worker's loop until its watchdog killed the process.
+    """
+
+    def __init__(self, events: list[NASEvent]) -> None:
+        self.by_event: dict[str, str] = {}
+        self.by_airport: dict[str | None, set[str]] = {}
+        self.by_airport_service: dict[tuple[str | None, str | None], set[str]] = {}
+        for e in events:
+            self.by_event.setdefault(e.event_id, e.data_origin)
+            self.by_airport.setdefault(e.airport_code, set()).add(e.data_origin)
+            self.by_airport_service.setdefault((e.airport_code, e.service_name), set()).add(e.data_origin)
+
+
+def _with_origin(alert: AlertEvent, origins: _OriginIndex) -> AlertEvent:
     """
     An alert inherits the provenance of what raised it: its event's origin, or
     for an aggregate alert the origins of the events at that airport/service
@@ -48,12 +66,11 @@ def _with_origin(alert: AlertEvent, events: list[NASEvent]) -> AlertEvent:
     that looks live.
     """
     if alert.event_id:
-        origin = next((e.data_origin for e in events if e.event_id == alert.event_id), "unknown")
+        origin = origins.by_event.get(alert.event_id, "unknown")
     else:
-        scope = {e.data_origin for e in events
-                 if e.airport_code == alert.airport_code
-                 and (alert.service_name is None or e.service_name == alert.service_name)}
-        origin = scope.pop() if len(scope) == 1 else ("mixed" if scope else "unknown")
+        scope = (origins.by_airport.get(alert.airport_code, set()) if alert.service_name is None
+                 else origins.by_airport_service.get((alert.airport_code, alert.service_name), set()))
+        origin = next(iter(scope)) if len(scope) == 1 else ("mixed" if scope else "unknown")
     return alert.model_copy(update={"data_origin": origin})
 
 

@@ -46,6 +46,7 @@ from src.investigation.record import (
 from src.llm_client import build_llm_client
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
+from src.model_telemetry import prompt_fingerprint
 from src.prompts_loader import load_prompt, system_prompt, tool_schema
 from src.redaction import redact_structured
 from src.untrusted import fence_fields
@@ -125,13 +126,14 @@ async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tu
         model=settings.INVESTIGATION_MODEL,
         prompt_name=prompt_name,
         prompt_version=str(load_prompt(prompt_name).get("version", "")),
-        prompt_sha256=_sha(system + json.dumps(tool, sort_keys=True)),
+        prompt_sha256=prompt_fingerprint(system, tool),
         input_sha256=_sha(user),
     )
     start = time.perf_counter()
     try:
         raw = await client.acall_with_tool(
             system_prompt=system, tool=tool, user_message=user, max_tokens=1200, role=agent,
+            prompt_version=str(load_prompt(prompt_name).get("version", "")),
         )
         LLM_CALLS.labels(agent=agent, outcome="success").inc()
         return raw, provenance.model_copy(update={"latency_ms": round((time.perf_counter() - start) * 1000, 1)})

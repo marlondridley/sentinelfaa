@@ -70,15 +70,15 @@ def test_a_malformed_realm_access_grants_no_roles():
 
 # ── How long a sign-in lasts ──────────────────────────────────────────────────
 
-def test_a_sign_in_lasts_the_realms_maximum_session_from_authentication():
-    ends = SIGNED_IN_AT + ka.SESSION_MAX_SECONDS
+def test_a_sign_in_lasts_the_session_maximum_from_authentication():
+    ends = SIGNED_IN_AT + ka.session_max_seconds()
     assert ka.session_expires_at(_claims()) == ends
     assert not ka.session_expired(_claims(), now=ends - 1)
     assert ka.session_expired(_claims(), now=ends)
 
 
 def test_without_auth_time_the_token_issue_time_starts_the_session():
-    assert ka.session_expires_at(_claims(auth_time=None, iat=SIGNED_IN_AT)) == SIGNED_IN_AT + ka.SESSION_MAX_SECONDS
+    assert ka.session_expires_at(_claims(auth_time=None, iat=SIGNED_IN_AT)) == SIGNED_IN_AT + ka.session_max_seconds()
 
 
 @pytest.mark.parametrize("start", [None, "not-a-time"])
