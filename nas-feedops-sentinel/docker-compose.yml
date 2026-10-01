@@ -76,6 +76,8 @@ x-app-env: &app-env
   VAULT_AGENT_ENV_FILE: /vault/secrets/app-config.env
   # Models: proxy aliases only (instraclustr/litellm-config.yaml).
   LLM_BASE_URL: ${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+  # Refuse to start if the gateway URL is this container's own loopback.
+  REQUIRE_REMOTE_LLM_PROXY: "1"
   LLM_MODEL: ${LLM_MODEL:-primary-model}
   CRITIC_MODEL: ${CRITIC_MODEL:-primary-model}
   # Empty means LLM_MODEL. Only an alias the application's LiteLLM key may call
@@ -263,6 +265,9 @@ services:
       # and nothing else, instead of a typed callsign anyone reaching the public address could use. Set to 0
       # only for a lab run with no Keycloak.
       REQUIRE_SIGN_IN: ${REQUIRE_SIGN_IN:-1}
+      # How long a sign-in lasts (at most the realm's 10 h). Roles are read at sign-in and not re-checked, so this
+      # is also the longest a removed role or a disabled account can keep acting.
+      SIGN_IN_MAX_SECONDS: ${SIGN_IN_MAX_SECONDS:-14400}
     volumes:
       - ./data:/app/data
       - dashboard-secrets:/vault/secrets:ro
