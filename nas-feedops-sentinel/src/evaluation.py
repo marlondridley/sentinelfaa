@@ -42,6 +42,7 @@ from src.evaluation_types import (
     WARN, Gate, GateConfig, InvestigationEvaluation, _VERIFY_STEP_REJECTION, _parse, _seconds, load_gate_config,
 )
 from src.investigation.record import Investigation
+from src.model_telemetry import NOT_SENT_OUTCOMES
 
 __all__ = [
     "AGENT_STEPS", "DECIDED", "FAIL", "GROUPS", "NOT_APPLICABLE", "PARALLEL", "PASS", "PENDING", "RESPONDED",
@@ -128,7 +129,7 @@ def _call_totals(rows: list[dict]) -> dict[str, Any]:
         "completion_tokens": sum(r.get("completion_tokens") or 0 for r in rows),
         "cost_usd": _total_cost(rows),
         "served_models": sorted({r["served_model"] for r in responded if r.get("served_model")}),
-        "providers": sorted({r.get("provider") or "_OTHER" for r in rows if r["outcome"] != "policy_denied"}),
+        "providers": sorted({r.get("provider") or "_OTHER" for r in rows if r["outcome"] not in NOT_SENT_OUTCOMES}),
         "outcomes": dict(Counter(r["outcome"] for r in rows)),
     }
 

@@ -19,6 +19,16 @@ from src.storage.pool import close_db_pool
 
 
 @pytest.fixture(autouse=True)
+def _fresh_circuit_breakers():
+    """Breakers are process-wide; one test's failing gateway must not open another test's circuit."""
+    from src import llm_guard
+
+    llm_guard.reset_breakers()
+    yield
+    llm_guard.reset_breakers()
+
+
+@pytest.fixture(autouse=True)
 async def _close_this_loops_db_pool():
     yield
     await close_db_pool()

@@ -10,7 +10,10 @@ from datetime import datetime
 
 import asyncpg
 
+from src.logging_config import get_logger
 from src.models import CriticResult, PlannerResult
+
+_log = get_logger(__name__)
 
 
 class AnalysisRepository:
@@ -53,8 +56,8 @@ class AnalysisRepository:
     async def save_critic_result(self, result: CriticResult) -> None:
         query = """
             INSERT INTO critic_results (
-                alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at, bluf
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                alert_id, confidence, reasoning, citations, pattern, escalate, evaluated_at, bluf{columns}
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8{params})
             ON CONFLICT (alert_id) DO UPDATE SET
                 bluf = EXCLUDED.bluf,
                 confidence = EXCLUDED.confidence,
@@ -62,13 +65,21 @@ class AnalysisRepository:
                 citations = EXCLUDED.citations,
                 pattern = EXCLUDED.pattern,
                 escalate = EXCLUDED.escalate,
-                evaluated_at = EXCLUDED.evaluated_at;
+                evaluated_at = EXCLUDED.evaluated_at{update};
         """
-        await self._pool.execute(
-            query,
+        values = (
             result.alert_id, result.confidence, result.reasoning, json.dumps(result.citations),
             result.pattern, bool(result.escalate), result.evaluated_at, result.bluf,
         )
+        try:
+            await self._pool.execute(
+                query.format(columns=", call_id", params=", $9", update=",\n                call_id = EXCLUDED.call_id"),
+                *values, result.call_id,
+            )
+        except asyncpg.UndefinedColumnError:
+            # A database the provenance migration has not reached: the verdict still saves, without its call id.
+            _log.warning("critic_results_call_id_column_missing_run_migrations")
+            await self._pool.execute(query.format(columns="", params="", update=""), *values)
 
     async def get_critic_verdicts_since(self, since: datetime) -> list[dict]:
         """
