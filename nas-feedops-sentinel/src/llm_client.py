@@ -30,7 +30,6 @@ import litellm  # noqa: E402
 from tenacity import (
     retry,
     retry_if_exception_type,
-    stop_after_attempt,
     wait_exponential,
 )
 
@@ -41,6 +40,7 @@ from src.agent_tools import ToolCallDenied
 from src.agent_tools import authorize as authorize_tool
 from src.config import proxy_model, settings
 from src.governance import UNREGISTERED_ROLE, evaluate_model_call
+from src.llm_guard import breaker_for, current_budget
 from src.logging_config import get_correlation_id, get_logger
 from src.model_telemetry import ModelCall, classify_outcome, prompt_fingerprint, sha256_hex
 from src.model_telemetry import record as record_model_call
@@ -72,6 +72,18 @@ class LLMPermanentError(LLMError):
 
 class LLMPolicyDenied(LLMPermanentError):
     """The model-use policy (src/governance.py) refused the call; nothing was sent."""
+
+
+class LLMConnectionError(LLMTransientError):
+    """The request never reached the gateway (connection refused or dropped): the one failure worth retrying here."""
+
+
+class LLMCircuitOpen(LLMPermanentError):
+    """The alias's circuit breaker is open (src/llm_guard.py); nothing was sent."""
+
+
+class LLMBudgetExceeded(LLMPermanentError):
+    """The pipeline pass's token budget is spent (src/llm_guard.py); nothing was sent."""
 
 
 def _exc_names(*names: str) -> tuple[type[BaseException], ...]:
@@ -109,6 +121,9 @@ _PERMANENT_EXC = _exc_names(
     "UnsupportedParamsError",
 )
 
+_TIMEOUT_EXC = _exc_names("Timeout")
+_CONNECT_EXC = _exc_names("APIConnectionError")
+
 # Status codes that are worth another attempt.
 _TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
@@ -137,6 +152,13 @@ def classify(exc: BaseException) -> LLMError:
     if _PERMANENT_EXC and isinstance(exc, _PERMANENT_EXC):
         return LLMPermanentError(detail)
 
+    # Connection failures come first: litellm's Timeout is a kind of APIConnectionError, and a timeout is
+    # not "never reached the gateway" -- the call may have run, and been billed, for the whole timeout.
+    if _CONNECT_EXC and isinstance(exc, _CONNECT_EXC) and not (_TIMEOUT_EXC and isinstance(exc, _TIMEOUT_EXC)):
+        return LLMConnectionError(detail)
+    if isinstance(exc, ConnectionError):
+        return LLMConnectionError(detail)
+
     if _TRANSIENT_EXC and isinstance(exc, _TRANSIENT_EXC):
         return LLMTransientError(detail)
 
@@ -162,6 +184,11 @@ def classify(exc: BaseException) -> LLMError:
     return LLMTransientError(detail)
 
 
+def stop_after_connect_attempts(retry_state) -> bool:
+    """tenacity stop condition: LLM_CONNECT_ATTEMPTS is read at call time."""
+    return retry_state.attempt_number >= max(1, settings.LLM_CONNECT_ATTEMPTS)
+
+
 class LLMClient(Protocol):
     def call_with_tool(
         self,
@@ -185,6 +212,21 @@ class LLMClient(Protocol):
         role: str | None = None,
     ) -> dict[str, Any]:
         ...
+
+
+def _estimate_tokens(system_prompt: str, tool: dict[str, Any], user_message: str, max_tokens: int) -> int:
+    """
+    What one call may cost, held against the pass budget until its real usage is known: about a token
+    per three characters in, and the whole reply allowance out.
+    """
+    return (len(system_prompt) + len(json.dumps(tool)) + len(user_message)) // 3 + max_tokens
+
+
+def _tokens_spent(call: ModelCall, reserved: int) -> int:
+    """Real usage when a completion came back. A request that went out and got nothing back may still have been billed: charge the estimate."""
+    if call.attempts and not call.responses:
+        return reserved
+    return (call.prompt_tokens or 0) + (call.completion_tokens or 0)
 
 
 class LiteLLMClient:
@@ -293,6 +335,25 @@ class LiteLLMClient:
                 await record_model_call(call, "policy_denied", refusal)
                 raise refusal
 
+            # Two limits on spending (src/llm_guard.py), checked after the policy and before anything is sent.
+            budget = current_budget()
+            reserved = 0
+            if budget is not None:
+                reserved = _estimate_tokens(system_prompt, tool, redacted_user_message, max_tokens)
+                if not budget.reserve(reserved):
+                    refusal = LLMBudgetExceeded(
+                        f"This pass's token budget ({budget.limit}) is spent; the call was not sent.")
+                    await record_model_call(call, "budget_exhausted", refusal)
+                    raise refusal
+            breaker = breaker_for(target_model)
+            if not breaker.allow():
+                if budget is not None:
+                    budget.settle(reserved, 0)
+                refusal = LLMCircuitOpen(
+                    f"The circuit for {target_model} is open after repeated gateway failures; the call was not sent.")
+                await record_model_call(call, "circuit_open", refusal)
+                raise refusal
+
             try:
                 result = await self._acall_with_retries(
                     system_prompt, tool, redacted_user_message, max_tokens, target_model, temperature, call,
@@ -302,20 +363,29 @@ class LiteLLMClient:
                 # and the provider billed it. `except Exception` does not see a cancellation, so such a call
                 # left no model_calls row: money spent with no record. Shielded, because the task is being
                 # cancelled and the write is what is left to do.
+                breaker.release()
                 await asyncio.shield(record_model_call(call, "cancelled"))
                 raise
             except Exception as exc:
-                await record_model_call(call, classify_outcome(exc), exc)
+                outcome = classify_outcome(exc)
+                breaker.record(outcome)
+                await record_model_call(call, outcome, exc)
                 raise
-            await record_model_call(
-                call, "incomplete" if call.incomplete else "repaired" if call.repaired else "ok",
-            )
+            finally:
+                if budget is not None:
+                    budget.settle(reserved, _tokens_spent(call, reserved))
+            outcome = "incomplete" if call.incomplete else "repaired" if call.repaired else "ok"
+            breaker.record(outcome)
+            await record_model_call(call, outcome)
             return result
 
+    # The only retry in the client: a request that never reached the gateway. Anything the gateway
+    # answered (a 5xx, a 429, a timeout) it has already retried and fallen back on, provider by provider;
+    # retrying that here multiplied one failing call into dozens of upstream requests (src/llm_guard.py).
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_connect_attempts,
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(LLMTransientError),
+        retry=retry_if_exception_type(LLMConnectionError),
         reraise=True,
     )
     async def _acall_with_retries(

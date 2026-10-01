@@ -301,6 +301,17 @@ class Settings(BaseSettings):
     # alert. A cap, not a throughput target: each draft reads the database.
     TICKET_DRAFT_CONCURRENCY: int = 4
     LLM_TIMEOUT_SECONDS: float = 90.0
+    # Retries live in one place, the gateway (instraclustr/litellm-config.yaml). The client tries again
+    # only when its request never reached the gateway (a refused or dropped connection), at most this many
+    # attempts in all. 1 turns even that off. See src/llm_guard.py.
+    LLM_CONNECT_ATTEMPTS: int = 2
+    # Consecutive "gateway could not serve it" outcomes that open an alias's circuit breaker, and how long
+    # it stays open before one probe call is let through. Calls made while it is open are not sent.
+    LLM_BREAKER_THRESHOLD: int = 5
+    LLM_BREAKER_COOLDOWN_SECONDS: float = 120.0
+    # Tokens one pipeline pass may spend on the Critic and the investigations together (prompt and reply);
+    # past it, calls are refused and the agents fall back to rules. 0 means no cap.
+    LLM_TOKEN_BUDGET_PER_PASS: int = 250_000
 
     # ── Watch Officer brief (src/watch_officer_assessment.py) ───────────────
     # An alert older than WATCH_ALERT_MAX_AGE_HOURS, with no newer evidence, is history. Nothing received for
