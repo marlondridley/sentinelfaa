@@ -19,7 +19,8 @@ from src.llm_client import build_llm_client
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import BriefAssessment, NASEvent, WatchOfficerBrief
-from src.prompts_loader import system_prompt, tool_schema
+from src.model_telemetry import forget_last_call, last_call_id
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.redaction import redact_structured
 from src.untrusted import fence_fields
 from src.watch_officer_projection import project_for_model
@@ -457,6 +458,7 @@ async def _llm_narrative(
         # its briefs run about 1,200 tokens. The model-use policy's ceiling is 2,000.
         max_tokens=1800,
         role="watch_officer",
+        prompt_version=prompt_version("watch_officer"),
     )
     return RawLLMNarrative.model_validate(raw)
 
@@ -487,9 +489,11 @@ async def agenerate_watch_officer_brief(
     if use_llm and settings.CRITIC_ENABLED:
         start = time.perf_counter()
         try:
+            forget_last_call()
             narrative = await _llm_narrative(context, signals, assessment)
             LLM_CALLS.labels(agent="watch_officer", outcome="success").inc()
-            return OutputGuardrail.guard(narrative, context, signals, llm_used=True, assessment=assessment)
+            brief = OutputGuardrail.guard(narrative, context, signals, llm_used=True, assessment=assessment)
+            return brief.model_copy(update={"call_id": last_call_id()})
         except Exception as exc:  # noqa: BLE001 -- advisory layer; fall back
             LLM_CALLS.labels(agent="watch_officer", outcome="error").inc()
             _log.warning("watch_officer_llm_failed", extra={"error": str(exc)})

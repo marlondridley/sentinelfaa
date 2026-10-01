@@ -249,10 +249,27 @@ def _status_and_bluf(result, health, current, current_critical, current_reviews,
         result.status, result.status_line = "GREY", "DATA PICTURE: UNKNOWN — nothing ingested"
         result.bluf = "No data has been ingested, so the picture cannot be assessed. Confirm the feed is connected."
     elif health.state == "DEGRADED":
-        result.status = "AMBER"
-        result.status_line = ("DATA PICTURE: CATCHING UP — a backlog, not live" if health.scope == "backlog"
-                              else f"DATA PICTURE: DEGRADED — {', '.join(health.stale_airports)}")
-        result.bluf = health.reason + " Treat that picture as unverified until it recovers."
+        # A CRITICAL alert somewhere the data is trustworthy still needs a person, whatever is wrong elsewhere:
+        # the same alert is RED when every feed is healthy, and must not turn AMBER because one airport is stale.
+        stale = set(health.stale_airports)
+        reliable = [a for a in current_critical if a.get("airport_code") not in stale]
+        unverified = [a for a in current_critical if a.get("airport_code") in stale]
+        where = "catching up" if health.scope == "backlog" else f"degraded at {', '.join(health.stale_airports)}"
+        if reliable:
+            airports = sorted({a["airport_code"] for a in reliable if a.get("airport_code")})
+            result.status = "RED"
+            result.status_line = f"{len(reliable)} CRITICAL ALERT(S) NEED A DECISION — feed {where}"
+            result.bluf = (f"{len(reliable)} critical alert(s)" + (f" at {', '.join(airports)}" if airports else "")
+                           + f" from the last {ALERT_MAX_AGE_HOURS} h await a person. {health.reason}"
+                           " Treat the degraded picture as unverified until it recovers.")
+        else:
+            result.status = "AMBER"
+            result.status_line = ("DATA PICTURE: CATCHING UP — a backlog, not live" if health.scope == "backlog"
+                                  else f"DATA PICTURE: DEGRADED — {', '.join(health.stale_airports)}")
+            result.bluf = health.reason + " Treat that picture as unverified until it recovers."
+        if unverified:
+            result.bluf += (f" {len(unverified)} critical alert(s) at {', '.join(sorted({a.get('airport_code') or '?' for a in unverified}))}"
+                            " cannot be verified while that feed is degraded.")
     else:
         if current_critical:
             result.status, result.status_line = "RED", f"{len(current_critical)} CRITICAL ALERT(S) NEED A DECISION"

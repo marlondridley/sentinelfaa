@@ -7,7 +7,7 @@ asyncpg pool that binds itself to whichever event loop first created it
 (storage.get_db_pool() caches that pool in a module-level global).
 
 Callers that are otherwise synchronous (the Streamlit dashboard script,
-CrewAI's synchronous Crew.kickoff() flow) need a way to run those
+the SWIM file scanner) need a way to run those
 coroutines to completion. Don't reach for asyncio.run() for this: it
 spins up a brand-new event loop on every call, so the *second* call
 would try to reuse a pool bound to a loop asyncio.run() already closed

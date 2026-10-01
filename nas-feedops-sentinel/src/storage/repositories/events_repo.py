@@ -10,7 +10,18 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
+from src.config import settings
+
+from src.logging_config import get_logger
+from src.metrics import EVENT_ORIGIN_CONFLICTS
 from src.models import AlertEvent, NASEvent
+
+_log = get_logger(__name__)
+
+
+def _default_since() -> datetime:
+    """Where an aggregate with no explicit window starts: STATS_WINDOW_HOURS ago."""
+    return datetime.now(timezone.utc) - timedelta(hours=settings.STATS_WINDOW_HOURS)
 
 
 def _critic_window(window_minutes: int, as_of: datetime | None) -> tuple[datetime, datetime | None]:
@@ -66,7 +77,11 @@ _UPSERT_EVENT_SQL = """
                 validation_errors = EXCLUDED.validation_errors,
                 raw_message_path = EXCLUDED.raw_message_path,
                 status_code = EXCLUDED.status_code,
-                data_origin = EXCLUDED.data_origin;
+                data_origin = EXCLUDED.data_origin
+            -- A row is only ever rewritten by the origin that wrote it (or by the feed that replaces a
+            -- migrated row whose origin was unknowable). Otherwise an API or replay event that reused a live
+            -- event_id replaced the stored row and flipped its origin, which made a healthy feed look stale.
+            WHERE nas_events.data_origin IN (EXCLUDED.data_origin, 'unknown');
         """
 
 
@@ -108,12 +123,27 @@ def _alert_args(alert: AlertEvent) -> tuple:
     )
 
 
+async def _note_origin_conflicts(conn: asyncpg.Connection, events: list[NASEvent]) -> None:
+    """
+    Say so when an event's id belongs to a row of another origin: the upsert leaves that row alone, and
+    a silent skip would hide either a client choosing ids or two origins that derive the same one.
+    """
+    stored = {r["event_id"]: r["data_origin"] for r in await conn.fetch(
+        "SELECT event_id, data_origin FROM nas_events WHERE event_id = ANY($1::text[])", [e.event_id for e in events])}
+    for event in events:
+        was = stored.get(event.event_id)
+        if was is not None and was not in (event.data_origin, "unknown"):
+            EVENT_ORIGIN_CONFLICTS.labels(incoming=event.data_origin, stored=was).inc()
+            _log.warning("event_origin_conflict", extra={
+                "event_id": event.event_id, "incoming_origin": event.data_origin, "stored_origin": was})
+
+
 class EventsRepository:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def save_event(self, event: NASEvent) -> None:
-        await self._pool.execute(_UPSERT_EVENT_SQL, *_event_args(event))
+        await self.save_events([event])
 
     async def save_alert(self, alert: AlertEvent) -> None:
         await self._pool.execute(_UPSERT_ALERT_SQL, *_alert_args(alert))
@@ -127,6 +157,7 @@ class EventsRepository:
         if not events:
             return
         async with self._pool.acquire() as conn, conn.transaction():
+            await _note_origin_conflicts(conn, events)
             await conn.executemany(_UPSERT_EVENT_SQL, [_event_args(e) for e in events])
 
     async def save_alerts(self, alerts: list[AlertEvent]) -> None:
@@ -221,23 +252,24 @@ class EventsRepository:
         )
         return {(r["airport_code"], r["service_name"]): r["last_seen"] for r in rows}
 
-    async def get_latest_rvr(self) -> list[dict]:
+    async def get_latest_rvr(self, since: datetime | None = None) -> list[dict]:
+        """The latest RVR reading of each runway received since `since` (STATS_WINDOW_HOURS back by default)."""
         query = """
             SELECT e.*
             FROM nas_events e
             INNER JOIN (
                 SELECT airport_code, runway, MAX(event_time_utc) AS max_time
                 FROM nas_events
-                WHERE service_name = 'APDS_RVR'
+                WHERE service_name = 'APDS_RVR' AND received_time_utc >= $1
                 GROUP BY airport_code, runway
             ) latest
               ON e.airport_code = latest.airport_code
              AND e.runway        = latest.runway
              AND e.event_time_utc = latest.max_time
-            WHERE e.service_name = 'APDS_RVR'
+            WHERE e.service_name = 'APDS_RVR' AND e.received_time_utc >= $1
             ORDER BY e.airport_code, e.runway
         """
-        rows = await self._pool.fetch(query)
+        rows = await self._pool.fetch(query, since or _default_since())
         return [dict(r) for r in rows]
 
     async def get_by_ids(self, event_ids: list[str]) -> dict[str, dict]:
@@ -266,17 +298,17 @@ class EventsRepository:
     async def get_validation_summary(
         self, since: datetime | None = None, *, data_origin: str | None = None,
     ) -> dict:
-        """Validation counts over everything stored, or only events received since `since` / of `data_origin`."""
+        """Validation counts for events received since `since` (STATS_WINDOW_HOURS back by default) and of `data_origin`."""
         query = """
             SELECT
                 COUNT(*) AS total,
                 COALESCE(SUM(CASE WHEN validation_status = 'PASSED' THEN 1 ELSE 0 END), 0) AS passed,
                 COALESCE(SUM(CASE WHEN validation_status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed
             FROM nas_events
-            WHERE ($1::timestamptz IS NULL OR received_time_utc >= $1)
+            WHERE received_time_utc >= $1
               AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query, since, data_origin)
+        row = await self._pool.fetchrow(query, since or _default_since(), data_origin)
         return dict(row) if row else {"total": 0, "passed": 0, "failed": 0}
 
     async def get_events_for_critic(
@@ -370,7 +402,7 @@ class EventsRepository:
         return [dict(r) for r in rows]
 
     async def get_latency_stats(self, since: datetime | None = None, *, data_origin: str | None = None) -> dict:
-        """Latency over everything stored, or only events received since `since` / of `data_origin`."""
+        """Latency of events received since `since` (STATS_WINDOW_HOURS back by default) and of `data_origin`."""
         query = """
             SELECT
                 AVG(latency_ms) AS avg_ms,
@@ -378,8 +410,8 @@ class EventsRepository:
                 MAX(latency_ms) AS max_ms
             FROM nas_events
             WHERE latency_ms IS NOT NULL
-              AND ($1::timestamptz IS NULL OR received_time_utc >= $1)
+              AND received_time_utc >= $1
               AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query, since, data_origin)
+        row = await self._pool.fetchrow(query, since or _default_since(), data_origin)
         return dict(row) if row else {"avg_ms": None, "min_ms": None, "max_ms": None}

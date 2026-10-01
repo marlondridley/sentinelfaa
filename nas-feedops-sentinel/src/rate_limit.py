@@ -36,6 +36,39 @@ class Cooldown:
             return 0.0
 
 
+class TokenBucket:
+    """
+    A token bucket per key: a burst of `per_minute` requests, refilled evenly over the minute.
+
+    `try_acquire` returns 0.0 when the request may proceed, else the seconds until a token is back. State
+    is in this process; the API runs as one process per container, and the edge proxy is the limit in front.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic, max_keys: int = 4096) -> None:
+        self._clock = clock
+        self._max_keys = max_keys
+        self._buckets: dict[str, tuple[float, float]] = {}    # key -> (tokens, last refill)
+        self._lock = threading.Lock()
+
+    def try_acquire(self, key: str, per_minute: int) -> float:
+        if per_minute <= 0:
+            return 0.0
+        rate = per_minute / 60.0
+        with self._lock:
+            now = self._clock()
+            tokens, last = self._buckets.get(key, (float(per_minute), now))
+            tokens = min(float(per_minute), tokens + (now - last) * rate)
+            if tokens < 1.0:
+                self._buckets[key] = (tokens, now)
+                return (1.0 - tokens) / rate
+            if key not in self._buckets and len(self._buckets) >= self._max_keys:
+                # Forget keys that have refilled completely: they are indistinguishable from new ones.
+                self._buckets = {k: v for k, v in self._buckets.items()
+                                 if v[0] + (now - v[1]) * rate < per_minute}
+            self._buckets[key] = (tokens - 1.0, now)
+            return 0.0
+
+
 _model_actions: Cooldown | None = None
 
 

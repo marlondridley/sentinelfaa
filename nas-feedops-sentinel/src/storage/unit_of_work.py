@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 from types import TracebackType
+from typing import Any
 
 import asyncpg
 
@@ -34,13 +35,20 @@ class UnitOfWork:
 
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
-        self._conn_ctx = None
-        self._tx_ctx = None
-        self.conn: asyncpg.Connection | None = None
+        self._conn_ctx: Any = None
+        self._tx_ctx: Any = None
+        self._conn: asyncpg.Connection | None = None
+
+    @property
+    def conn(self) -> asyncpg.Connection:
+        """The transaction's connection. Only inside `async with`: outside it there is none, and saying so beats a None."""
+        if self._conn is None:
+            raise RuntimeError("UnitOfWork.conn is only available inside 'async with UnitOfWork(pool)'")
+        return self._conn
 
     async def __aenter__(self) -> "UnitOfWork":
         self._conn_ctx = self._pool.acquire()
-        self.conn = await self._conn_ctx.__aenter__()
+        self._conn = await self._conn_ctx.__aenter__()
         self._tx_ctx = self.conn.transaction()
         await self._tx_ctx.__aenter__()
         return self
@@ -50,11 +58,12 @@ class UnitOfWork:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
-    ) -> bool:
+    ) -> None:
         # conn.transaction()'s __aexit__ commits when exc_type is None and rolls back
         # otherwise; the connection is released back to the pool either way.
         try:
             await self._tx_ctx.__aexit__(exc_type, exc, tb)
         finally:
             await self._conn_ctx.__aexit__(exc_type, exc, tb)
-        return False
+            self._conn = None
+        # Never swallows an exception: the transaction has been rolled back, and the caller sees it.

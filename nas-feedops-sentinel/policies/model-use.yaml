@@ -49,7 +49,7 @@ rules:
 
   - name: gateway-aliases-only
     priority: 90
-    condition: {field: model, operator: not_in, value: [openai/primary-model, openai/gemini-backup]}
+    condition: {field: model, operator: not_in, value: [openai/primary-model]}
     action: deny
     message: >
       Only the gateway aliases the application's LiteLLM key may call. Which
