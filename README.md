@@ -190,7 +190,7 @@ The suite (about 490 tests at this writing, 18 of them strict xfails that docume
 
 ## Models
 
-Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`), and settings that name a provider route directly (`gemini/...`) are refused at startup, so changing providers is an edit to that file, not to the application. Today `primary-model` is DeepSeek with Gemini as fallback: a low-cost test configuration that can be pointed at Claude, OpenAI or Gemini the same way. Real FAA operational data needs an authorized endpoint, for example Claude on Bedrock GovCloud, Azure OpenAI Government, or an on-premises vLLM or NIM deployment.
+Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`), and settings that name a provider route directly (`anthropic/...`) are refused at startup, so changing providers is an edit to that file, not to the application. Today `primary-model` is Claude Haiku 4.5 and nothing else: one provider, no fallback, held to that by a test (`instraclustr/tests/test_model_provider.py`). Real FAA operational data needs an authorized endpoint, for example Claude on Bedrock GovCloud, Azure OpenAI Government, or an on-premises vLLM or NIM deployment.
 
 ---
 

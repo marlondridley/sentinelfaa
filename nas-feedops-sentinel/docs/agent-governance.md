@@ -55,8 +55,8 @@ through it. On every call it:
    positions, callsigns), with no opt-out;
 2. asks the model-use policy, then checks that the output tool the role hands
    the model is that role's own (see boundary 3);
-3. sends to the LiteLLM gateway only, by alias (`primary-model`,
-   `gemini-backup`), under a scoped virtual key with a budget and a rate
+3. sends to the LiteLLM gateway only, by alias (`primary-model`),
+   under a scoped virtual key with a budget and a rate
    limit;
 4. is bounded: `LLM_TIMEOUT_SECONDS`, three attempts for transient errors,
    and one schema-repair request, never more;

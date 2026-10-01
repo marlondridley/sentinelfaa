@@ -108,7 +108,7 @@ docstring for what each step asserts.
   token from shares 1 and 2, one Terraform run, revoked.
 * **LLM proxy.** The application holds a LiteLLM virtual key, not the master
   key. `instraclustr/litellm-bootstrap.sh` issues it after the proxy is up
-  (alias `sentinel-app`: `primary-model` and `gemini-backup` only, a 30-day
+  (alias `sentinel-app`: `primary-model` only, a 30-day
   budget `LITELLM_APP_BUDGET_USD`, `LITELLM_APP_RPM` requests/minute) and
   stores it in Vault. LiteLLM keeps keys in its own `litellm` database
   (`litellm-db-init.sh`).
@@ -220,15 +220,15 @@ How the AI layer is governed, boundary by boundary, is
 
 ## Models
 
-`instraclustr/litellm-config.yaml` routes the `primary-model` alias to
-Claude Haiku 4.5 (direct from Anthropic), then Gemini, then Claude Sonnet as fallbacks. `gemini-backup` has one deployment per
-Gemini key (`GEMINI_API_KEY`, `_2`, `_3`); the proxy spreads calls across
-them and benches a key that hits its quota (the free tier allows 20
-requests/day per model per project). That is a low-cost test configuration.
-None of these providers is an authorized boundary for FAA operational data; move
-`primary-model` to an approved endpoint before real feed data reaches it.
-Application settings name aliases only (`LLM_MODEL=primary-model`);
-provider routes such as `gemini/...` are refused at startup.
+`instraclustr/litellm-config.yaml` routes the `primary-model` alias to Claude
+Haiku 4.5, direct from Anthropic. It is the only model and there is no
+fallback; `instraclustr/tests/test_model_provider.py` holds it to that. When
+it is unavailable the Critic reports itself unavailable and every alert is
+still staged for a person. This is a test configuration, not an authorized
+boundary for FAA operational data: move `primary-model` to an approved
+endpoint before real feed data reaches it. Application settings name aliases
+only (`LLM_MODEL=primary-model`); provider routes such as `anthropic/...` are
+refused at startup.
 
 **Retries, breaker and budget** (`src/llm_guard.py`, `src/llm_client.py`).
 The gateway is the one layer that retries provider calls and falls back
