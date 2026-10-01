@@ -29,4 +29,5 @@ diagnostics.txt
 **/*.pyc
 keycloak/*
 !keycloak/realm-nas-sentinel.json
-monitoring/
+# monitoring/ (Prometheus rules, scrape config, Alertmanager) is let into the test stage only: tests/ pin the
+# alert rules and the scrape targets. It holds no secret (the Slack webhook arrives by environment).
