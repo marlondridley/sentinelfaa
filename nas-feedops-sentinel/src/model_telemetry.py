@@ -15,7 +15,9 @@ gen_ai.client.* metrics, and the model_calls row readiness measures
 the same definition as the old one. record() never raises: losing a
 measurement must not lose the call's result or change what the caller falls
 back to. No prompt or response text is recorded, on the span or in the row
--- not even an exception message, which can quote the model's reply.
+-- not even an exception message, which can quote the model's reply. What is recorded of the
+prompt is its hash and version, of the input its hash, and of the redaction how many
+substitutions it made.
 
 Outcome classes -- the failure modes readiness reports on:
 
@@ -31,12 +33,17 @@ Outcome classes -- the failure modes readiness reports on:
   bad_request      the request itself was rejected (400/404/422, context window)
   provider_error   5xx, connection failures, anything else upstream
   policy_denied    refused by the model-use policy; nothing was sent
+  circuit_open     the alias's circuit breaker was open (src/llm_guard.py); nothing was sent
+  budget_exhausted the pipeline pass's token budget was spent; nothing was sent
   cancelled        the caller cancelled it (an activity timeout, a shutdown) before an answer came back; the
                    request may already have been sent and billed
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -57,12 +64,41 @@ RETURNED_OUTCOMES = ("ok", "repaired", "incomplete")
 OUTCOMES = (
     "ok", "repaired", "incomplete", "invalid_output", "timeout", "rate_limited",
     "quota_exhausted", "auth_error", "bad_request", "provider_error", "policy_denied", "cancelled",
+    "circuit_open", "budget_exhausted",
 )
+# Outcomes of calls this system refused itself: nothing was sent, so they say nothing about the model.
+NOT_SENT_OUTCOMES = ("policy_denied", "circuit_open", "budget_exhausted")
 
 # Messages src/llm_client.py raises itself when the model's reply is unusable.
 _INVALID_OUTPUT_MARKERS = (
     "non-JSON content", "not an object", "Empty completion content", "Unexpected LiteLLM response shape",
 )
+
+
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def prompt_fingerprint(system_prompt: str, tool: dict[str, Any]) -> str:
+    """
+    SHA-256 of everything fixed about a call's instructions: the system prompt and the output tool's
+    schema. The same formula the investigation's Provenance uses, so the two records agree on it.
+    """
+    return sha256_hex(system_prompt + json.dumps(tool, sort_keys=True))
+
+
+# The id of the most recent model call finished in this context: how a caller that gets a bare
+# dict back links its own record (a Critic verdict, a brief) to the model_calls row behind it.
+_last_call_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("last_model_call_id", default=None)
+
+
+def last_call_id() -> str | None:
+    return _last_call_id.get()
+
+
+def forget_last_call() -> None:
+    """Call before an operation whose own call id is wanted, so an earlier call's id cannot be mistaken for it."""
+    _last_call_id.set(None)
 
 
 @dataclass
@@ -90,6 +126,12 @@ class ModelCall:
     policy_action: str = "unevaluated"
     policy_rule: str | None = None
     policy_name: str | None = None
+    # What went out, without keeping any of it: hashes that let a stored prompt or input be matched to
+    # the call, the prompt file's version label, and how many substitutions the redaction made.
+    prompt_hash: str | None = None
+    prompt_version: str | None = None
+    input_hash: str | None = None
+    redaction_count: int | None = None
 
     def add_response(self, response: Any) -> None:
         """Fold in one completion's served model, token usage and cost."""
@@ -133,10 +175,14 @@ def response_cost(response: Any) -> float | None:
 
 def classify_outcome(exc: BaseException) -> str:
     """Map a failed call's exception onto an outcome class."""
-    from src.llm_client import LLMPolicyDenied
+    from src.llm_client import LLMBudgetExceeded, LLMCircuitOpen, LLMPolicyDenied
 
     if isinstance(exc, LLMPolicyDenied):
         return "policy_denied"
+    if isinstance(exc, LLMCircuitOpen):
+        return "circuit_open"
+    if isinstance(exc, LLMBudgetExceeded):
+        return "budget_exhausted"
     text = str(exc)
     if any(marker in text for marker in _INVALID_OUTPUT_MARKERS):
         return "invalid_output"
@@ -194,6 +240,10 @@ def call_attributes(call: ModelCall, outcome: str, error: BaseException | None =
         otel.ATTEMPTS: call.attempts,
         otel.REPAIRED: call.repaired,
         otel.COST_USD: _recorded_cost(call),
+        otel.PROMPT_HASH: call.prompt_hash,
+        otel.PROMPT_VERSION: call.prompt_version,
+        otel.INPUT_HASH: call.input_hash,
+        otel.REDACTION_COUNT: call.redaction_count,
     }
 
 
@@ -223,12 +273,17 @@ def row_from_attributes(
         "policy_action": a[otel.AGT_DECISION],
         "policy_rule": a.get(otel.AGT_RULE),
         "error_type": a.get(otel.EXCEPTION_TYPE),
+        "prompt_hash": a.get(otel.PROMPT_HASH),
+        "prompt_version": a.get(otel.PROMPT_VERSION),
+        "input_hash": a.get(otel.INPUT_HASH),
+        "redaction_count": a.get(otel.REDACTION_COUNT),
     }
 
 
 async def record(call: ModelCall, outcome: str, error: BaseException | None = None) -> None:
     """Annotate the span, count the call, and store its row. Never raises."""
     latency_s = time.perf_counter() - call.started
+    _last_call_id.set(call.call_id)
     attributes = call_attributes(call, outcome, error)
     trace_id = None
     try:

@@ -106,7 +106,6 @@ __all__ = [
     "get_latest_watch_officer_brief",
     "get_recent_watch_officer_briefs",
     "create_operational_ticket",
-    "save_operational_ticket",
     "get_recent_operational_tickets",
     "get_draft_operational_tickets",
     "get_ticket_by_id",
@@ -435,11 +434,6 @@ async def get_recent_watch_officer_briefs(limit: int = 10) -> list[WatchOfficerB
 async def create_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
     repo = TicketsRepository(await get_db_pool())
     return await repo.create(ticket)
-
-
-async def save_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
-    repo = TicketsRepository(await get_db_pool())
-    return await repo.save(ticket)
 
 
 async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTicket]:
