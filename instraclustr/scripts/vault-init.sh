@@ -11,8 +11,7 @@ vault secrets enable -version=2 -path=secret kv 2>/dev/null || echo "Secret engi
 : "${POSTGRES_USER:?Missing POSTGRES_USER in environment}"
 : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD in environment}"
 : "${POSTGRES_DB:?Missing POSTGRES_DB in environment}"
-: "${DEEPSEEK_API_KEY:?Missing DEEPSEEK_API_KEY in environment}"
-: "${GEMINI_API_KEY:?Missing GEMINI_API_KEY in environment}"
+: "${ANTHROPIC_API_KEY:?Missing ANTHROPIC_API_KEY in environment}"
 : "${LLM_API_KEY:?Missing LLM_API_KEY in environment}"
 
 # 2. Enable KV Version 2 engine at path 'secret'
@@ -29,8 +28,7 @@ vault kv put secret/postgres/credentials \
 # 4. Seed LiteLLM Keys
 echo "Seeding LLM API keys for LiteLLM..."
 vault kv put secret/litellm \
-  DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
-  GEMINI_API_KEY="${GEMINI_API_KEY}" \
+  ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
   LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}"
 
 # 5. Seed Sentinel App Proxy Key

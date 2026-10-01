@@ -33,7 +33,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 import pandas as pd
 import streamlit as st
 
-from lib import agent_eval, theme
+from lib import agent_eval, safe_text, theme
 from lib.data import format_ts, parse_json_str_list
 from lib.investigation_view import load_investigation, render_investigation
 from lib.page_setup import bootstrap_page
@@ -151,7 +151,7 @@ def _review_detail(action) -> None:
         + theme._esc(_suggests(action).lower()) + (f" · {conf:.0%}" if conf is not None else "") + "</span></div>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"**AI summary:** {_summary(action)}")
+    st.markdown(f"**AI summary:** {safe_text.plain(_summary(action))}")
     covered = run(storage.get_covered_alert_ids(action.action_id))
     first, last = action.first_seen_at or action.created_at, action.last_seen_at or action.created_at
     st.markdown(
@@ -178,7 +178,7 @@ def _review_detail(action) -> None:
             theme.evidence_list("Evidence", ticket.evidence or [], limit=4)
         if ticket.critic_rationale:
             with st.expander("AI Critic rationale"):
-                st.markdown(ticket.critic_rationale)
+                st.markdown(safe_text.plain(ticket.critic_rationale))
 
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.BLUE5};'
@@ -364,7 +364,7 @@ else:
                 + "</div>",
                 unsafe_allow_html=True,
             )
-            st.markdown(reasoning if reasoning else "_No reasoning recorded._")
+            st.markdown(safe_text.plain(reasoning) if reasoning else "_No reasoning recorded._")
             cits = parse_json_str_list(cr.get("citations", "[]"), "citations")
             if cits:
                 st.markdown(theme.event_chips(cits, _cited_events), unsafe_allow_html=True)
@@ -503,7 +503,8 @@ else:
     st.dataframe(audit_df, hide_index=True, use_container_width=True, height=260)
     st.download_button(
         "Download the audit trail as CSV",
-        data=audit_df.to_csv(index=False).encode("utf-8"),
+        # An operator's note or an actor name that starts with = + - @ would run as a formula in a spreadsheet.
+        data=safe_text.csv_safe(audit_df).to_csv(index=False).encode("utf-8"),
         file_name="pct_decision_audit_trail.csv",
         mime="text/csv",
         help="For an incident record or an external review.",

@@ -102,11 +102,11 @@ __all__ = [
     "get_pending_staged_actions",
     "get_recent_staged_actions",
     "get_action_audit_log",
+    "record_operator_action",
     "save_watch_officer_brief",
     "get_latest_watch_officer_brief",
     "get_recent_watch_officer_briefs",
     "create_operational_ticket",
-    "save_operational_ticket",
     "get_recent_operational_tickets",
     "get_draft_operational_tickets",
     "get_ticket_by_id",
@@ -196,9 +196,9 @@ async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
     return await repo.get_origin_counts(window_minutes)
 
 
-async def get_latest_rvr() -> list[dict]:
+async def get_latest_rvr(since: datetime | None = None) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_latest_rvr()
+    return await repo.get_latest_rvr(since)
 
 
 async def get_last_seen_by_feed(since: datetime) -> dict[tuple[str | None, str | None], datetime]:
@@ -408,6 +408,23 @@ async def get_recent_staged_actions(limit: int = 25) -> list[StagedAction]:
     return await repo.get_recent(limit)
 
 
+async def record_operator_action(
+    kind: str, actor: str, previous_status: str, new_status: str, note: str = "", *, action_id: str | None = None,
+) -> str:
+    """
+    Append an operator's destructive action to the append-only audit trail, under `kind:<id>` (the same
+    arrangement as a ticket transition's "ticket:<id>"). Returns the id, so a later entry can follow the first.
+    """
+    import uuid
+
+    from src.storage.repositories.audit_repo import AuditLogRepository
+
+    pool = await get_db_pool()
+    action_id = action_id or f"{kind}:{uuid.uuid4()}"
+    await AuditLogRepository(pool).write(pool, action_id, previous_status, new_status, actor, note)
+    return action_id
+
+
 async def get_action_audit_log(action_id: str | None = None, limit: int = 50) -> list[dict]:
     repo = StagedActionsRepository(await get_db_pool())
     return await repo.get_audit_log(action_id, limit)
@@ -435,11 +452,6 @@ async def get_recent_watch_officer_briefs(limit: int = 10) -> list[WatchOfficerB
 async def create_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
     repo = TicketsRepository(await get_db_pool())
     return await repo.create(ticket)
-
-
-async def save_operational_ticket(ticket: OperationalTicket) -> OperationalTicket:
-    repo = TicketsRepository(await get_db_pool())
-    return await repo.save(ticket)
 
 
 async def get_recent_operational_tickets(limit: int = 25) -> list[OperationalTicket]:

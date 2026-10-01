@@ -74,6 +74,12 @@ ALERTS_TRIGGERED = Counter(
 )
 
 
+EVENT_ORIGIN_CONFLICTS = Counter(
+    "nas_event_origin_conflicts_total",
+    "Events left unwritten because their id belongs to a stored row of another data origin.",
+    ["incoming", "stored"],
+)
+
 # ── LLM metrics ───────────────────────────────────────────────────────────────
 
 LLM_CALL_LATENCY = Histogram(
@@ -87,6 +93,21 @@ LLM_CALLS = Counter(
     "nas_llm_calls_total",
     "Total LLM calls by outcome.",
     ["agent", "outcome"],  # outcome: success | error | disabled | guardrail_rejected
+)
+
+LLM_CIRCUIT_STATE = Gauge(
+    "nas_llm_circuit_state",
+    "Circuit breaker per model alias: 0 closed, 1 half-open (probing), 2 open (calls refused).",
+    ["model"],
+)
+LLM_CIRCUIT_OPENED = Counter(
+    "nas_llm_circuit_opened_total",
+    "Times a model alias's circuit breaker opened after consecutive gateway failures.",
+    ["model"],
+)
+LLM_BUDGET_REFUSALS = Counter(
+    "nas_llm_budget_refusals_total",
+    "Model calls refused because the pipeline pass's token budget was spent.",
 )
 
 

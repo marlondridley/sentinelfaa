@@ -15,7 +15,13 @@ from src.metrics import start_metrics_server
 from src.models import NASEvent
 from src.pipeline import run_pipeline
 from src.replay import replay_from_directory
-from src.swim_file_ingest import commit_scan, request_shutdown, scan_swim_folder, watch_swim_folder
+from src.swim_file_ingest import (
+    commit_scan,
+    isolate_poison,
+    request_shutdown,
+    scan_swim_folder,
+    watch_swim_folder,
+)
 
 _log = get_logger(__name__)
 
@@ -122,7 +128,12 @@ def main() -> None:
                 "swim_watch_pipeline_dispatch",
                 extra={"event_count": len(events), "files_processed": stats.files_processed},
             )
-            _run_pipeline(events, "REPLAY")
+            try:
+                _run_pipeline(events, "REPLAY")
+            except Exception as exc:  # noqa: BLE001
+                # About the data: store file by file and quarantine the offender. About the database: the claims
+                # are released and this raises, and the watcher tries the folder again.
+                isolate_poison(events, stats, lambda file_events: _run_pipeline(file_events, "REPLAY"), exc)
 
         watch_swim_folder(
             target_path, reconcile_interval=args.reconcile_interval, on_events=_on_events
@@ -145,7 +156,10 @@ def main() -> None:
                     extra={"error_count": len(parse_errors), "target_path": str(target_path)},
                 )
         if events:
-            _run_pipeline(events, "REPLAY")
+            try:
+                _run_pipeline(events, "REPLAY")
+            except Exception as exc:  # noqa: BLE001
+                isolate_poison(events, stats, lambda file_events: _run_pipeline(file_events, "REPLAY"), exc)
         else:
             _log.warning("replay_scan_no_events_found", extra={"target_path": str(target_path)})
         # Archived and logged only now that the events are stored. Also when there were none: messages that

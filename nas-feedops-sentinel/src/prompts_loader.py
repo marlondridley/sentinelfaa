@@ -33,5 +33,10 @@ def system_prompt(name: str) -> str:
     return load_prompt(name)["system_prompt"].rstrip() + "\n\n" + NOTICE
 
 
+def prompt_version(name: str) -> str:
+    """The `version` in prompts/<name>.yaml: the label a model-call record carries beside the prompt's hash."""
+    return str(load_prompt(name).get("version", ""))
+
+
 def tool_schema(name: str) -> dict[str, Any]:
     return load_prompt(name)["tool"]
