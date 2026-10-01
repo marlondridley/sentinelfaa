@@ -14,7 +14,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from lib import theme
+from lib import safe_text, theme
 from src.async_bridge import run_async as run
 from src.investigation.record import Investigation
 
@@ -30,7 +30,7 @@ def load_investigation(action_id: str) -> Investigation | None:
     try:
         return run(_load(action_id))
     except Exception as exc:  # noqa: BLE001 -- a broken record must not hide the queue
-        st.warning(f"Investigation record could not be loaded: {exc}")
+        st.warning(safe_text.failure("The investigation record could not be loaded", exc))
         return None
 
 
@@ -71,7 +71,7 @@ def render_investigation(inv: Investigation | None) -> None:
 
     with st.expander("Investigation: evidence, challenges, what to verify"):
         if brief:
-            st.markdown(f"**Situation.** {brief.situation}")
+            st.markdown(f"**Situation.** {safe_text.plain(brief.situation)}")
             if brief.established:
                 st.markdown("**Established by the evidence**")
                 for c in brief.established:

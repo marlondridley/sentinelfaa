@@ -1,87 +1,30 @@
 # LiteLLM proxy: the only way the application reaches a model.
 #
-# The application only ever names the aliases below (model_name), through
-# the proxy's OpenAI-compatible route; src/config.proxy_model() refuses any
-# direct provider route. Swapping providers happens here, not in app code.
+# The application only ever names the alias below (model_name), through the
+# proxy's OpenAI-compatible route; src/config.proxy_model() refuses any direct
+# provider route. Swapping the model happens here, not in app code.
 #
-# Current routing is a TEST configuration: Claude Haiku 4.5 (direct from
-# Anthropic) primary, then Gemini, then Claude Sonnet. None of them is an
-# authorized boundary for FAA operational data --
-# before real feed data is sent, primary-model must move to an approved
-# endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure
-# OpenAI Government, or on-prem inference).
+# One provider, one model: Claude Haiku 4.5, direct from Anthropic. There is no
+# fallback. When it is down or out of quota the Critic reports itself
+# unavailable (and the circuit breaker, ModelCircuitOpen, says so) and every
+# alert is still staged for a person: the AI layer is advisory by design.
+# instraclustr/tests/test_model_provider.py holds this to Haiku only, so adding
+# another provider is a reviewed change to that test as well as to this file.
+#
+# This is a TEST configuration, not an authorized boundary for FAA operational
+# data -- before real feed data is sent, primary-model must move to an approved
+# endpoint (Claude on Bedrock GovCloud / Vertex Assured Workloads, Azure OpenAI
+# Government, or on-prem inference).
 model_list:
-  # Primary: Claude Haiku 4.5. The application only ever names primary-model
-  # (its LiteLLM key and policies/model-use.yaml allow nothing else), so which
-  # provider answers is decided here. DeepSeek was the primary until its key
-  # was rejected (401); to go back, swap this entry for:
-  #   model: deepseek/deepseek-chat
-  #   api_key: "os.environ/DEEPSEEK_API_KEY"
-  #   api_base: "https://api.deepseek.com"
   - model_name: primary-model
     litellm_params:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: "os.environ/ANTHROPIC_API_KEY"
 
-  # gemini-2.5-flash is closed to new API keys (Google returns 404 and names
-  # gemini-3.8-flash as the replacement), so the Gemini aliases point there.
-  #
-  # One deployment per free-tier key under the same alias: the router spreads
-  # requests across them and, when one key returns 429 (the free tier allows
-  # 20 requests/day/model per project), cools it down and uses the next.
-  # Gemini 3.x reasons before it answers, and the reasoning spends the caller's
-  # max_tokens (the Watch Officer asks for 900): the JSON stopped mid-string with
-  # finish_reason=length. reasoning_effort: low, on every Gemini deployment below,
-  # leaves room for the answer.
-  - model_name: gemini-backup
-    litellm_params:
-      model: gemini/gemini-3.8-flash
-      api_key: "os.environ/GEMINI_API_KEY"
-      reasoning_effort: low
-
-  - model_name: gemini-backup
-    litellm_params:
-      model: gemini/gemini-3.8-flash
-      api_key: "os.environ/GEMINI_API_KEY_2"
-      reasoning_effort: low
-
-  # Third key (GEMINI_API_KEY_3 in .env): uncomment once it is set. An entry
-  # with an empty key fails every call routed to it.
-  # - model_name: gemini-backup
-  #   litellm_params:
-  #     model: gemini/gemini-3.8-flash
-  #     api_key: "os.environ/GEMINI_API_KEY_3"
-
-  # Claude Sonnet 5.5, direct from Anthropic (the same service-account key,
-  # scoped to the sentinelfaa workspace): the last stop in the fallback chain.
-  # Like the other providers here it is a TEST route, not an authorized
-  # boundary for FAA operational data (see the note at the top).
-  - model_name: claude-model
-    litellm_params:
-      model: anthropic/claude-sonnet-5-5
-      api_key: "os.environ/ANTHROPIC_API_KEY"
-      # Sonnet reasons by default, and that spends the caller's max_tokens (the
-      # Critic asks for 1000): the reply can stop with finish_reason=length and
-      # no content. "thinking: disabled" is ignored by this model; a low
-      # reasoning effort leaves room for the answer.
-      reasoning_effort: low
-
-  - model_name: gemini-flash
-    litellm_params:
-      model: gemini/gemini-3.8-flash
-      api_key: "os.environ/GEMINI_API_KEY"
-      reasoning_effort: low
-
-# Fallbacks belong here. They used to sit inside the primary-model entry,
-# where the proxy does not read them, so a DeepSeek failure had no fallback.
 router_settings:
-  fallbacks:
-    # Haiku (primary-model), then Gemini (free-tier keys), then Claude Sonnet, when
-    # the one before is down, out of quota or refusing the key. Names must match
-    # model_name above exactly (hyphens). Claude is paid.
-    - primary-model: ["gemini-backup", "claude-model"]
-  # One retry: a second key gets a chance, without multiplying calls against
-  # a quota that is already gone. A failing key is benched for a minute.
+  # One retry, in the gateway and nowhere else (the application client retries
+  # only a request that never reached it). A failing deployment is benched for a
+  # minute.
   num_retries: 1
   allowed_fails: 1
   cooldown_time: 60

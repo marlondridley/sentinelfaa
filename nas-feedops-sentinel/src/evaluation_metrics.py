@@ -15,7 +15,7 @@ from src.evaluation_types import (
     DECIDED, GROUPS, PASS, PENDING, RESPONDED, GateConfig, InvestigationEvaluation, _seconds,
 )
 from src.investigation.record import Investigation
-from src.model_telemetry import SUCCESS_OUTCOMES
+from src.model_telemetry import NOT_SENT_OUTCOMES, SUCCESS_OUTCOMES
 
 
 def _mean(values) -> float | None:
@@ -47,7 +47,7 @@ def _value_samples(pair) -> dict[str, Any]:
 def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], verdicts: list[dict],
               investigations: list[Investigation], config: GateConfig, engine: Any) -> dict[str, Any]:
     """The metric groups for a window. Every value names its kind: AGT-native, AGT-compatible or Sentinel-specific."""
-    sent = [c for c in calls if c["outcome"] != "policy_denied"]
+    sent = [c for c in calls if c["outcome"] not in NOT_SENT_OUTCOMES]
     window = _Window(
         evaluations=evaluations, calls=calls, verdicts=verdicts, investigations=investigations, config=config,
         engine=engine, model_runs=[e for e in evaluations if e.used_model], sent=sent,
@@ -123,7 +123,7 @@ def _seconds_by_agent(w: _Window) -> dict[str, list[float]]:
             if step.agent:
                 by_agent.setdefault(step.agent, []).append(_seconds(step.started_at, step.finished_at))
     for c in w.calls:
-        if c.get("role") in ("critic", "planner") and c["outcome"] != "policy_denied":
+        if c.get("role") in ("critic", "planner") and c["outcome"] not in NOT_SENT_OUTCOMES:
             by_agent.setdefault(c["role"], []).append(c["latency_ms"] / 1000.0)
     return by_agent
 

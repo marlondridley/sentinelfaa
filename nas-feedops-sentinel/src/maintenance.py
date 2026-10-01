@@ -18,14 +18,28 @@ from src.metrics import SWIM_FILES_DROPPED_UNPROCESSED
 _log = get_logger(__name__)
 
 
+def _audit(actor: str, previous: str, new: str, note: str, action_id: str | None = None) -> str:
+    from src import storage
+    from src.async_bridge import run_async
+
+    return run_async(storage.record_operator_action(
+        "kit_purge", actor, previous, new, note, action_id=action_id))
+
+
 def purge_old_kit_files(
     log_path: Path,
     max_age_minutes: int = 5,
+    *,
+    actor: str | None = None,
 ) -> tuple[int, int]:
     """
     Delete files in log_path whose mtime is older than now - max_age_minutes.
 
     Returns (files_removed, files_remaining).
+
+    `actor` is the person who asked (auth.format_actor). Given one, the request is written to the append-only
+    audit trail BEFORE anything is deleted -- if it cannot be, nothing is -- and the outcome after. A person
+    deleting messages nobody has ingested is a decision, and is recorded like one.
 
     Ingested messages are moved out of this folder, so a message file still here is one nobody has
     ingested: deleting it is a drop, and is counted and logged as one.
@@ -36,6 +50,10 @@ def purge_old_kit_files(
     if not log_path.exists() or not log_path.is_dir():
         return (0, 0)
 
+    audit_id = None
+    if actor:
+        audit_id = _audit(actor, "WAITING", "DELETE_REQUESTED",
+                          f"delete message files older than {max_age_minutes} minute(s) from the Kit log")
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
     removed = 0
     remaining = 0
@@ -62,7 +80,15 @@ def purge_old_kit_files(
     if dropped:
         SWIM_FILES_DROPPED_UNPROCESSED.inc(dropped)
         _log.warning("swim_janitor_dropped_unprocessed",
-                     extra={"count": dropped, "older_than_minutes": max_age_minutes, "folder": str(log_path)})
+                     extra={"count": dropped, "older_than_minutes": max_age_minutes, "folder": str(log_path),
+                            "actor": actor or "janitor"})
+    if actor:
+        try:
+            _audit(actor, "DELETE_REQUESTED", "DELETED",
+                   f"deleted {removed} file(s), {dropped} of them messages never ingested; {remaining} remain",
+                   action_id=audit_id)
+        except Exception as exc:  # noqa: BLE001 -- the request is already on record; the deletion is done
+            _log.error("kit_purge_outcome_not_audited", extra={"actor": actor, "removed": removed, "error": str(exc)})
     return (removed, remaining)
 
 

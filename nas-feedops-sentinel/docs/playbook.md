@@ -157,7 +157,7 @@ a gate limit is a reviewed code change. The tests pin the policy decisions.
 
 ## Switching model provider
 
-Sentinel is model-agnostic. DeepSeek, Gemini, OpenAI or Claude sit behind
+Sentinel is model-agnostic, though today only Claude Haiku sits behind
 the same gateway alias and are measured the same way. To change provider,
 follow the runbook "Change the model provider". Watch Agent Evaluation for
 the new provider's row under Reliability, and let readiness reach a verdict

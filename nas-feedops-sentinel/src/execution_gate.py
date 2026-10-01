@@ -64,6 +64,7 @@ Public API:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from datetime import timedelta
@@ -185,7 +186,7 @@ def _derive_recommended_action(
         else False
     )
 
-    if critic_escalates and critic.confidence is not None:
+    if critic is not None and critic_escalates and critic.confidence is not None:
         pattern = (
             critic.pattern
             or "UNKNOWN"
@@ -252,6 +253,8 @@ async def _refresh_hitl_queue_metric() -> None:
 async def stage_critical_alert(
     alert: AlertEvent,
     critic_result: CriticResult | None = None,
+    *,
+    draft_ticket: bool = True,
 ) -> StagedAction | None:
     """
     Stage a CRITICAL alert for human review.
@@ -270,6 +273,10 @@ async def stage_critical_alert(
     Returns the review only when this call opened it -- the caller builds its
     ticket and investigation once -- and None when the alert is not CRITICAL,
     joined an existing review, or was already staged.
+
+    The advisory ticket is drafted here by default. A caller staging a batch passes
+    draft_ticket=False, stages every alert first, then drafts the tickets with
+    draft_escalation_tickets() -- so a slow ticket never delays the next alert's review.
 
     No execution occurs here.
     """
@@ -329,28 +336,57 @@ async def stage_critical_alert(
 
     await _refresh_hitl_queue_metric()
 
-    # Advisory ticket generation happens AFTER the action has been staged.
-    #
-    # If Watch Officer fails, the transactional HITL action remains intact.
+    if draft_ticket:
+        await _draft_ticket(result, alert, critic_result)
+
+    return result
+
+
+async def _draft_ticket(
+    staged: StagedAction,
+    alert: AlertEvent,
+    critic_result: CriticResult | None,
+) -> None:
+    """
+    Advisory ticket generation, always AFTER the action has been staged.
+
+    If Watch Officer fails, the transactional HITL action remains intact.
+    """
     try:
-        await _build_escalation_package(
-            result,
-            alert,
-            critic_result,
-        )
-
+        await _build_escalation_package(staged, alert, critic_result)
     except Exception as exc:  # noqa: BLE001
-
         get_logger(__name__).warning(
             "ticket_creation_failed",
             extra={
-                "action_id": result.action_id,
+                "action_id": staged.action_id,
                 "alert_id": alert.alert_id,
                 "error": str(exc),
             },
         )
 
-    return result
+
+async def draft_escalation_tickets(
+    staged: list[tuple[StagedAction, AlertEvent, CriticResult | None]],
+    *,
+    concurrency: int | None = None,
+) -> None:
+    """
+    Draft the Watch Officer ticket for each already-staged review, `concurrency` at a time.
+
+    Every review is staged before this runs, so the time to a CRITICAL alert sitting in the
+    queue no longer grows with the number of alerts ahead of it. One ticket failing is logged
+    and does not stop the rest.
+    """
+    if not staged:
+        return
+    limit = max(1, concurrency or settings.TICKET_DRAFT_CONCURRENCY)
+    slots = asyncio.Semaphore(limit)
+
+    async def one(action: StagedAction, alert: AlertEvent, critic: CriticResult | None) -> None:
+        async with slots:
+            await _draft_ticket(action, alert, critic)
+
+    await asyncio.gather(*(one(*item) for item in staged))
 
 
 async def _build_escalation_package(
