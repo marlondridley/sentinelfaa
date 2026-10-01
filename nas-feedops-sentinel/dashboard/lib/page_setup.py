@@ -35,7 +35,9 @@ from urllib.parse import urlencode
 import streamlit as st
 
 from src.auth import Principal, PrincipalSource, format_actor
+from src.config import settings
 from src.logging_config import get_logger
+from src.metrics import start_metrics_server
 
 from lib import login as _login
 from lib import theme
@@ -207,6 +209,7 @@ def bootstrap_page(page_title: str, page_icon: str = "✈") -> Principal:
     page's approve/reject actions) doesn't have to re-read it out of
     st.session_state itself.
     """
+    _expose_metrics()
     st.set_page_config(page_title=page_title, page_icon=page_icon, layout="wide")
 
     # The stylesheet goes in first even for a signed-out visitor: the login
@@ -218,6 +221,19 @@ def bootstrap_page(page_title: str, page_icon: str = "✈") -> Principal:
     require_oidc_auth()
     _provenance_banner()
     return render_operator_identity_sidebar()
+
+
+def _expose_metrics() -> None:
+    """
+    Serve this process's Prometheus metrics on METRICS_PORT, once however many pages and reruns there are
+    (start_metrics_server is idempotent). Prometheus scrapes it as the nas-dashboard job, so "the dashboard
+    stopped answering" is an `up == 0` like every other service, and the model calls and CRITICAL-path counters
+    the dashboard's own actions raise (the planner, a refreshed brief) are visible.
+    """
+    try:
+        start_metrics_server(port=settings.METRICS_PORT)
+    except Exception as exc:  # noqa: BLE001 -- observability must never stop a page from rendering
+        _log.warning("dashboard_metrics_server_failed", extra={"error": f"{type(exc).__name__}: {exc}"})
 
 
 def _provenance_banner() -> None:

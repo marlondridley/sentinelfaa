@@ -253,7 +253,8 @@ services:
     <<: [*app-image, *hardened]
     container_name: nas-dashboard
     restart: unless-stopped
-    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
+    # dashboard.serve starts the metrics server with the process (Prometheus job nas-dashboard), then runs Streamlit.
+    command: python -m dashboard.serve --server.address=0.0.0.0 --server.headless=true
     environment:
       <<: *app-env
       # Streamlit writes machine_id under $HOME; /app/.streamlit is mounted read-only.
@@ -431,6 +432,9 @@ services:
       - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       - POSTGRES_SEEDS=temporal-postgresql
+      # Prometheus metrics, scraped by monitoring/prometheus.yml (job nas-temporal). Not published on the host:
+      # only Prometheus, on this network, reads it.
+      - PROMETHEUS_ENDPOINT=0.0.0.0:8000
     ports:
       # Loopback only. Temporal has no authentication configured: anyone who
       # can reach this port can start workflows, bypassing the API's auth.
