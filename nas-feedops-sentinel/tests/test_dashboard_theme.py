@@ -168,6 +168,36 @@ def test_unlinked_tile_is_a_div_with_no_drill_affordance():
     assert "kpi-drill" not in tile
 
 
+def _rule(css: str, selector: str) -> str:
+    """The declarations of the stylesheet's one rule with exactly this selector."""
+    [declarations] = re.findall(r"(?m)^\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    return declarations
+
+
+def test_the_drill_badge_sits_beside_the_label_never_over_it(monkeypatch):
+    """
+    The badge was position:absolute over the tile's top right corner, and the label kept 64px clear for it:
+    enough for "OPEN →", not for "BREAKDOWN →" or "BY SERVICE →", which printed over the label on a
+    laptop-width tile. The badge is now in the label's row at its own width, whatever it says.
+    """
+    emitted: list[str] = []
+    monkeypatch.setattr(theme.st, "markdown", lambda body, **_: emitted.append(body))
+    theme.inject_theme()
+    [css] = emitted
+
+    tile, label, badge = _rule(css, ".kpi"), _rule(css, ".kpi > .kpi-label"), _rule(css, ".kpi > .kpi-drill")
+    assert "display: flex" in tile and "row-reverse wrap" in tile
+    assert "min-width: min-content" in label, "a tile too narrow for both wraps the badge above; it never splits a word"
+    assert "flex: 0 0 auto" in badge and "white-space: nowrap" in badge
+    assert not re.search(r"\.kpi-drill\s*\{[^}]*position:\s*absolute", css), "out of the row, it prints over the label"
+    assert not re.search(r"\.kpi-label\s*\{[^}]*padding-right", css), "a fixed reservation fits one badge text only"
+
+    html = theme.kpi("Schema conformance", "98.2", unit="%", href=theme.drill_href("health"), drill="BREAKDOWN →")
+    assert html.index("kpi-drill") < html.index("kpi-label"), "row-reverse: the first of the two is the one on the right"
+    assert '<div class="kpi-label">Schema conformance</div><div class="kpi-value"' in html, \
+        "the page tests read a tile as its label, then its value"
+
+
 def test_map_tooltips_escape_what_they_interpolate():
     """
     The deck.gl tooltip is HTML assigned to innerHTML, and aircraft_id is an
