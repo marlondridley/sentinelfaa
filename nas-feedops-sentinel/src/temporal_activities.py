@@ -11,7 +11,8 @@ from src import config
 from src.logging_config import bind_correlation_id, get_logger
 from src.models import NASEvent
 from src.pipeline import run_pipeline
-from src.swim_file_ingest import commit_scan, run_retention, scan_swim_folder
+from src.async_bridge import run_async
+from src.swim_file_ingest import commit_scan, isolate_poison, release_scan, run_retention, scan_swim_folder
 
 _log = get_logger(__name__)
 
@@ -53,7 +54,20 @@ async def ingest_folder_activity(
     # pipeline has stored their events. If it fails they stay claimed, Temporal
     # retries the activity, and the claims are released for another scan.
     events, stats = await asyncio.to_thread(scan_swim_folder, source, defer_archive=True)
-    summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
+    try:
+        summary = await run_pipeline(events, label="INGEST", correlation_id=cid)
+    except asyncio.CancelledError:
+        # A timeout or a shutdown: the files go back now, not after the claim timeout.
+        await asyncio.to_thread(release_scan, stats)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # A failure about the data is isolated to the files that cause it; anything else releases every claim
+        # and raises, for Temporal to retry a folder that is visible again.
+        def store(file_events):
+            return run_async(run_pipeline(file_events, label="INGEST", correlation_id=cid))
+
+        await asyncio.to_thread(isolate_poison, events, stats, store, exc)
+        summary = {"isolated_after": f"{type(exc).__name__}"}
     await asyncio.to_thread(commit_scan, stats)
     await asyncio.to_thread(run_retention)      # rate-limited; a thread, because it reaches storage through the bridge
     _log.info(

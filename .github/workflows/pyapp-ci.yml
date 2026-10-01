@@ -2,7 +2,7 @@ name: Sentinel CI
 
 # Every push touching the application or its infrastructure, and every PR
 # whatever its base (main, dev, test, or a stacked branch):
-#   test          build the test image once; lint, then the full suite
+#   test          build the test image once; lint, types (mypy), then the full suite
 #                 (including scripts/e2e_proof.py) against a real Postgres;
 #                 coverage of src/ and dashboard/, with a floor for src/
 #   audit         pip-audit over the hash-locked runtime dependencies
@@ -72,6 +72,12 @@ jobs:
       - name: Lint (ruff, rules in ruff.toml)
         working-directory: nas-feedops-sentinel
         run: docker run --rm -v "$PWD:/w:ro" -w /w nas-feedops-sentinel:test ruff check --no-cache src tests scripts dashboard
+
+      - name: Types (mypy on storage, the execution gate and auth; rules in mypy.ini)
+        # The code a wrong value would harm most. mypy is in requirements-dev.lock, so it is hash-locked like
+        # everything else in the test image. The cache goes to /tmp: the checkout is mounted read-only.
+        working-directory: nas-feedops-sentinel
+        run: docker run --rm -v "$PWD:/w:ro" -w /w nas-feedops-sentinel:test python -m mypy --cache-dir=/tmp/mypy-cache
 
       - name: Test suite and end-to-end proof
         # Coverage counts lines and branches, for src/ and dashboard/ (the

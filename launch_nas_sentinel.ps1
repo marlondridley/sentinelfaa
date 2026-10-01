@@ -37,7 +37,7 @@ Write-Host "Starting NAS FeedOps Sentinel Launch Sequence..." -ForegroundColor C
 # 0. .env is the source of truth for the stacks it configures.
 # docker compose lets a variable already in this process's environment
 # override the same key in --env-file. A stale Windows user variable did
-# exactly that: DEEPSEEK_API_KEY held an old placeholder, so the proxy kept
+# exactly that: a provider key variable held an old placeholder, so the proxy kept
 # getting it even after .env had the real key. For this process only (nothing
 # persistent is changed), remove any variable an env file also defines.
 function Clear-ShadowingEnv([string]$envFile) {

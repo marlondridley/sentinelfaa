@@ -55,8 +55,8 @@ through it. On every call it:
    positions, callsigns), with no opt-out;
 2. asks the model-use policy, then checks that the output tool the role hands
    the model is that role's own (see boundary 3);
-3. sends to the LiteLLM gateway only, by alias (`primary-model`,
-   `gemini-backup`), under a scoped virtual key with a budget and a rate
+3. sends to the LiteLLM gateway only, by alias (`primary-model`),
+   under a scoped virtual key with a budget and a rate
    limit;
 4. is bounded: `LLM_TIMEOUT_SECONDS`, three attempts for transient errors,
    and one schema-repair request, never more;
@@ -322,7 +322,12 @@ quietly edited afterwards.
   - `investigations`: each record sealed with a SHA-256 and verified on
     every read;
   - `model_calls`: one row per model call, projected from its chat span's
-    attributes, with `trace_id` linking back to the trace.
+    attributes, with `trace_id` linking back to the trace. Each row also
+    carries the prompt's hash and version, the hash of the redacted input
+    that was sent, and the redaction count; no prompt or input text is
+    kept. A Critic verdict (`critic_results.call_id`) and a Watch Officer
+    brief (`watch_officer_briefs.call_id`) carry the id of the call that
+    produced them.
 - AGT's audit log records every policy decision, including tool calls,
   through OpenTelemetry.
 - Provenance on every specialist output: model, prompt version, prompt and

@@ -28,7 +28,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from lib import theme  # noqa: E402
+from lib import safe_text, theme  # noqa: E402
 from lib.agent_eval import NO_DATA, pct, seconds, usd  # noqa: E402
 from lib.page_setup import bootstrap_page  # noqa: E402
 from src import readiness  # noqa: E402
@@ -52,7 +52,7 @@ _choice = st.segmented_control("Window", list(_WINDOWS), default="Last 24 hours"
 try:
     report = run(readiness.build_report(_WINDOWS[_choice]))
 except Exception as exc:  # noqa: BLE001
-    st.error(f"The evaluation could not be built: {type(exc).__name__}: {exc}")
+    st.error(safe_text.failure("The evaluation could not be built", exc))
     st.stop()
 
 m = report.breakdown or {}
