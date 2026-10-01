@@ -52,7 +52,8 @@ Nothing ingested in 30 minutes.
 2. Is `nas-sentinel` running and watching that folder?
    `docker logs nas-sentinel --since 30m`
 3. `data/raw/swim_live/log/.inflight/` should be empty or nearly so. Claims
-   older than 10 minutes are released automatically.
+   older than 4 minutes (a crashed scanner's) are released automatically; a
+   failed scan releases its own at once.
 
 ### LLMErrorRateHigh (warning)
 
