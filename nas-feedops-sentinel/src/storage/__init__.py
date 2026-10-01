@@ -196,9 +196,9 @@ async def get_origin_counts(window_minutes: int = 60) -> dict[str, int]:
     return await repo.get_origin_counts(window_minutes)
 
 
-async def get_latest_rvr() -> list[dict]:
+async def get_latest_rvr(since: datetime | None = None) -> list[dict]:
     repo = EventsRepository(await get_db_pool())
-    return await repo.get_latest_rvr()
+    return await repo.get_latest_rvr(since)
 
 
 async def get_last_seen_by_feed(since: datetime) -> dict[tuple[str | None, str | None], datetime]:
