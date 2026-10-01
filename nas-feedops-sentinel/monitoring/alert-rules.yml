@@ -153,3 +153,37 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "{{ $labels.job }} is not answering Prometheus"
+
+  # The alerting path watching itself. Everything above fails silently if these
+  # do: a rule that fires into a broken Alertmanager or Slack pages nobody.
+  - name: nas-sentinel-alerting
+    rules:
+      - alert: Watchdog
+        # Fires all the time, on purpose. Alertmanager holds it (alertmanager.yml
+        # routes it to a receiver that sends nothing). Present in Alertmanager's
+        # UI = rules are reaching it; absent = they are not.
+        expr: vector(1)
+        labels: {severity: none}
+        annotations:
+          summary: "Alerting heartbeat: this always fires"
+          description: "Held, never sent. If it is missing from Alertmanager (https://localhost:8448), rules are not reaching it."
+
+      - alert: AlertNotificationsFailing
+        # Slack did not accept what Alertmanager sent: a wrong, revoked or
+        # missing webhook URL, or no route out. This one cannot reach Slack
+        # either; it shows at https://localhost:8447/alerts and in Alertmanager.
+        expr: sum by (integration) (increase(alertmanager_notifications_failed_total[15m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Alertmanager cannot deliver to {{ $labels.integration }}"
+          description: "Check SLACK_WEBHOOK_URL and `docker logs nas-alertmanager`. docs/runbooks.md."
+
+      - alert: AlertsNotReachingAlertmanager
+        # Prometheus fired something and could not hand it over.
+        expr: sum(increase(prometheus_notifications_errors_total[10m])) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Prometheus cannot send alerts to Alertmanager"
+          description: "Is nas-alertmanager running? `docker ps`, `docker logs nas-prometheus`. docs/runbooks.md."
