@@ -38,10 +38,38 @@ it signs -- including renewals -- are trusted automatically.
     Import-Certificate -FilePath nas-feedops-sentinel\\tls\\edge-ca.crt `
         -CertStoreLocation Cert:\\CurrentUser\\Root
 
-Idempotent: the authority is kept for its lifetime; the server certificate is
-re-issued only when missing, near expiry, or not signed by the current
-authority. This is for one machine. Anything shared needs a certificate from a
-real CA (an internal PKI).
+What trusting it vouches for: this stack's local names, nothing else. The
+authority's certificate carries critical name constraints (RFC 5280 4.2.1.10)
+and is for TLS servers only:
+
+  permitted DNS  localhost, keycloak   the names its server certificates carry
+                                       (and names under them, e.g. a.localhost)
+  permitted IP   127.0.0.1             the address they carry
+  excluded  IP   every IPv6 address    none is used
+  usage          serverAuth            no client, code-signing or e-mail use
+
+So whoever reads edge-ca.key can mint a certificate for these names and
+nothing else: Windows, Chrome and Edge (112 and later), OpenSSL (nginx, the
+dashboard) and Go (cloudflared) refuse one for any other name, and Windows
+refuses one used to sign code. (Java, in the Keycloak container, does not
+apply a trust anchor's constraints; its clients there only reach localhost
+and 127.0.0.1.) This mirrors the SPIRE upstream CA's constraints
+(../instraclustr/certs/policy/signing.cnf). A new name for a server
+certificate needs a new authority: add it to both LEAVES and PERMITTED_DNS.
+
+Idempotent: the authority is kept for its lifetime, unless its key is missing
+or not its own, or its constraints are not exactly the ones above -- every
+authority made before they existed is replaced, with a new key, and every
+server certificate re-issued. Its thumbprint then changes: trust the new
+edge-ca.crt once and remove the old one from the OS store (the launcher and
+scripts/Setup-Keycloak.ps1 name it). A server certificate is re-issued when
+missing, near expiry, issued for other names, or not signed by the current
+authority's key. An authority with another name is the operator's own
+(docs/runbooks.md, Certificates): it is published as it is, never replaced,
+and its server certificates are theirs to renew.
+
+This is for one machine. Anything shared needs a certificate from a real CA
+(an internal PKI).
 """
 from __future__ import annotations
 
@@ -52,6 +80,7 @@ import sys
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -65,7 +94,8 @@ EDGE_DIR, KEYCLOAK_DIR, TRUST_DIR = "edge", "keycloak", "trust"
 MOUNT_DIRS = (EDGE_DIR, KEYCLOAK_DIR, TRUST_DIR)
 
 # (directory, certificate file, key file, key file mode, DNS names). Every
-# server certificate also carries 127.0.0.1.
+# server certificate also carries LOOPBACK.
+LOOPBACK = "127.0.0.1"
 LEAVES = (
     (EDGE_DIR, CERT_NAME, KEY_NAME, 0o600, ("localhost",)),
     (KEYCLOAK_DIR, KEYCLOAK_CERT, KEYCLOAK_KEY, 0o640, ("keycloak", "localhost")),
@@ -79,6 +109,20 @@ CA_VALID_DAYS = 3650
 VALID_DAYS = 397          # browsers reject leaf certificates valid for longer
 RENEW_WITHIN_DAYS = 30
 ORG = "NAS FeedOps Sentinel (local)"
+CA_NAME = x509.Name([
+    x509.NameAttribute(NameOID.COMMON_NAME, "NAS FeedOps Sentinel Local CA"),
+    x509.NameAttribute(NameOID.ORGANIZATION_NAME, ORG),
+])
+
+# What the authority may sign for (the module docstring): exactly the names
+# LEAVES carries, which tests/test_identity_tls.py holds the two to.
+PERMITTED_DNS = ("localhost", "keycloak")
+NAME_CONSTRAINTS = x509.NameConstraints(
+    permitted_subtrees=[x509.DNSName(name) for name in PERMITTED_DNS]
+    + [x509.IPAddress(ipaddress.ip_network(f"{LOOPBACK}/32"))],
+    excluded_subtrees=[x509.IPAddress(ipaddress.ip_network("::/0"))],
+)
+CA_USAGE = x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH])
 
 
 def _now() -> dt.datetime:
@@ -98,21 +142,53 @@ def _load_cert(path: Path) -> x509.Certificate | None:
         return None
 
 
-def _ensure_ca(directory: Path) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey, bool]:
-    cert, key_path = _load_cert(directory / CA_CERT), directory / CA_KEY
-    if cert and key_path.exists() and cert.not_valid_after_utc - _now() > dt.timedelta(days=RENEW_WITHIN_DAYS):
-        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+def _load_key(path: Path):
+    try:
+        return serialization.load_pem_private_key(path.read_bytes(), password=None)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _public_der(public_key) -> bytes:
+    return public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+
+
+def _is_constrained(ca: x509.Certificate) -> bool:
+    """True if the authority can sign for exactly this stack's names, and for TLS servers only."""
+    try:
+        constraints = ca.extensions.get_extension_for_class(x509.NameConstraints)
+        usage = ca.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound:
+        return False
+    return constraints.critical and constraints.value == NAME_CONSTRAINTS and usage == CA_USAGE
+
+
+def _ca_problem(ca: x509.Certificate, key) -> str | None:
+    """Why this module's authority must be replaced, or None to keep it."""
+    if key is None or _public_der(key.public_key()) != _public_der(ca.public_key()):
+        return "its key is missing or is not the key of its certificate"
+    if ca.not_valid_after_utc - _now() <= dt.timedelta(days=RENEW_WITHIN_DAYS):
+        return "it expires within 30 days"
+    if not _is_constrained(ca):
+        return "it was not limited to this stack's names (localhost, keycloak, 127.0.0.1)"
+    return None
+
+
+def _ensure_ca(directory: Path) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey | None, bool]:
+    """The authority, its key (None for the operator's own authority), and whether it is new."""
+    cert, key = _load_cert(directory / CA_CERT), _load_key(directory / CA_KEY)
+    if cert is not None and cert.subject != CA_NAME:
+        return cert, None, False              # an authority of the operator's (docs/runbooks.md)
+    problem = "there was none" if cert is None else _ca_problem(cert, key)
+    if problem is None:
         return cert, key, False
+    old = cert
 
     key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "NAS FeedOps Sentinel Local CA"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, ORG),
-    ])
     ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
     cert = (
         x509.CertificateBuilder()
-        .subject_name(name).issuer_name(name)
+        .subject_name(CA_NAME).issuer_name(CA_NAME)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(_now() - dt.timedelta(minutes=5))
@@ -122,11 +198,18 @@ def _ensure_ca(directory: Path) -> tuple[x509.Certificate, ec.EllipticCurvePriva
             digital_signature=True, key_cert_sign=True, crl_sign=True, content_commitment=False,
             key_encipherment=False, data_encipherment=False, key_agreement=False,
             encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(NAME_CONSTRAINTS, critical=True)
+        .add_extension(CA_USAGE, critical=False)
         .add_extension(ski, critical=False)
         .sign(key, hashes.SHA256())
     )
-    _write_key(key_path, key)
+    # Written over the old key: nothing signs with it after this.
+    _write_key(directory / CA_KEY, key)
     (directory / CA_CERT).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    if old is not None:
+        print(f"replaced the local authority ({problem}); every server certificate is re-issued. "
+              f"Trust the new {CA_CERT} once and remove the old one from the OS store "
+              "(docs/runbooks.md, Certificates).")
     return cert, key, True
 
 
@@ -135,8 +218,12 @@ def _leaf_is_current(directory: Path, ca: x509.Certificate, cert_name: str, key_
     leaf = _load_cert(directory / cert_name)
     if leaf is None or not (directory / key_name).exists():
         return False
-    if leaf.issuer != ca.subject:
-        return False                          # e.g. the old self-signed certificate
+    try:
+        leaf.verify_directly_issued_by(ca)
+    except (ValueError, TypeError, InvalidSignature):
+        # The old self-signed certificate, or one from a replaced authority:
+        # that has the current authority's name, but not its key.
+        return False
     try:
         names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
