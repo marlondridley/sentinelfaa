@@ -12,7 +12,7 @@ from src.config import settings
 from src.guardrails import OutputGuardrail
 from src.llm_client import build_llm_client
 from src.models import PlannerResult
-from src.prompts_loader import system_prompt, tool_schema
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.untrusted import fence, fence_fields
 
 
@@ -159,6 +159,7 @@ class PlannerAgent:
             max_tokens=1000,
             temperature=0.1,
             role="planner",
+            prompt_version=prompt_version("planner"),
         )
 
     def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:
