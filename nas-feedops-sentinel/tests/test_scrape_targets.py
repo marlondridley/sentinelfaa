@@ -74,6 +74,27 @@ def test_the_down_alert_covers_every_job_so_the_new_targets_are_included():
 
 # ── the dashboard process serves them ───────────────────────────────────────────
 
+def test_the_container_starts_the_metrics_server_with_the_process_not_with_the_first_page():
+    """A page-triggered server does not exist until someone visits, so an idle dashboard read as down."""
+    command = _compose()["services"]["dashboard"]["command"]
+    assert command.startswith("python -m dashboard.serve ") and "--server.address=0.0.0.0" in command
+
+
+def test_serve_starts_the_metrics_server_then_runs_streamlit_with_the_same_arguments(monkeypatch):
+    from streamlit.web import cli
+
+    from dashboard import serve
+
+    order: list = []
+    monkeypatch.setattr(serve, "start_metrics_server", lambda **kw: order.append(("metrics", kw)))
+    monkeypatch.setattr(cli, "main", lambda: order.append(("streamlit", list(sys.argv))))
+
+    assert serve.main(["--server.address=0.0.0.0", "--server.headless=true"]) == 0
+
+    assert order[0] == ("metrics", {"port": settings.METRICS_PORT}), "the metrics server comes first"
+    assert order[1] == ("streamlit", ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.headless=true"])
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
