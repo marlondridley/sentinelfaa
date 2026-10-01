@@ -56,6 +56,19 @@ FAILED_DIR: Path = DATA_DIR / "failed"
 # whenever DATABASE_URL is empty.
 
 
+# Values an example file ships with. A deployment still carrying one has no secret at all.
+_PLACEHOLDER_SECRETS = frozenset({
+    "change-me", "changeme", "change_me", "replace-me", "replaceme", "replace_me", "your-api-key", "your_api_key",
+    "yourapikey", "api-key", "api_key", "apikey", "example", "placeholder", "todo", "secret", "password", "test",
+})
+
+
+def is_placeholder_secret(value: str | None) -> bool:
+    """True for an empty value or one of the stand-ins an example file carries (change-me, your-api-key, <key>...)."""
+    text = (value or "").strip().lower()
+    return (not text or text in _PLACEHOLDER_SECRETS
+            or text.startswith(("change-me", "changeme", "replace-me", "your-", "<")))
+
 def _is_loopback_url(url: str) -> bool:
     """True when the URL's host is this machine: localhost, 127.0.0.0/8, ::1 or 0.0.0.0."""
     import ipaddress
@@ -406,6 +419,11 @@ class Settings(BaseSettings):
     # this is false. It used to fail open -- and in practice the API was only
     # protected because it silently accepted the LiteLLM proxy key instead.
     API_AUTH_REQUIRED: bool = True
+    # A request body larger than this is refused with 413 before it is read (10,000 events of ~1 KB fit).
+    API_MAX_BODY_BYTES: int = 10 * 1024 * 1024
+    # Ingest requests one principal may make per minute (a token bucket: a burst of this many, refilled evenly).
+    # 0 turns the limit off. Keyed by the authenticated principal, so one caller cannot use up another's.
+    API_INGEST_RATE_PER_MINUTE: int = 60
     API_DOCS_ENABLED: bool = False
 
     # Self-declared (typed-callsign) operators may approve/override/reject only
