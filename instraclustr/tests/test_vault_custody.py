@@ -11,6 +11,11 @@ from pathlib import Path
 import pytest
 
 INFRA = Path(__file__).resolve().parent.parent
+
+# A made-up token. Assembled here, never written whole in a source line: a literal is token-shaped, and gitleaks
+# (which reads every branch's history) rightly cannot tell a fixture from a leak.
+FAKE_TOKEN = "hvs" + "." + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+SECRET_ENV_TOKEN = "hvs" + "." + "SECRETSECRETSECRETSECRET1"
 _spec = importlib.util.spec_from_file_location("vault_custody", INFRA / "scripts" / "vault_custody.py")
 vc = importlib.util.module_from_spec(_spec)
 sys.modules["vault_custody"] = vc          # a dataclass resolves its own module by name
@@ -63,7 +68,7 @@ def test_a_missing_share_or_volume_is_unknown_not_ok(tmp_path):
 def test_provider_binaries_and_large_files_are_not_scanned(tree):
     provider = tree / "instraclustr" / "terraform" / ".terraform" / "providers"
     provider.mkdir(parents=True)
-    (provider / "terraform-provider-vault").write_text('"root_token" hvs.A1b2C3d4E5f6G7h8I9j0K1l2M3n4')
+    (provider / "terraform-provider-vault").write_text('"root_token" ' + FAKE_TOKEN)
     (tree / "instraclustr" / "terraform" / "big.bin").write_text("root_token" + "x" * 2_100_000)
     assert _by_name(vc.run_checks(tree, docker=_docker(True)))["root token stored"].status == vc.OK
 
@@ -75,7 +80,7 @@ def test_a_file_named_for_a_root_token_is_a_finding(tree):
 
 
 def test_a_token_shaped_string_is_found_and_never_printed(tree):
-    secret = "hvs." + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+    secret = FAKE_TOKEN
     (tree / "instraclustr" / "terraform" / "terraform.tfstate").write_text('{"token": "%s"}' % secret)
     (tree / "instraclustr" / "vault-init-data" / "init.json").write_text('{"root_token": "x"}')
     check = _by_name(vc.run_checks(tree, docker=_docker(True)))["root token stored"]
@@ -102,7 +107,7 @@ def test_the_share_and_approle_folders_are_not_read(tree):
 
 def test_env_files_and_secrets_toml_are_never_read(tree):
     sensitive = tree / "instraclustr" / "terraform" / ".env"
-    sensitive.write_text("VAULT_TOKEN=hvs.A1b2C3d4E5f6G7h8I9j0K1l2M3n4")
+    sensitive.write_text("VAULT_TOKEN=" + FAKE_TOKEN)
     reads: list[Path] = []
     original = Path.read_text
 
@@ -176,8 +181,8 @@ def test_an_unreachable_vault_is_unknown(tree):
 
 
 def test_the_token_is_never_in_the_output(tree, capsys, monkeypatch):
-    monkeypatch.setenv("VAULT_TOKEN", "hvs.SECRETSECRETSECRETSECRET1")
-    checks = vc.run_checks(tree, addr="https://v:8200", token="hvs.SECRETSECRETSECRETSECRET1", docker=_docker(True),
+    monkeypatch.setenv("VAULT_TOKEN", SECRET_ENV_TOKEN)
+    checks = vc.run_checks(tree, addr="https://v:8200", token=SECRET_ENV_TOKEN, docker=_docker(True),
                            get=_vault(lookup=lambda t: (200, {"data": {"policies": ["root"]}})))
     assert all("SECRETSECRET" not in f"{c.name} {c.detail}" for c in checks)
 
