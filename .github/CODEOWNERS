@@ -1,0 +1,34 @@
+# Code owners: GitHub asks these people to review any pull request that touches the paths.
+#
+# Branch protection is not available on this repository's plan (GitHub answers 403 for a private repository on
+# the free tier), so this requests a review; it cannot block a merge. It is still the written statement of who
+# answers for the paths whose change can silently weaken a control. The last matching pattern wins.
+
+*                                               @marlondridley
+
+# Pipeline and policy as code: what runs on every push, and what decides what a model or an agent may do.
+/.github/                                       @marlondridley
+/.ci/                                           @marlondridley
+/.semgrep/                                      @marlondridley
+/.gitleaks.toml                                 @marlondridley
+/.gitleaksignore                                @marlondridley
+/nas-feedops-sentinel/policies/                 @marlondridley
+/nas-feedops-sentinel/prompts/                  @marlondridley
+
+# The human gate and who may use it: staging, decisions, authorization, the audit trail's storage.
+/nas-feedops-sentinel/src/execution_gate.py     @marlondridley
+/nas-feedops-sentinel/src/auth.py               @marlondridley
+/nas-feedops-sentinel/src/keycloak_auth.py      @marlondridley
+/nas-feedops-sentinel/src/agent_tools.py        @marlondridley
+/nas-feedops-sentinel/src/governance.py         @marlondridley
+/nas-feedops-sentinel/src/storage/              @marlondridley
+
+# Identity, secrets and the data plane: Vault, SPIRE, Terraform, the gateway, the compose files, the images.
+/instraclustr/                                  @marlondridley
+/nas-feedops-sentinel/docker-compose.yml        @marlondridley
+/nas-feedops-sentinel/docker/                   @marlondridley
+/nas-feedops-sentinel/keycloak/                 @marlondridley
+
+# What gets installed: a changed lock is a changed supply chain.
+/nas-feedops-sentinel/requirements*.txt         @marlondridley
+/nas-feedops-sentinel/requirements*.lock        @marlondridley

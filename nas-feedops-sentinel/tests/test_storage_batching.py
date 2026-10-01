@@ -56,7 +56,9 @@ async def test_the_same_event_twice_in_one_batch_is_stored_once_with_the_last_va
 async def test_a_batch_with_one_bad_value_stores_none_of_it(db):
     """Not a prefix: the batch is one transaction, and the upsert makes the retry safe."""
     good = [_event() for _ in range(3)]
-    bad = _event(altitude_ft=3_000_000_000)          # beyond the INTEGER column
+    # Beyond the INTEGER column. The model now refuses such a value, so it is forced past the model here: this is
+    # the storage layer's own guarantee, for whatever else can make one row fail.
+    bad = _event().model_copy(update={"altitude_ft": 3_000_000_000})
 
     with pytest.raises(Exception):                   # noqa: B017 -- asyncpg's DataError, not part of our contract
         await db.save_events([*good, bad])

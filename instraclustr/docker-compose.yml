@@ -244,8 +244,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       APP_DB_USER: ${APP_DB_USER:-sentinel_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
@@ -375,10 +374,6 @@ services:
         condition: service_completed_successfully
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2:-}
-      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Its own database, for virtual keys (litellm-db-init.sh). Direct to
       # Postgres: Prisma needs session-level connections, not the pooler.

@@ -113,7 +113,7 @@ docstring for what each step asserts.
   help names the variable), whether that token is live, root, or revoked. It never prints a secret and does not read `.env`.
 * **LLM proxy.** The application holds a LiteLLM virtual key, not the master
   key. `instraclustr/litellm-bootstrap.sh` issues it after the proxy is up
-  (alias `sentinel-app`: `primary-model` and `gemini-backup` only, a 30-day
+  (alias `sentinel-app`: `primary-model` only, a 30-day
   budget `LITELLM_APP_BUDGET_USD`, `LITELLM_APP_RPM` requests/minute) and
   stores it in Vault. LiteLLM keeps keys in its own `litellm` database
   (`litellm-db-init.sh`).
@@ -134,8 +134,13 @@ docstring for what each step asserts.
   duplicates or a second staged action.
 * **One consumer per file.** A scanner claims a file by renaming it into the
   folder's hidden `.inflight/` subfolder before reading it; only one rename
-  can succeed. A claim left by a crashed scanner is released after 10
-  minutes. A read-only folder is read in place.
+  can succeed. A claim does not touch the file's own timestamps (they are the
+  message's arrival); its age is the modification time of a `.claim` marker
+  beside it. A scan whose events could not be stored gives its files back at
+  once, and a message whose data the database rejects (a number past 32 bits)
+  is quarantined alone instead of holding the batch. A claim left by a crashed
+  scanner is released after 4 minutes, shorter than the janitor's 5, so the file
+  is scanned again before it can be dropped. A read-only folder is read in place.
 * **Provenance.** Every event and alert carries `data_origin`: `live` (the
   kit's folder), `replay`, `synthetic` (test fixtures and the end-to-end proof; no run mode writes it), `api`,
   or `unknown` for rows from before the tag. Alerts inherit it (`mixed` for
@@ -220,15 +225,28 @@ How the AI layer is governed, boundary by boundary, is
 
 ## Models
 
-`instraclustr/litellm-config.yaml` routes the `primary-model` alias to
-DeepSeek with Gemini as fallback. `gemini-backup` has one deployment per
-Gemini key (`GEMINI_API_KEY`, `_2`, `_3`); the proxy spreads calls across
-them and benches a key that hits its quota (the free tier allows 20
-requests/day per model per project). That is a low-cost test configuration.
-Neither provider is an authorized boundary for FAA operational data; move
-`primary-model` to an approved endpoint before real feed data reaches it.
-Application settings name aliases only (`LLM_MODEL=primary-model`);
-provider routes such as `gemini/...` are refused at startup.
+`instraclustr/litellm-config.yaml` routes the `primary-model` alias to Claude
+Haiku 4.5, direct from Anthropic. It is the only model and there is no
+fallback; `instraclustr/tests/test_model_provider.py` holds it to that. When
+it is unavailable the Critic reports itself unavailable and every alert is
+still staged for a person. This is a test configuration, not an authorized
+boundary for FAA operational data: move `primary-model` to an approved
+endpoint before real feed data reaches it. Application settings name aliases
+only (`LLM_MODEL=primary-model`); provider routes such as `anthropic/...` are
+refused at startup.
+
+**Retries, breaker and budget** (`src/llm_guard.py`, `src/llm_client.py`).
+The gateway is the one layer that retries provider calls and falls back
+(`router_settings` in `litellm-config.yaml`). The application client retries
+only a request that never reached the gateway, at most `LLM_CONNECT_ATTEMPTS`
+(2) attempts; Temporal never sees a model failure, because the Critic and the
+investigations catch it and fall back to rules. After
+`LLM_BREAKER_THRESHOLD` (5) consecutive gateway failures an alias's circuit
+opens for `LLM_BREAKER_COOLDOWN_SECONDS` (120) and the Critic reports itself
+unavailable (alert `ModelCircuitOpen`). One pipeline pass may spend
+`LLM_TOKEN_BUDGET_PER_PASS` (250000) tokens; past it calls are refused (alert
+`LLMPassBudgetExhausted`). Refused calls are recorded in `model_calls` as
+`circuit_open` or `budget_exhausted` and are excluded from the success rate.
 
 ## The FAA SWIM Jumpstart kit
 
