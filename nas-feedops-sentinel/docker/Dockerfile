@@ -2,14 +2,13 @@
 # Stage 1: build wheels for all deps
 FROM python:3.12-slim AS builder
 # Python 3.12 is what requirements.lock is resolved for (see the compile
-# command in its header). The 3.13 blocker was crewai, now removed; moving
-# up is a matter of recompiling the locks and running the suite.
+# command in its header). Moving to 3.13 is a matter of recompiling
+# the locks and running the suite.
 
 WORKDIR /build
 # Install from requirements.lock (exact pinned versions + sha256 hashes,
 # generated via `uv pip compile --generate-hashes`), not requirements.txt.
-# requirements.txt uses loose ranges (crewai<1.0.0,>=0.80.0, openai>=1.40.0,
-# etc.), which forces pip's resolver to backtrack across dozens of candidate
+# requirements.txt uses loose ranges (openai>=1.40.0, instructor, etc.), which forces pip's resolver to backtrack across dozens of candidate
 # versions to find a mutually-compatible set -- e.g. probing 15+ versions of
 # openai and 40+ of instructor on every clean build, downloading metadata
 # (and sometimes full wheels) for each one it rejects. requirements.lock

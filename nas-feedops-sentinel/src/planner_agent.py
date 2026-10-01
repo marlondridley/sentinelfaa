@@ -1,6 +1,6 @@
 """
 Planner Agent (Layer 2) — Operational Advisory & Query Synthesis.
-Refactored for CrewAI Flow capability & unified LiteLLM client execution.
+Runs through the unified LiteLLM client.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from src.guardrails import InputGuardrail, OutputGuardrail
 from src.llm_client import build_llm_client
 from src.logging_config import get_logger
 from src.models import PlannerResult
-from src.prompts_loader import system_prompt, tool_schema
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.untrusted import fence, fence_fields
 
 _log = get_logger(__name__)
@@ -171,6 +171,7 @@ class PlannerAgent:
             max_tokens=1000,
             temperature=0.1,
             role="planner",
+            prompt_version=prompt_version("planner"),
         )
 
     @staticmethod

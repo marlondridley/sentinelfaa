@@ -106,7 +106,7 @@ Copy `.env.example` to `.env`; it is gitignored. The stack will not start withou
 
 The application names aliases only. `litellm-config.yaml` decides which provider serves each one:
 
-- `primary-model` is DeepSeek, falling back to `gemini-backup` on outages, timeouts and rate limits.
+- `primary-model` is Claude Haiku 4.5, falling back to `gemini-backup`, then `claude-model` (Sonnet), on outages, timeouts and rate limits.
 - `gemini-backup` has one deployment per Gemini key, so the proxy spreads calls and benches a key that hits its quota.
 
 Pointing an alias at Claude, OpenAI or another Gemini model is an edit to that file; nothing in the application changes. The application's key can call only `primary-model` and `gemini-backup`, within `LITELLM_APP_BUDGET_USD` per 30 days and `LITELLM_APP_RPM` requests per minute.
