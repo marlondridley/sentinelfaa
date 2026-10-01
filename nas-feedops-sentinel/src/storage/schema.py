@@ -258,6 +258,24 @@ _MIGRATIONS: list[tuple[str, str]] = [
             END LOOP;
         END $$;
     """),
+    # data_origin is what keeps a replay, a test event or an API post from reading as the live feed, so a value
+    # outside the vocabulary (models.DataOrigin, AlertOrigin) is refused by the database, not only by the model:
+    # a stray write with a misspelt origin was stored and then matched neither "live" nor anything else.
+    # A row that is already outside it is set to 'unknown' (its origin cannot be reconstructed honestly, the same
+    # rule as the first migration). NOT VALID then VALIDATE: the constraint guards new writes at once, and the
+    # validating scan does not block ingest.
+    ("2026_10_data_origin_check", """
+        UPDATE nas_events   SET data_origin = 'unknown'
+            WHERE data_origin NOT IN ('live', 'replay', 'synthetic', 'api', 'unknown');
+        UPDATE alert_events SET data_origin = 'unknown'
+            WHERE data_origin NOT IN ('live', 'replay', 'synthetic', 'api', 'unknown', 'mixed');
+        ALTER TABLE nas_events   ADD CONSTRAINT nas_events_data_origin_check
+            CHECK (data_origin IN ('live', 'replay', 'synthetic', 'api', 'unknown')) NOT VALID;
+        ALTER TABLE alert_events ADD CONSTRAINT alert_events_data_origin_check
+            CHECK (data_origin IN ('live', 'replay', 'synthetic', 'api', 'unknown', 'mixed')) NOT VALID;
+        ALTER TABLE nas_events   VALIDATE CONSTRAINT nas_events_data_origin_check;
+        ALTER TABLE alert_events VALIDATE CONSTRAINT alert_events_data_origin_check;
+    """),
 ]
 
 
