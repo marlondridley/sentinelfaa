@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from lib import theme
+from lib import safe_text, theme
 from src.async_bridge import run_async as run
 
 NO_DATA = "no data"
@@ -59,7 +59,7 @@ def load_latest():
     try:
         return run(evaluate_latest())
     except Exception as exc:  # noqa: BLE001
-        st.caption(f"AI investigation evaluation unavailable: {type(exc).__name__}: {exc}")
+        st.caption(safe_text.failure("The AI investigation evaluation is unavailable", exc))
         return None
 
 
@@ -69,7 +69,7 @@ def load_for_action(action_id: str):
     try:
         return run(evaluate_action(action_id))
     except Exception as exc:  # noqa: BLE001
-        st.caption(f"Evaluation unavailable: {type(exc).__name__}: {exc}")
+        st.caption(safe_text.failure("The evaluation is unavailable", exc))
         return None
 
 
@@ -99,7 +99,7 @@ def render_card(ev: Any, *, sla_s: float | None, budget_usd: float | None) -> No
         + f'<span style="font-size:14px;color:{theme.GRAY3};">'
         + theme._esc(f"{ev.alert_type or 'alert'} at {ev.airport or 'PCT'} · "
                      f"{ev.opened_at:%Y-%m-%d %H:%M} UTC · advisory only")
-        + f'</span><a href="{evaluation}" target="_self" style="margin-left:auto;font-size:14px;'
+        + f'</span><a href="{theme._attr_href(evaluation)}" target="_self" style="margin-left:auto;font-size:14px;'
         f'color:{theme.BLUE5};text-decoration:none;font-weight:600;">Agent evaluation →</a></div>',
         unsafe_allow_html=True,
     )
