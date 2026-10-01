@@ -258,6 +258,43 @@ _MIGRATIONS: list[tuple[str, str]] = [
             END LOOP;
         END $$;
     """),
+    # data_origin is what keeps a replay, a test event or an API post from reading as the live feed, so a value
+    # outside the vocabulary (models.DataOrigin, AlertOrigin) is refused by the database, not only by the model:
+    # a stray write with a misspelt origin was stored and then matched neither "live" nor anything else.
+    # A row that is already outside it is set to 'unknown' (its origin cannot be reconstructed honestly, the same
+    # rule as the first migration). NOT VALID then VALIDATE: the constraint guards new writes at once, and the
+    # validating scan does not block ingest.
+    ("2026_10_data_origin_check", """
+        UPDATE nas_events   SET data_origin = 'unknown'
+            WHERE data_origin NOT IN ('live', 'replay', 'synthetic', 'api', 'unknown');
+        UPDATE alert_events SET data_origin = 'unknown'
+            WHERE data_origin NOT IN ('live', 'replay', 'synthetic', 'api', 'unknown', 'mixed');
+        ALTER TABLE nas_events   ADD CONSTRAINT nas_events_data_origin_check
+            CHECK (data_origin IN ('live', 'replay', 'synthetic', 'api', 'unknown')) NOT VALID;
+        ALTER TABLE alert_events ADD CONSTRAINT alert_events_data_origin_check
+            CHECK (data_origin IN ('live', 'replay', 'synthetic', 'api', 'unknown', 'mixed')) NOT VALID;
+        ALTER TABLE nas_events   VALIDATE CONSTRAINT nas_events_data_origin_check;
+        ALTER TABLE alert_events VALIDATE CONSTRAINT alert_events_data_origin_check;
+    """),
+    # ORDER BY received_time_utc DESC LIMIT n runs from /ready, the Feed Health page and the dashboard's data
+    # layer, and no index led with the receipt time: every one of those sorted the whole table. (The origin,
+    # airport and service indexes above lead with their own column.)
+    ("2026_10_nas_events_received_time_index", """
+        CREATE INDEX IF NOT EXISTS idx_nas_events_received_time ON nas_events (received_time_utc DESC);
+    """),
+    # What went out with each model call, without the text: the prompt's hash and version, the
+    # redacted input's hash, and how many substitutions redaction made. The Critic's verdict and
+    # a brief carry the id of the call behind them. Plain TEXT, no foreign key: the row in
+    # model_calls is written best-effort and must never make saving a verdict fail.
+    # ALTER TABLE is not an UPDATE, so the append-only trigger on model_calls does not see it.
+    ("2026_10_model_call_provenance", """
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS prompt_hash      TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS prompt_version   TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS input_hash       TEXT;
+        ALTER TABLE model_calls ADD COLUMN IF NOT EXISTS redaction_count  INTEGER;
+        ALTER TABLE critic_results       ADD COLUMN IF NOT EXISTS call_id TEXT;
+        ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS call_id TEXT;
+    """),
 ]
 
 

@@ -183,7 +183,7 @@ class TestWatchOfficer:
 
 # ── LLM narrative path ───────────────────────────────────────────────────────
 #
-# Until the CrewAI removal this path could never run: get_watch_officer_agent()
+# Until the agent was rewritten this path could never run: get_watch_officer_agent()
 # referenced an unimported `settings`, raised NameError, and every brief fell
 # back to the deterministic one without anyone noticing.
 
@@ -332,7 +332,8 @@ async def test_lag_is_judged_on_what_arrived_recently_not_on_the_average_of_ever
     await _healthy_feed()
 
     context = await build_watch_officer_context()
-    assert (await storage.get_latency_stats())["avg_ms"] > 5_000, "the lifetime average is what used to be read"
+    lifetime = await storage.get_latency_stats(since=_now_minus(60 * 24 * 10))
+    assert lifetime["avg_ms"] > 5_000, "the lifetime average is what used to be read"
     assert context["avg_latency_ms"] is not None and context["avg_latency_ms"] < 5_000
     import src.watch_officer_agent as wo
 

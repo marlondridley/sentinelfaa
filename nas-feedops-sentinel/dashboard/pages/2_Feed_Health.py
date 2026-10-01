@@ -222,7 +222,7 @@ elif view == "Data quality":
     )
     theme.kpi_row(
         [
-            theme.kpi("Validated", f"{total:,}", tone="info", foot="Messages checked against schema"),
+            theme.kpi("Validated", f"{total:,}", tone="info", foot=f"Messages checked against schema, last {config.settings.STATS_WINDOW_HOURS} h"),
             theme.kpi("Passed", f"{passed:,}", tone="ok", foot="Conformed on first pass"),
             theme.kpi("Failed", f"{failed:,}", tone="bad" if failed else "ok",
                       foot="Rejected or flagged by validation"),
