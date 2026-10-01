@@ -175,5 +175,6 @@ async def test_the_review_column_follows_what_was_decided(db):
     at = _run(focus="newest")
     html = _html(at)
     assert _review_by_severity(at)["CRITICAL"] == "Rejected"
-    assert "AI_Critic_and_Review?review=" not in html and "Review rejected by smith" in html
+    assert "Review rejected by smith" in html
+    assert f'href="AI_Critic_and_Review?review={review.action_id}"' in html, "decided, it opens as the record"
     assert "No review awaiting a decision" in html

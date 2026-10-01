@@ -274,15 +274,14 @@ def _record_card(record: pd.Series) -> None:
         _link_style = f"color:{theme.BLUE5};font-size:14px;text-decoration:none;font-weight:600;"
         links = []
         covering = _covering.get(record.get("alert_id"))
-        if covering and covering["status"] == "PENDING":
+        if covering:
+            # Open, it is where the decision is made; decided, it opens as the record of who decided and why.
+            said = (str(record.get("review")) if covering["status"] == "PENDING" else
+                    "Review " + str(covering["status"]).lower()
+                    + (f' by {covering["decided_by"]}' if covering.get("decided_by") else ""))
             links.append(
                 f'<a href="{theme.drill_href("critic", review=covering["action_id"])}" target="_self" '
-                f'style="{_link_style}">{theme._esc(record.get("review"))}: open its review &rarr;</a>')
-        elif covering:
-            links.append(
-                f'<span style="font-size:14px;color:{theme.GRAY3};">Review '
-                + theme._esc(str(covering["status"]).lower())
-                + (f' by {theme._esc(covering["decided_by"])}' if covering.get("decided_by") else "") + "</span>")
+                f'style="{_link_style}">{theme._esc(said)}: open its review &rarr;</a>')
         if record.get("airport_code"):
             links.append(
                 f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
