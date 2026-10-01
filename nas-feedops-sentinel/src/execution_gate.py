@@ -186,7 +186,7 @@ def _derive_recommended_action(
         else False
     )
 
-    if critic_escalates and critic.confidence is not None:
+    if critic is not None and critic_escalates and critic.confidence is not None:
         pattern = (
             critic.pattern
             or "UNKNOWN"
