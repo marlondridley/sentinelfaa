@@ -1,0 +1,5 @@
+# gitleaks configuration (CI: .github/workflows/secrets.yml). The default ruleset, nothing loosened.
+# Findings that were read and are not secrets are listed one by one in .gitleaksignore, with the reason,
+# so a new finding fails the build instead of being absorbed by a pattern.
+[extend]
+useDefault = true
