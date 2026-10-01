@@ -10,7 +10,13 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
+from src.config import settings
 from src.models import AlertEvent, NASEvent
+
+
+def _default_since() -> datetime:
+    """Where an aggregate with no explicit window starts: STATS_WINDOW_HOURS ago."""
+    return datetime.now(timezone.utc) - timedelta(hours=settings.STATS_WINDOW_HOURS)
 
 
 def _critic_window(window_minutes: int, as_of: datetime | None) -> tuple[datetime, datetime | None]:
@@ -221,23 +227,24 @@ class EventsRepository:
         )
         return {(r["airport_code"], r["service_name"]): r["last_seen"] for r in rows}
 
-    async def get_latest_rvr(self) -> list[dict]:
+    async def get_latest_rvr(self, since: datetime | None = None) -> list[dict]:
+        """The latest RVR reading of each runway received since `since` (STATS_WINDOW_HOURS back by default)."""
         query = """
             SELECT e.*
             FROM nas_events e
             INNER JOIN (
                 SELECT airport_code, runway, MAX(event_time_utc) AS max_time
                 FROM nas_events
-                WHERE service_name = 'APDS_RVR'
+                WHERE service_name = 'APDS_RVR' AND received_time_utc >= $1
                 GROUP BY airport_code, runway
             ) latest
               ON e.airport_code = latest.airport_code
              AND e.runway        = latest.runway
              AND e.event_time_utc = latest.max_time
-            WHERE e.service_name = 'APDS_RVR'
+            WHERE e.service_name = 'APDS_RVR' AND e.received_time_utc >= $1
             ORDER BY e.airport_code, e.runway
         """
-        rows = await self._pool.fetch(query)
+        rows = await self._pool.fetch(query, since or _default_since())
         return [dict(r) for r in rows]
 
     async def get_by_ids(self, event_ids: list[str]) -> dict[str, dict]:
@@ -266,17 +273,17 @@ class EventsRepository:
     async def get_validation_summary(
         self, since: datetime | None = None, *, data_origin: str | None = None,
     ) -> dict:
-        """Validation counts over everything stored, or only events received since `since` / of `data_origin`."""
+        """Validation counts for events received since `since` (STATS_WINDOW_HOURS back by default) and of `data_origin`."""
         query = """
             SELECT
                 COUNT(*) AS total,
                 COALESCE(SUM(CASE WHEN validation_status = 'PASSED' THEN 1 ELSE 0 END), 0) AS passed,
                 COALESCE(SUM(CASE WHEN validation_status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed
             FROM nas_events
-            WHERE ($1::timestamptz IS NULL OR received_time_utc >= $1)
+            WHERE received_time_utc >= $1
               AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query, since, data_origin)
+        row = await self._pool.fetchrow(query, since or _default_since(), data_origin)
         return dict(row) if row else {"total": 0, "passed": 0, "failed": 0}
 
     async def get_events_for_critic(
@@ -370,7 +377,7 @@ class EventsRepository:
         return [dict(r) for r in rows]
 
     async def get_latency_stats(self, since: datetime | None = None, *, data_origin: str | None = None) -> dict:
-        """Latency over everything stored, or only events received since `since` / of `data_origin`."""
+        """Latency of events received since `since` (STATS_WINDOW_HOURS back by default) and of `data_origin`."""
         query = """
             SELECT
                 AVG(latency_ms) AS avg_ms,
@@ -378,8 +385,8 @@ class EventsRepository:
                 MAX(latency_ms) AS max_ms
             FROM nas_events
             WHERE latency_ms IS NOT NULL
-              AND ($1::timestamptz IS NULL OR received_time_utc >= $1)
+              AND received_time_utc >= $1
               AND ($2::text IS NULL OR data_origin = $2)
         """
-        row = await self._pool.fetchrow(query, since, data_origin)
+        row = await self._pool.fetchrow(query, since or _default_since(), data_origin)
         return dict(row) if row else {"avg_ms": None, "min_ms": None, "max_ms": None}

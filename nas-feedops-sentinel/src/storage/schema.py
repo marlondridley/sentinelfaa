@@ -258,6 +258,12 @@ _MIGRATIONS: list[tuple[str, str]] = [
             END LOOP;
         END $$;
     """),
+    # ORDER BY received_time_utc DESC LIMIT n runs from /ready, the Feed Health page and the dashboard's data
+    # layer, and no index led with the receipt time: every one of those sorted the whole table. (The origin,
+    # airport and service indexes above lead with their own column.)
+    ("2026_10_nas_events_received_time_index", """
+        CREATE INDEX IF NOT EXISTS idx_nas_events_received_time ON nas_events (received_time_utc DESC);
+    """),
 ]
 
 

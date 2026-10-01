@@ -281,6 +281,11 @@ class Settings(BaseSettings):
     PLANNER_MODEL: str = ""
     WATCH_OFFICER_MODEL: str = ""
 
+    # A figure computed "over everything stored" (validation pass rate, latency, the latest RVR per runway) reads
+    # this window when the caller names none: it is about the feed now, and an unbounded aggregate scans all
+    # history, which grows without limit.
+    STATS_WINDOW_HOURS: int = 24
+
     MAX_CRITIC_PER_PASS: int = 5
     LLM_TIMEOUT_SECONDS: float = 90.0
 
