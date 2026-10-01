@@ -317,12 +317,18 @@ def inject_theme() -> None:
             border-radius: 4px;
             padding: 12px 14px 11px 13px;
             text-decoration: none !important;
-            display: block; position: relative;
+            /* The drill badge and the label share the first row: the badge keeps its own width at the right
+               (row-reverse, it comes first in the markup) and the label wraps in what is left, so no drill text
+               can print over a label. A tile too narrow for the badge beside the label's longest word puts the
+               badge on a row of its own, above the label. Every other part takes a full row, as a block did. */
+            display: flex; flex-flow: row-reverse wrap; align-items: flex-start; align-content: flex-start;
+            column-gap: 8px; position: relative;
             transition: background 120ms ease-out, border-color 120ms ease-out;
         }}
+        .kpi > * {{ flex: 0 0 100%; min-width: 0; }}
+        .kpi > .kpi-label {{ flex: 1 1 0; min-width: min-content; }}
         a.kpi:hover {{ background: {DARK_GRAY2}; border-color: {DARK_GRAY5}; }}
         a.kpi:hover .kpi-drill {{ opacity: 1; }}
-        a.kpi .kpi-label {{ padding-right: 64px; }}   /* room for the "OPEN →" badge, even on a narrow tile */
         .kpi-label {{
             font-size: 13px; font-weight: 700; letter-spacing: 0.07em;
             text-transform: uppercase; color: {GRAY1};
@@ -337,8 +343,11 @@ def inject_theme() -> None:
         .kpi-unit {{ font-size: 17px; font-weight: 500; opacity: 0.65; margin-left: 3px; }}
         .kpi-foot {{ font-size: 13px; color: {GRAY1}; margin-top: 5px; line-height: 1.4; }}
         .kpi-spark {{ position: absolute; right: 12px; bottom: 10px; opacity: 0.75; }}
+        .kpi > .kpi-drill {{
+            /* In the row, not over it. The margins keep it where it has always sat: 10px down, 11px in. */
+            flex: 0 0 auto; white-space: nowrap; margin: -2px -3px 0 0;
+        }}
         .kpi-drill {{
-            position: absolute; right: 11px; top: 10px;
             font-size: 13px; font-weight: 700; letter-spacing: 0.05em;
             color: {BLUE5}; opacity: 0.45; transition: opacity 120ms ease-out;
         }}
