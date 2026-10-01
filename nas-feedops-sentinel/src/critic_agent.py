@@ -1,6 +1,6 @@
 """
 CriticAgent: Agentic reasoning layer for NAS telemetry and alert validation.
-Refactored for CrewAI Flow integration and LiteLLM proxy fallback.
+Calls the model through the LiteLLM proxy.
 """
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ from src.config import settings
 from src.context_router import ContextRouter
 from src.execution_gate import _strict_bool
 from src.guardrails import OutputGuardrail
-from src.llm_client import build_llm_client
+from src.config import proxy_model
+from src.llm_client import LLMBudgetExceeded, LLMCircuitOpen, build_llm_client
+from src.llm_guard import circuit_is_open
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
-from src.prompts_loader import system_prompt, tool_schema
+from src.model_telemetry import forget_last_call, last_call_id
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.untrusted import fence
 
 _router = ContextRouter()
@@ -63,7 +66,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
 
 
 class CriticAgent:
-    """Async engine wrapper for non-CrewAI direct agentic queries (Temporal / Pipeline)."""
+    """Async engine wrapper for direct agentic queries (Temporal / Pipeline)."""
 
     def __init__(self) -> None:
         self._llm = build_llm_client(model=settings.CRITIC_MODEL) if settings.CRITIC_ENABLED else None
@@ -74,7 +77,10 @@ class CriticAgent:
     async def critique(self, alert: AlertEvent) -> CriticResult:
         """Evaluate an alert asynchronously using context retrieved from async storage."""
         with agent_tools.acting_as("critic"):
-            return await self._critique(alert)
+            forget_last_call()
+            result = await self._critique(alert)
+        # The call behind this verdict (None when none was made: disabled, or it failed before the call).
+        return result.model_copy(update={"call_id": last_call_id()})
 
     async def _critique(self, alert: AlertEvent) -> CriticResult:
         if not self._llm:
@@ -85,6 +91,15 @@ class CriticAgent:
                 else "Critic unavailable (no LLM provider configured)."
             )
             return CriticResult(alert_id=alert.alert_id, reasoning=reason)
+
+        if circuit_is_open(proxy_model(settings.CRITIC_MODEL)):
+            # The gateway has failed repeatedly (src/llm_guard.py): say so now instead of reading the
+            # database and paying a timeout per alert. The alert is still staged; only the advisory is missing.
+            LLM_CALLS.labels(agent="critic", outcome="circuit_open").inc()
+            return CriticResult(
+                alert_id=alert.alert_id,
+                reasoning="Critic unavailable: the model circuit is open after repeated gateway failures.",
+            )
 
         start = time.perf_counter()
         try:
@@ -136,6 +151,11 @@ class CriticAgent:
                 },
             )
             return result
+        except (LLMCircuitOpen, LLMBudgetExceeded) as exc:
+            # Refused before it was sent (src/llm_guard.py): the model was not asked, and nothing is wrong with it.
+            outcome = "circuit_open" if isinstance(exc, LLMCircuitOpen) else "budget_exhausted"
+            LLM_CALLS.labels(agent="critic", outcome=outcome).inc()
+            return CriticResult(alert_id=alert.alert_id, reasoning=f"Critic unavailable: {exc}")
         except Exception as exc:  # noqa: BLE001
             LLM_CALLS.labels(agent="critic", outcome="error").inc()
             _log.error(
@@ -165,4 +185,5 @@ class CriticAgent:
                 user_message=_format_user_message(alert, context),
                 max_tokens=1000,
                 role="critic",
+                prompt_version=prompt_version("critic"),
             )

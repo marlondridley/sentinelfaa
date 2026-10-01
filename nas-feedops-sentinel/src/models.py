@@ -141,6 +141,8 @@ class WatchOfficerBrief(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     # The status, bottom line and owned actions (None on briefs stored before they existed).
     assessment: BriefAssessment | None = None
+    # The model_calls row behind the narrative; None for a rule-written brief.
+    call_id: str | None = None
 
 
 class OperationalTicket(BaseModel):
@@ -410,4 +412,6 @@ class CriticResult(BaseModel):
     escalate: bool = False
     # One sentence, bottom line up front, for the review queue (prompts/critic.yaml).
     bluf: str | None = None
+    # The model_calls row of the call that produced this verdict; None when no model call did.
+    call_id: str | None = None
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

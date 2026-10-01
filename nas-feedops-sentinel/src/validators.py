@@ -77,3 +77,19 @@ def validate_event(event: NASEvent) -> ValidationResult:
 
 
     return ValidationResult(passed=len(errors) == 0, errors=errors)
+
+
+def validate_batch(events: list[NASEvent]) -> list[ValidationResult]:
+    """
+    Validate each event and stamp the outcome on it (validation_status, validation_errors).
+
+    The one place that turns a ValidationResult into the fields the rest of the pipeline reads; the
+    results come back in event order for callers that count or label them.
+    """
+    results: list[ValidationResult] = []
+    for event in events:
+        result = validate_event(event)
+        event.validation_status = "PASSED" if result.passed else "FAILED"
+        event.validation_errors = result.errors
+        results.append(result)
+    return results

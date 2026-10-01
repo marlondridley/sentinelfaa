@@ -30,7 +30,9 @@ from src.models import GuardrailResult
 
 _INJECTION_PATTERNS: list[tuple[str, float]] = [
     # Classic instruction override attempts
-    (r"ignore\s+(\w+\s+)*(previous|above|prior|all)\s+instructions", 1.0),
+    # Bounded repeats throughout: an open-ended (\w+\s+)* or .* retried from every occurrence of the opening
+    # words is quadratic, and a 70 KB question took 14.7 s to scan.
+    (r"ignore\s+(?:\w+\s+){0,6}(previous|above|prior|all)\s+instructions", 1.0),
     (r"disregard\s+(your|all)\s+(instructions|rules|constraints)", 1.0),
     (r"forget\s+(your|all)\s+(instructions|training|rules)", 1.0),
     (r"you\s+are\s+now\s+", 0.9),
@@ -40,7 +42,7 @@ _INJECTION_PATTERNS: list[tuple[str, float]] = [
     (r"(print|repeat|show|reveal|output)\s+(your\s+)?(system\s+prompt|instructions)", 0.9),
     (r"what\s+(are|were)\s+your\s+(instructions|system\s+prompt)", 0.8),
     # Template injection markers
-    (r"\{\{.*\}\}", 0.7),
+    (r"\{\{[^}\n]{0,200}\}\}", 0.7),
     (r"<\|system\|>", 1.0),
     (r"\[INST\]", 0.9),
     (r"###\s*system", 0.8),
@@ -74,6 +76,11 @@ _MIN_SCOPE_SIGNAL_THRESHOLD = 1   # at least 1 NAS signal required
 
 # ── Input Guardrail ───────────────────────────────────────────────────────────
 
+# Longer than any question a person types (the dashboard stops at PLANNER_QUESTION_MAX_CHARS); a guard that
+# scans unbounded text is itself a way to spend the server's time.
+MAX_INPUT_CHARS = 4000
+
+
 class InputGuardrail:
     """
     Sanitizes raw operator input before it reaches the LLM.
@@ -85,12 +92,23 @@ class InputGuardrail:
     Returns a GuardrailResult; caller blocks the pipeline if not is_compliant.
     """
 
-    def verify(self, raw_input: str) -> GuardrailResult:
+    def verify(self, raw_input: str, *, require_nas_scope: bool = True) -> GuardrailResult:
+        """
+        `require_nas_scope=False` skips check 3, for callers whose input is already known to be a question
+        about this system (the Planner: "Is the IAD arrival flow normal?" names no scope keyword, and is one
+        of the dashboard's own examples). Injection and out-of-scope commands are always checked.
+        """
         if not raw_input or not raw_input.strip():
             return GuardrailResult(
                 is_compliant=False,
                 violation_type="EMPTY_INPUT",
                 detail="Input is empty.",
+            )
+        if len(raw_input) > MAX_INPUT_CHARS:
+            return GuardrailResult(
+                is_compliant=False,
+                violation_type="TOO_LONG",
+                detail=f"Input is longer than {MAX_INPUT_CHARS} characters.",
             )
 
         lower = raw_input.lower()
@@ -121,7 +139,7 @@ class InputGuardrail:
 
         # 3. NAS scope validation
         signal_count = sum(1 for sig in _NAS_SCOPE_SIGNALS if sig in lower)
-        if signal_count < _MIN_SCOPE_SIGNAL_THRESHOLD:
+        if require_nas_scope and signal_count < _MIN_SCOPE_SIGNAL_THRESHOLD:
             return GuardrailResult(
                 is_compliant=False,
                 violation_type="OUT_OF_SCOPE",
