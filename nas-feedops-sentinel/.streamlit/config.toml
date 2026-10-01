@@ -35,3 +35,6 @@ gatherUsageStats = false
 # "minimal": no Deploy button and no developer menu. Nothing in the running
 # console offers to publish it to Streamlit Community Cloud or expose its source.
 toolbarMode = "minimal"
+# An uncaught exception shows its type, not its message or stack: the text can carry a host, a path or a SQL
+# fragment, and every signed-in user sees it. The detail is in the dashboard log.
+showErrorDetails = "type"
