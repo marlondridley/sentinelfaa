@@ -113,15 +113,15 @@ async def test_an_answer_still_incomplete_after_the_repair_is_recorded_as_such(m
     assert (await _only_row())["outcome"] == "incomplete"
 
 
-async def test_a_timeout_is_retried_then_recorded_once_with_every_attempt(monkeypatch):
+async def test_a_timeout_is_recorded_once_and_not_retried_by_the_client(monkeypatch):
     import litellm
 
     timeout = litellm.Timeout(message="timed out", model="primary-model", llm_provider="openai")
     result, fake = await _call(monkeypatch, timeout, timeout, timeout)
     assert isinstance(result, llm.LLMTransientError)
-    assert fake.calls == 3
+    assert fake.calls == 1, "the gateway retries; see tests/test_llm_budget.py"
     row = await _only_row()
-    assert (row["outcome"], row["attempts"], row["error_type"]) == ("timeout", 3, "Timeout")
+    assert (row["outcome"], row["attempts"], row["error_type"]) == ("timeout", 1, "Timeout")
     assert row["cost_usd"] is None, "sent, nothing came back: unknown, not zero"
 
 
@@ -218,11 +218,13 @@ async def test_an_unfinished_json_reply_cut_off_at_max_tokens_is_permanent_too(m
     assert isinstance(result, llm.LLMPermanentError) and fake.calls == 1
 
 
-async def test_an_empty_reply_that_was_not_cut_off_is_still_worth_another_try(monkeypatch):
+async def test_an_empty_reply_that_was_not_cut_off_is_transient_but_not_resent_by_the_client(monkeypatch):
     empty = _response(_COMPLETE)
     empty.choices[0].message.content = ""
     empty.choices[0].finish_reason = "stop"
 
     result, fake = await _call(monkeypatch, empty, _response(_COMPLETE))
 
-    assert result == _COMPLETE and fake.calls == 2
+    # Still classed transient (a later pass may get an answer), but the gateway answered, so the
+    # client does not send the same prompt again: retries live in one place (tests/test_llm_budget.py).
+    assert isinstance(result, llm.LLMTransientError) and fake.calls == 1

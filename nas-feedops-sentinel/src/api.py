@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src import storage
 from src.auth import Principal, PrincipalSource, principal_from_api_key
-from src.config import settings
+from src.config import is_placeholder_secret, settings
 from src.logging_config import (
     CORRELATION_HEADER,
     bind_correlation_id,
@@ -25,10 +26,17 @@ from src.logging_config import (
     get_correlation_id,
     get_logger,
 )
-from src.models import NASEvent
+from src.models import NASEvent, stable_id
+from src.rate_limit import TokenBucket
+from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError
 
-from src.temporal_worker import get_or_create_client, start_ingest_workflow, start_pipeline_workflow
+from src.temporal_worker import (
+    get_or_create_client,
+    pipeline_workflow_id,
+    start_ingest_workflow,
+    start_pipeline_workflow,
+)
 
 configure_logging()
 _log = get_logger(__name__)
@@ -51,6 +59,76 @@ app = FastAPI(
 router = APIRouter(prefix="/v1")
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+
+
+
+class BodySizeLimitMiddleware:
+    """
+    Refuse a request body over API_MAX_BODY_BYTES with 413 before the application reads it.
+
+    A Content-Length over the cap is refused outright; a body sent without one (chunked) is counted as it
+    arrives and refused the moment it passes the cap, so nothing larger than the cap is ever buffered.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = settings.API_MAX_BODY_BYTES
+        declared = dict(scope["headers"]).get(b"content-length")
+        if limit > 0 and declared and declared.isdigit() and int(declared) > limit:
+            await self._refuse(scope, receive, send, limit)
+            return
+
+        received = 0
+        exceeded = False
+        refused = False
+
+        async def counting_receive():
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if limit > 0 and received > limit:
+                    exceeded = True
+                    raise _BodyTooLarge
+            return message
+
+        async def tracking_send(message):
+            # The framework turns a failed body read into its own 400; whatever it answers once the cap
+            # was passed, the caller is told 413.
+            nonlocal refused
+            if exceeded:
+                if not refused:
+                    refused = True
+                    await self._refuse(scope, receive, send, limit)
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _BodyTooLarge:
+            if not refused:
+                await self._refuse(scope, receive, send, limit)
+
+    @staticmethod
+    async def _refuse(scope, receive, send, limit: int) -> None:
+        _log.warning("request_body_too_large", extra={"path": scope.get("path"), "limit_bytes": limit})
+        response = JSONResponse(
+            status_code=413,
+            content={"error": "request_body_too_large", "max_bytes": limit},
+        )
+        await response(scope, receive, send)
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+app.add_middleware(BodySizeLimitMiddleware)
 
 # ── CORS Middleware ───────────────────────────────────────────────────────────
 app.add_middleware(
@@ -91,6 +169,16 @@ async def verify_auth(
     named_keys = settings.API_KEYS
     provided = api_key or (bearer.credentials if bearer else None)
 
+    # A key that is still the example file's stand-in (API_KEY=change-me) is a secret everyone knows:
+    # accepting it would leave the API open to anyone who has read the repository.
+    configured = [k for k in (expected_key, *named_keys) if k]
+    if any(is_placeholder_secret(k) for k in configured):
+        _log.error("api_key_is_a_placeholder", extra={"correlation_id": get_correlation_id()})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The configured API key is a placeholder; set API_KEY or API_KEYS to a real secret.",
+        )
+
     if not expected_key and not named_keys:
         if settings.API_AUTH_REQUIRED:
             _log.error("api_auth_not_configured", extra={"correlation_id": get_correlation_id()})
@@ -107,6 +195,26 @@ async def verify_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
+_ingest_limiter = TokenBucket()
+
+
+async def rate_limited(principal: Principal = Depends(verify_auth)) -> Principal:
+    """
+    Authenticate, then spend one of the principal's ingest tokens (API_INGEST_RATE_PER_MINUTE).
+
+    After authentication on purpose: an anonymous caller cannot use up a named caller's allowance.
+    """
+    wait = _ingest_limiter.try_acquire(principal.principal_id, settings.API_INGEST_RATE_PER_MINUTE)
+    if wait > 0:
+        _log.warning("ingest_rate_limited", extra={"principal_id": principal.principal_id, "retry_after": wait})
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many ingest requests; retry after the interval in Retry-After.",
+            headers={"Retry-After": str(max(1, math.ceil(wait)))},
         )
     return principal
 
@@ -132,7 +240,10 @@ class IngestRequest(BaseModel):
     )
     label: str = Field(
         default="API",
-        description="Label attached to the pipeline workflow run, used for tracing/identification in Temporal.",
+        max_length=32,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+        description="Label attached to the pipeline workflow run, used for tracing/identification in Temporal. "
+                    "Letters, digits, '_', '.' and '-' only, at most 32 characters.",
     )
 
 
@@ -303,7 +414,7 @@ async def ready() -> JSONResponse:
 async def ingest(
     body: IngestRequest,
     idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_HEADER),
-    principal: Principal = Depends(verify_auth),
+    principal: Principal = Depends(rate_limited),
 ) -> JSONResponse:
     """
     Start a Temporal workflow to ingest and process NAS events.
@@ -332,12 +443,23 @@ async def ingest(
     )
 
     if body.events:
-        # Provenance is the server's to assign: a client cannot label what it
-        # posts as the live feed.
-        body.events = [{**payload, "data_origin": "api"} for payload in body.events]
+        # Provenance and identity are the server's to assign. A client cannot label what it posts as the
+        # live feed, and cannot pick an event_id: a chosen id could overwrite a stored event, and an
+        # unchosen one was a fresh random uuid per attempt, so a retry stored the batch twice.
+        body.events = [
+            {**{k: v for k, v in payload.items() if k != "event_id"}, "data_origin": "api"}
+            for payload in body.events
+        ]
         _validate_events(body.events)
 
-    workflow_key = _idempotency_key(idempotency_key, body.events) or cid
+    scoped_key = f"{principal.principal_id}-{idempotency_key.strip()}" if idempotency_key else None
+    workflow_key = _idempotency_key(scoped_key, body.events) or cid
+    if body.events:
+        # The same request, retried, gets the same ids and lands on the same rows.
+        body.events = [
+            {**payload, "event_id": stable_id("api", principal.principal_id, workflow_key, index)}
+            for index, payload in enumerate(body.events)
+        ]
     if workflow_key != cid:
         # Keep the request cid discoverable in logs — the workflow is named after
         # workflow_key, so this line is the join between the two.
@@ -357,6 +479,21 @@ async def ingest(
             )
         else:
             workflow_id = await start_ingest_workflow(correlation_id=workflow_key)
+    except WorkflowAlreadyStartedError:
+        # The same key is already running: this is a retry, and it attaches to that run instead of
+        # starting a second one or failing with a 500.
+        workflow_id = pipeline_workflow_id(workflow_key) if body.events else f"sentinel-ingest-{workflow_key}"
+        _log.info("ingest_workflow_already_running", extra={"workflow_id": workflow_id, "correlation_id": cid})
+        return JSONResponse(
+            {
+                "workflow_id": workflow_id,
+                "workflow_key": workflow_key,
+                "correlation_id": cid,
+                "task_queue": settings.TEMPORAL_TASK_QUEUE,
+                "principal_id": principal.principal_id,
+                "duplicate": True,
+            }
+        )
     except RPCError as exc:
         # Temporal server unreachable/timed out -- an expected, transient
         # infrastructure failure. Anything else (a real bug in workflow

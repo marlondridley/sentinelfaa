@@ -6,3 +6,5 @@ pytest-cov>=5.0,<6.0
 # looks green while the assertions never run. See pytest.ini asyncio_mode.
 pytest-asyncio>=0.23,<1.0
 ruff>=0.6
+# Static types for the code a wrong value would harm most (mypy.ini: storage, execution gate, auth).
+mypy>=1.10
