@@ -427,6 +427,9 @@ services:
       - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       - POSTGRES_SEEDS=temporal-postgresql
+      # Prometheus metrics, scraped by monitoring/prometheus.yml (job nas-temporal). Not published on the host:
+      # only Prometheus, on this network, reads it.
+      - PROMETHEUS_ENDPOINT=0.0.0.0:8000
     ports:
       # Loopback only. Temporal has no authentication configured: anyone who
       # can reach this port can start workflows, bypassing the API's auth.
