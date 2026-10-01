@@ -17,7 +17,7 @@ LLM call site:
 
 - ``redact_structured(obj)`` -- for a dict/list payload *before* it is
   serialized. Use this wherever a caller controls the payload directly
-  (e.g. watch_officer_agent.py's CrewAI ``Task`` payload).
+  (e.g. watch_officer_agent.py's context payload).
 - ``redact_text(text)`` -- for an already-built free-text prompt string.
   This is applied unconditionally inside
   ``LiteLLMClient.acall_with_tool()`` (see llm_client.py) so *every*
@@ -184,16 +184,18 @@ def _input_value_end(text: str, start: int) -> int:
     return limit
 
 
-def _redact_input_values(text: str) -> str:
+def _redact_input_values(text: str) -> tuple[str, int]:
     out: list[str] = []
     i = 0
+    count = 0
     while True:
         found = text.find(_INPUT_VALUE, i)
         if found == -1:
             out.append(text[i:])
-            return "".join(out)
+            return "".join(out), count
         start = found + len(_INPUT_VALUE)
         out.append(text[i:found] + _INPUT_VALUE + REDACTED)
+        count += 1
         i = _input_value_end(text, start)
 
 
@@ -208,15 +210,25 @@ def redact_text(text: str) -> str:
     that's practical (it still is, and is preferred, e.g. in
     watch_officer_agent.py).
     """
+    return redact_text_counted(text)[0]
+
+
+def redact_text_counted(text: str) -> tuple[str, int]:
+    """
+    redact_text() and how many substitutions it made: what the model-call record keeps as its
+    redaction count, so a call that went out with nothing scrubbed is distinguishable from one
+    that was scrubbed.
+    """
     if not text:
-        return text
-    text = _FIELD_VALUE_RE.sub(lambda m: f"{m.group('prefix')}\"{REDACTED}\"", text)
-    text = _XML_FIELD_RE.sub(lambda m: f"<{m.group('tag')}{m.group('attrs') or ''}>{REDACTED}</{m.group('tag')}>", text)
-    text = _redact_input_values(text)
-    text = _TAIL_NUMBER_RE.sub(REDACTED, text)
-    text = _CALLSIGN_RE.sub(REDACTED, text)
-    text = _COORD_PAIR_RE.sub(REDACTED, text)
-    return text
+        return text, 0
+    text, n_fields = _FIELD_VALUE_RE.subn(lambda m: f"{m.group('prefix')}\"{REDACTED}\"", text)
+    text, n_xml = _XML_FIELD_RE.subn(
+        lambda m: f"<{m.group('tag')}{m.group('attrs') or ''}>{REDACTED}</{m.group('tag')}>", text)
+    text, n_input = _redact_input_values(text)
+    text, n_tail = _TAIL_NUMBER_RE.subn(REDACTED, text)
+    text, n_callsign = _CALLSIGN_RE.subn(REDACTED, text)
+    text, n_coord = _COORD_PAIR_RE.subn(REDACTED, text)
+    return text, n_fields + n_xml + n_input + n_tail + n_callsign + n_coord
 
 
 def is_redacted(text: str) -> bool:

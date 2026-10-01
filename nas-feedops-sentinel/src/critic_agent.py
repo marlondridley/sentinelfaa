@@ -1,6 +1,6 @@
 """
 CriticAgent: Agentic reasoning layer for NAS telemetry and alert validation.
-Refactored for CrewAI Flow integration and LiteLLM proxy fallback.
+Calls the model through the LiteLLM proxy.
 """
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from src.llm_guard import circuit_is_open
 from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
-from src.prompts_loader import system_prompt, tool_schema
+from src.model_telemetry import forget_last_call, last_call_id
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.untrusted import fence
 
 _router = ContextRouter()
@@ -65,7 +66,7 @@ def _format_user_message(alert: AlertEvent, context: dict[str, Any]) -> str:
 
 
 class CriticAgent:
-    """Async engine wrapper for non-CrewAI direct agentic queries (Temporal / Pipeline)."""
+    """Async engine wrapper for direct agentic queries (Temporal / Pipeline)."""
 
     def __init__(self) -> None:
         self._llm = build_llm_client(model=settings.CRITIC_MODEL) if settings.CRITIC_ENABLED else None
@@ -76,7 +77,10 @@ class CriticAgent:
     async def critique(self, alert: AlertEvent) -> CriticResult:
         """Evaluate an alert asynchronously using context retrieved from async storage."""
         with agent_tools.acting_as("critic"):
-            return await self._critique(alert)
+            forget_last_call()
+            result = await self._critique(alert)
+        # The call behind this verdict (None when none was made: disabled, or it failed before the call).
+        return result.model_copy(update={"call_id": last_call_id()})
 
     async def _critique(self, alert: AlertEvent) -> CriticResult:
         if not self._llm:
@@ -181,4 +185,5 @@ class CriticAgent:
                 user_message=_format_user_message(alert, context),
                 max_tokens=1000,
                 role="critic",
+                prompt_version=prompt_version("critic"),
             )
