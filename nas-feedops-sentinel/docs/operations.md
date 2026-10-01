@@ -106,6 +106,11 @@ docstring for what each step asserts.
   else), and is then revoked. Policy and auth changes go through the root
   ceremony (`vault-ceremony`, `instraclustr/terraform/ceremony.sh`): a root
   token from shares 1 and 2, one Terraform run, revoked.
+  `python instraclustr/scripts/vault_custody.py` checks all of this read-only:
+  where each share is (share 3 still on this machine is a finding), that
+  nothing under `vault-init-data/` or `terraform/` looks like a root token, and,
+  with `--vault-addr` and a token you pass in `VAULT_TOKEN`, whether that token
+  is live, root, or revoked. It never prints a secret and does not read `.env`.
 * **LLM proxy.** The application holds a LiteLLM virtual key, not the master
   key. `instraclustr/litellm-bootstrap.sh` issues it after the proxy is up
   (alias `sentinel-app`: `primary-model` and `gemini-backup` only, a 30-day
