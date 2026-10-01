@@ -1,6 +1,6 @@
 """
 Planner Agent (Layer 2) — Operational Advisory & Query Synthesis.
-Refactored for CrewAI Flow capability & unified LiteLLM client execution.
+Runs through the unified LiteLLM client.
 """
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ from typing import Any
 
 from src import agent_tools, storage, surface_tools
 from src.config import settings
-from src.guardrails import OutputGuardrail
+from src.guardrails import InputGuardrail, OutputGuardrail
 from src.llm_client import build_llm_client
+from src.logging_config import get_logger
 from src.models import PlannerResult
-from src.prompts_loader import system_prompt, tool_schema
+from src.prompts_loader import prompt_version, system_prompt, tool_schema
 from src.untrusted import fence, fence_fields
+
+_log = get_logger(__name__)
 
 
 def _airport_list() -> str:
@@ -53,6 +56,7 @@ class PlannerAgent:
     def __init__(self) -> None:
         self._llm = build_llm_client(model=settings.PLANNER_MODEL) if settings.CRITIC_ENABLED else None
         self._guardrail = OutputGuardrail()
+        self._input_guard = InputGuardrail()
         self._prompt = system_prompt("planner")
         self._tool = tool_schema("planner")
 
@@ -62,6 +66,14 @@ class PlannerAgent:
             return await self._query(question)
 
     async def _query(self, question: str) -> PlannerResult:
+        # Before anything is read or sent: a question that tries to override the instructions, reaches for
+        # credentials or commands, or is longer than the dashboard allows is refused here, unanswered.
+        if len(question) > settings.PLANNER_QUESTION_MAX_CHARS:
+            return self._refused(question, f"The question is longer than {settings.PLANNER_QUESTION_MAX_CHARS} characters.")
+        checked = self._input_guard.verify(question, require_nas_scope=False)
+        if not checked.is_compliant:
+            _log.warning("planner_question_refused", extra={"violation_type": checked.violation_type})
+            return self._refused(question, checked.detail)
         try:
             recent_events, recent_alerts, critic_reviews = await agent_tools.invoke(
                 "read_recent_activity", _read_recent_activity)
@@ -159,6 +171,16 @@ class PlannerAgent:
             max_tokens=1000,
             temperature=0.1,
             role="planner",
+            prompt_version=prompt_version("planner"),
+        )
+
+    @staticmethod
+    def _refused(question: str, detail: str) -> PlannerResult:
+        return PlannerResult(
+            question=question[:200],
+            answer=f"The planner did not answer this question. {detail}",
+            confidence=None,
+            recommended_actions=["Ask about operational status, feed health, alerts or RVR conditions."],
         )
 
     def _query_deterministic(self, question: str, context: dict[str, Any]) -> PlannerResult:

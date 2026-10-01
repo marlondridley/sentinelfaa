@@ -7,19 +7,30 @@ from datetime import datetime, timedelta, timezone
 from src.alert_engine import check_alerts
 from src.config import settings
 from src.critic_agent import CriticAgent
-from src.execution_gate import condition_key, stage_critical_alert
+from src.execution_gate import condition_key, draft_escalation_tickets, stage_critical_alert
 from src.feed_health import compute_feed_health
 from src.investigation import investigate_staged
+from src.llm_guard import pass_budget
 from src.logging_config import bind_correlation_id, get_logger
 from src.metrics import ALERTS_TRIGGERED, EVENTS_INGESTED, EVENTS_VALIDATED, set_airport_status
 from src.models import NASEvent
 from src.storage import (
     get_covering_actions, get_ongoing_condition_keys, save_alerts, save_critic_result, save_events,
 )
-from src.validators import validate_event
+from src.validators import validate_batch
 
 _log = get_logger(__name__)
 
+
+
+# The sources the pipeline runs for. A label the API accepted from a caller is not one of them, and a
+# free-form Prometheus label is a new time series per value.
+_KNOWN_SOURCES = frozenset({"api", "ingest", "pipeline", "replay", "swim", "swim_scan", "test"})
+
+
+def _source_label(label: str) -> str:
+    source = label.lower()
+    return source if source in _KNOWN_SOURCES else "other"
 
 
 def critic_worklist(critical_alerts: list, budget: int) -> list:
@@ -60,19 +71,30 @@ async def run_pipeline(
     label: str = "PIPELINE",
     correlation_id: str | None = None,
 ) -> dict:
-    """Validate, persist, alert, and summarise a batch of NASEvents."""
+    """
+    Validate, persist, alert, and summarise a batch of NASEvents.
+
+    Everything the model layer does in the pass -- the Critic and the investigations -- draws on one
+    token budget (LLM_TOKEN_BUDGET_PER_PASS); once it is spent, calls are refused and the agents fall
+    back to rules, and staging is unaffected.
+    """
+    with pass_budget() as budget:
+        summary = await _run_pipeline(events, label, correlation_id)
+    summary["llm_tokens_spent"] = budget.spent
+    return summary
+
+
+async def _run_pipeline(events: list[NASEvent], label: str, correlation_id: str | None) -> dict:
     cid = bind_correlation_id(correlation_id)
     _log.info(
         "pipeline_start",
         extra={"label": label, "event_count": len(events), "correlation_id": cid},
     )
 
+    validate_batch(events)
     for event in events:
-        result = validate_event(event)
-        event.validation_status = "PASSED" if result.passed else "FAILED"
-        event.validation_errors = result.errors
         EVENTS_INGESTED.labels(
-            source=label.lower(),
+            source=_source_label(label),
             airport=event.airport_code or "unknown",
             service=event.service_name or "unknown",
         ).inc()
@@ -118,10 +140,15 @@ async def run_pipeline(
     staged_pairs = []
     for alert in critical_alerts:
         critic_for_alert = critic_results.get(alert.alert_id)
-        action = await stage_critical_alert(alert, critic_for_alert)
+        action = await stage_critical_alert(alert, critic_for_alert, draft_ticket=False)
         if action is not None:
             staged_count += 1
             staged_pairs.append((action, alert))
+
+    # Every review is in the queue; only now draft the advisory tickets, a few at a time.
+    await draft_escalation_tickets(
+        [(action, alert, critic_results.get(alert.alert_id)) for action, alert in staged_pairs]
+    )
 
     # Advisory, after staging: an investigation failure is logged and never
     # reaches the staged actions above.

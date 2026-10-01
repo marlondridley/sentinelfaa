@@ -5,7 +5,7 @@
 # secret/sentinel/config (LITELLM_API_KEY), replacing the proxy master key the
 # application used to hold. The key is a LiteLLM virtual key:
 #   * models:     only the aliases the application uses (primary-model and its
-#                 gemini-backup fallback) -- a request for any other alias is refused
+#                 only) -- a request for any other alias is refused
 #   * max_budget: $LITELLM_APP_BUDGET_USD per 30 days
 #   * rpm_limit:  $LITELLM_APP_RPM requests per minute
 # The master key never leaves this container and the proxy.
@@ -44,6 +44,6 @@ fi
 
 KEY="sk-sentinel-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 proxy /key/delete "{\"key_aliases\":[\"$ALIAS\"]}" >/dev/null 2>&1 || true
-proxy /key/generate "{\"key\":\"$KEY\",\"key_alias\":\"$ALIAS\",\"models\":[\"primary-model\",\"gemini-backup\"],\"max_budget\":$BUDGET,\"budget_duration\":\"30d\",\"rpm_limit\":$RPM,\"metadata\":{\"owner\":\"nas-feedops-sentinel\",\"issued_by\":\"litellm-bootstrap\"}}" >/dev/null
+proxy /key/generate "{\"key\":\"$KEY\",\"key_alias\":\"$ALIAS\",\"models\":[\"primary-model\"],\"max_budget\":$BUDGET,\"budget_duration\":\"30d\",\"rpm_limit\":$RPM,\"metadata\":{\"owner\":\"nas-feedops-sentinel\",\"issued_by\":\"litellm-bootstrap\"}}" >/dev/null
 vault kv put secret/sentinel/config LITELLM_API_KEY="$KEY" >/dev/null
-echo "virtual key '$ALIAS': issued (models primary-model, gemini-backup; \$$BUDGET/30d; ${RPM} rpm) and stored in Vault"
+echo "virtual key '$ALIAS': issued (model primary-model; \$$BUDGET/30d; ${RPM} rpm) and stored in Vault"
