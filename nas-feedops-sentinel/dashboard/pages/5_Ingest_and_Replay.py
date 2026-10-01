@@ -28,7 +28,7 @@ from lib import theme
 from lib.data import KIT_LOG_PATH
 from lib.page_setup import bootstrap_page
 from src import config
-from src.auth import Decision, can_decide
+from src.auth import Decision, can_decide, format_actor
 from src.config import settings
 from src.async_bridge import run_async as run
 from src.maintenance import purge_old_kit_files
@@ -98,7 +98,8 @@ with st.sidebar:
     )
     st.caption("Deletes Kit messages older than this that the watcher has not ingested. Operators only.")
     if _operate("Clean Kit log now", use_container_width=True):
-        removed, remaining = purge_old_kit_files(KIT_LOG_PATH, max_age_minutes=cleanup_minutes)
+        removed, remaining = purge_old_kit_files(
+            KIT_LOG_PATH, max_age_minutes=cleanup_minutes, actor=format_actor(_principal))
         st.success(f"Removed {removed} file(s). {remaining} remain in Kit log.")
 
     st.divider()
