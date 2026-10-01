@@ -297,6 +297,9 @@ class Settings(BaseSettings):
     WATCH_OFFICER_MODEL: str = ""
 
     MAX_CRITIC_PER_PASS: int = 5
+    # Watch Officer tickets drafted at once after a pass has staged every CRITICAL
+    # alert. A cap, not a throughput target: each draft reads the database.
+    TICKET_DRAFT_CONCURRENCY: int = 4
     LLM_TIMEOUT_SECONDS: float = 90.0
 
     # ── Watch Officer brief (src/watch_officer_assessment.py) ───────────────
