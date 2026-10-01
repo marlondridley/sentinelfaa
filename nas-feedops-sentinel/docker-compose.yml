@@ -252,7 +252,8 @@ services:
     <<: [*app-image, *hardened]
     container_name: nas-dashboard
     restart: unless-stopped
-    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
+    # dashboard.serve starts the metrics server with the process (Prometheus job nas-dashboard), then runs Streamlit.
+    command: python -m dashboard.serve --server.address=0.0.0.0 --server.headless=true
     environment:
       <<: *app-env
       # Streamlit writes machine_id under $HOME; /app/.streamlit is mounted read-only.
