@@ -23,6 +23,16 @@ _log = get_logger(__name__)
 
 
 
+# The sources the pipeline runs for. A label the API accepted from a caller is not one of them, and a
+# free-form Prometheus label is a new time series per value.
+_KNOWN_SOURCES = frozenset({"api", "ingest", "pipeline", "replay", "swim", "swim_scan", "test"})
+
+
+def _source_label(label: str) -> str:
+    source = label.lower()
+    return source if source in _KNOWN_SOURCES else "other"
+
+
 def critic_worklist(critical_alerts: list, budget: int) -> list:
     """
     The alerts the critic reviews this pass: the first reading of each distinct
@@ -84,7 +94,7 @@ async def _run_pipeline(events: list[NASEvent], label: str, correlation_id: str 
     validate_batch(events)
     for event in events:
         EVENTS_INGESTED.labels(
-            source=label.lower(),
+            source=_source_label(label),
             airport=event.airport_code or "unknown",
             service=event.service_name or "unknown",
         ).inc()
