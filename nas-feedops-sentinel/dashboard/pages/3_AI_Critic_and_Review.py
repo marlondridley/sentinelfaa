@@ -21,7 +21,8 @@ never readings, and its three numbers are its own rows (src/review_queue.py):
 
 A tile opens the rows it counts (?show=awaiting|escalate|monitoring). A
 review's full detail -- investigation, evaluation, ticket, the readings it
-covers -- opens in a drawer (?review=<action id> opens one by link). Reject
+covers -- opens in a drawer (?review=<action id> opens one by link; a
+decided one opens read-only, as the record of who decided and why). Reject
 and Continue monitoring can also be applied to selected rows at once; each
 review still gets its own audit row, decided by the same gate call.
 
@@ -176,6 +177,23 @@ def _review_detail(review: OpenReview) -> None:
             with st.expander("AI Critic rationale"):
                 st.markdown(safe_text.plain(ticket.critic_rationale))
 
+    if action.status != "PENDING":
+        # No longer open: the record of what happened, with nothing left to decide.
+        when = f" on {format_ts(action.decided_at)[:16].replace('T', ' ')} UTC" if action.decided_at else ""
+        st.markdown(
+            f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.GRAY3};'
+            f'background:{theme.DARK_GRAY2};border-radius:3px;padding:8px 11px;margin:10px 0;'
+            f'font-size:14px;color:{theme.GRAY5};"><b>{theme._esc(action.status.title())}</b>'
+            + (f" by {theme._esc(action.decided_by)}" if action.decided_by else "") + theme._esc(when)
+            + (f'<div style="margin-top:4px;color:{theme.GRAY3};">Note: {theme._esc(action.decision_note)}</div>'
+               if action.decision_note else "")
+            + (f'<div style="margin-top:4px;color:{theme.GRAY3};">Signed off as: '
+               f'{theme._esc(action.overridden_recommendation)}</div>' if action.overridden_recommendation else "")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.BLUE5};'
         f'background:{theme.TONES["info"][2]};border-radius:3px;padding:7px 10px;margin:10px 0;'
@@ -245,15 +263,20 @@ def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
         st.rerun()
 
 
-# A link that names a review (the Dashboard, the attention strip, the Alert Log)
-# opens it, once: the parameter is dropped so closing the drawer is final.
+# A link that names a review (the Dashboard, the attention strip, the Alert Log,
+# a number on Agent Evaluation) opens it, once: the parameter is dropped so
+# closing the drawer is final. One that is no longer open opens read-only.
 _linked = st.query_params.get("review")
 if _linked:
     del st.query_params["review"]
+    if _linked not in _by_id:
+        _closed = run(review_queue.find(_linked))
+        if _closed is not None:
+            _by_id[_linked] = _closed
     if _linked in _by_id:
         _open_review(_linked)
     else:
-        st.info("That review has already been decided or merged; the queue below shows what is open.")
+        st.info("No review has that id; the queue below shows what is open.")
 
 # ── The numbers: each one is rows of the table below, and opens them ──────────
 AWAITING, MONITORING = "awaiting", "monitoring"

@@ -91,7 +91,7 @@ class AnalysisRepository:
         """
         rows = await self._pool.fetch(
             """SELECT c.alert_id, c.confidence, c.escalate, c.reasoning, c.evaluated_at,
-                      s.status AS action_status, s.decided_by
+                      s.status AS action_status, s.decided_by, s.action_id, s.airport_code, s.alert_type
                FROM critic_results c
                LEFT JOIN staged_actions s ON s.alert_id = c.alert_id
                WHERE c.evaluated_at >= $1""",

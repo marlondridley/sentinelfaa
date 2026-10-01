@@ -136,11 +136,25 @@ operations floor.
 
    The same verdict gates deployment: `python -m src.readiness --gate`.
 2. **Health table**: each dimension, current value, target and status.
-   - The *Source* column names the category first (AGT-native,
-     AGT-compatible or Sentinel-specific), then what computed it
-     (`docs/agent-metrics.md`).
+   - *Evidence* is how much the number rests on, in its own unit ("30 model
+     claims"), and how much of its error budget or limit is used.
+   - *Source* is the data it is measured from; *Acts when off target* is
+     who does something about it.
    - "Too little evidence (n of m)" is honest: the dimension is not judged
      until there is enough.
+   - **Select a row** (the first one off target opens by itself). It shows
+     what a watch officer and a system engineer each do about it, and
+     *Behind this number*: the investigations, model calls and
+     recommendations it was computed from, what counts against it first.
+     Each row names its agent and links to its review, open or decided, so
+     a number leads to the work: the engineer goes to the agent named, the
+     officer opens the review.
+   - *Calculated by* says who computed the number: the Agent Governance
+     Toolkit, Sentinel's calculation of a toolkit metric (the toolkit's
+     own has a known defect), or Sentinel's own check
+     (`docs/agent-metrics.md`).
+   - The guidance and the data description for each dimension are in
+     `policies/model-slos.yaml`, beside its target.
 3. **Latency**: the path from alert to investigation to evidence to human
    decision, showing where the time goes; P50/P95/P99 by stage and agent.
 4. **Cost**:

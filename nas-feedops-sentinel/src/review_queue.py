@@ -81,6 +81,19 @@ async def open_reviews() -> list[OpenReview]:
             for a in actions]
 
 
+async def find(action_id: str) -> OpenReview | None:
+    """
+    One review by id, open or not, with its ticket and the AI's newest verdict: for showing it. A decided,
+    merged or expired one is the record of what happened, read-only (its `action.status` says which).
+    """
+    actions = await storage.get_staged_actions_by_ids([action_id])
+    if not actions:
+        return None
+    tickets = await storage.get_tickets_by_action_ids([action_id])
+    verdicts = await storage.get_latest_critic_verdicts_for_actions([action_id])
+    return OpenReview(actions[0], tickets.get(action_id), verdicts.get(action_id))
+
+
 def awaiting(reviews: list[OpenReview]) -> list[OpenReview]:
     return [r for r in reviews if not r.monitoring]
 

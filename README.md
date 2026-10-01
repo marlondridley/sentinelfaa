@@ -217,7 +217,7 @@ Agents remain advisory. They cannot approve an escalation, stage an operational 
 
 This separation allows Sentinel to standardize AI governance across different model providers without allowing the governance framework to redefine mission-specific operational semantics.
 
-Every metric and gate check on the Agent Evaluation page names its category in its **Source** column. Each metric's category, and the AGT defect behind each AGT-compatible one, is in [docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md); how each boundary is enforced, and which test proves it, is in [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md).
+Every metric and gate check on the Agent Evaluation page says who calculated it, in words ("Calculated by"): the toolkit, Sentinel's calculation of a toolkit metric, or Sentinel's own check. Each metric's category, and the AGT defect behind each AGT-compatible one, is in [docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md); how each boundary is enforced, and which test proves it, is in [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md).
 
 ---
 

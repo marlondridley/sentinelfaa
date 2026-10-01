@@ -10,10 +10,21 @@ Everything here is computed by the evaluation layer (src/evaluation.py) from
 the durable record -- model_calls, sealed investigations, staged actions and
 the append-only audit log -- never from an agent's account of itself, and
 with the Microsoft Agent Governance Toolkit wherever AGT computes the metric
-correctly (docs/agent-metrics.md; the Source column says which). The verdict
-and its targets are policies/model-slos.yaml, the same ones
-`python -m src.readiness --gate` applies. Anything that cannot be measured
-yet says "no data".
+correctly (docs/agent-metrics.md). The verdict and its targets are
+policies/model-slos.yaml, the same ones `python -m src.readiness --gate`
+applies. Anything that cannot be measured yet says "no data".
+
+A number here is something to act on, or it does not belong:
+
+  - each Health row says what data it is measured from (Source), how much of
+    it there was (Evidence), and who acts when it is off target;
+  - selecting a row (or ?dimension=<objective name>) opens what is behind
+    it: what each role does about it, and the investigations, model calls
+    and recommendations it was computed from (src/evaluation_evidence.py),
+    what counts against it first, each naming its agent and linking to the
+    review it belongs to;
+  - who calculated a number -- the toolkit, or Sentinel -- is said in words
+    (lib/agent_eval.calculated_by), not as a tag.
 """
 from __future__ import annotations
 
@@ -29,10 +40,13 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from lib import safe_text, theme  # noqa: E402
-from lib.agent_eval import NO_DATA, pct, seconds, usd  # noqa: E402
+from lib.agent_eval import (  # noqa: E402
+    CALCULATED_BY_HELP, NO_DATA, calculated_by, pct, render_evidence, seconds, usd,
+)
 from lib.page_setup import bootstrap_page  # noqa: E402
 from src import readiness  # noqa: E402
 from src.async_bridge import run_async as run  # noqa: E402
+from src.evaluation_evidence import evidence_for  # noqa: E402
 
 bootstrap_page(page_title="Agent Evaluation — PCT FeedOps Sentinel", page_icon="🧪")
 
@@ -50,7 +64,7 @@ _WINDOWS = {"Last 24 hours": 24.0, "Last 72 hours": 72.0, "Last 7 days": 168.0, 
 _choice = st.segmented_control("Window", list(_WINDOWS), default="Last 24 hours") or "Last 24 hours"
 
 try:
-    report = run(readiness.build_report(_WINDOWS[_choice]))
+    report, window = run(readiness.build_report_with_window(_WINDOWS[_choice]))
 except Exception as exc:  # noqa: BLE001
     st.error(safe_text.failure("The evaluation could not be built", exc))
     st.stop()
@@ -92,23 +106,81 @@ def _target(r: readiness.ObjectiveResult) -> str:
 
 
 _ICON = {"MET": "🟢", "AT_RISK": "🟡", "MISSED": "🔴", "NO_DATA": "⚪"}
+_OFF_TARGET = ("MISSED", "AT_RISK")
+_NOTHING = "Nothing to do"
 
-theme.section("Health", "Each dimension against its target, measured over the window.")
-st.dataframe(pd.DataFrame([
+
+def _status(r: readiness.ObjectiveResult) -> str:
+    if r.status != "NO_DATA":
+        return r.status.replace("_", " ")
+    return f"too little evidence ({r.samples} of {r.min_samples})" if r.samples else NO_DATA
+
+
+def _evidence(r: readiness.ObjectiveResult) -> str:
+    """How much the number rests on, in its own unit: '12 investigations · 160% of the error budget used'."""
+    if not r.samples:
+        return f"no {r.unit} in the window"
+    used = (f" · {pct(r.budget_used)} of the {'error budget' if r.target is not None else 'limit'} used"
+            if r.budget_used is not None and r.budget_used != float("inf") else "")
+    return f"{r.samples:,} {r.unit}{used}" + ("" if r.required else " · informational")
+
+
+def _acts(r: readiness.ObjectiveResult) -> str:
+    return "System engineer" if r.watch_officer.startswith(_NOTHING) else "Watch officer, system engineer"
+
+
+theme.section("Health", "Each dimension against its target. Select one for what is behind it and what to do.")
+_health = st.dataframe(pd.DataFrame([
     {"": _ICON.get(r.status, ""), "Dimension": r.label, "Current": _value(r), "Target": _target(r),
-     "Status": r.status.replace("_", " ") if r.status != "NO_DATA"
-     else (f"too little evidence ({r.samples} of {r.min_samples})" if r.samples else NO_DATA),
-     "Evidence": f"{r.samples}" + ("" if r.required else " (informational)"), "Source": r.source}
+     "Status": _status(r), "Evidence": _evidence(r), "Acts when off target": _acts(r), "Source": r.data}
     for r in report.objectives
-]), hide_index=True, width="stretch")
-with st.expander("What each dimension measures"):
-    for r in report.objectives:
-        st.markdown(f"**{r.label}.** {r.description} _{r.detail}._")
+]), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="health",
+    column_config={
+        "Evidence": st.column_config.TextColumn(help="How much the number rests on, in its own unit."),
+        "Source": st.column_config.TextColumn(width="large", help="The data the number is measured from."),
+    })
+
+# What is behind one dimension: the row selected, else the one a link names, else the first off target.
+_by_name = {r.name: r for r in report.objectives}
+_rows = _health.selection.rows if _health is not None else []
+_picked = (report.objectives[_rows[0]] if _rows and 0 <= _rows[0] < len(report.objectives)
+           else _by_name.get(str(st.query_params.get("dimension") or ""))
+           or next((r for r in report.objectives if r.status in _OFF_TARGET), None))
+
+if _picked is None:
+    st.caption("Nothing is off target. Select a dimension to see what it was measured from and what to do about it.")
+else:
+    with st.container(border=True):
+        st.markdown(
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+            f'<span style="font-size:17px;font-weight:650;color:{theme.LIGHT_GRAY5};">{theme._esc(_picked.label)}</span>'
+            + theme.status_chip(_picked.status.replace("_", " "), size="sm")
+            + f'<span class="mono" style="font-size:14px;color:{theme.GRAY3};">'
+            + theme._esc(f"{_value(_picked)} against {_target(_picked)}") + "</span></div>"
+            f'<div style="font-size:15px;color:{theme.GRAY5};margin:8px 0 2px 0;line-height:1.5;">'
+            + theme._esc(_picked.description) + "</div>"
+            f'<div style="font-size:14px;color:{theme.GRAY3};line-height:1.6;">'
+            f'<b>Measured from:</b> {theme._esc(_picked.data)}<br/>'
+            f'<b>Calculated by:</b> {theme._esc(calculated_by(_picked.source))}'
+            + theme.help_hint(CALCULATED_BY_HELP, "What this means") + "</div>",
+            unsafe_allow_html=True,
+        )
+        _wo, _se = st.columns(2)
+        with _wo:
+            theme.evidence_list("Watch officer, when it is off target", [_picked.watch_officer], limit=1)
+        with _se:
+            theme.evidence_list("System engineer, when it is off target", [_picked.system_engineer], limit=1)
+        st.markdown('<div class="ev-title" style="margin-top:8px;">Behind this number</div>', unsafe_allow_html=True)
+        if window is None:
+            st.caption("The window could not be evaluated: a record failed its integrity check (see the verdict).")
+        else:
+            render_evidence(evidence_for(_picked.name, window, target=_picked.target, limit=_picked.limit),
+                            _picked.unit)
 
 # ── Latency ──────────────────────────────────────────────────────────────────
 lat = m.get("latency", {})
 theme.section("Latency", "Alert → investigation → evidence → human review: where the time goes.",
-              right="percentiles AGT-native: agent-sre ResponseLatency")
+              right="percentiles calculated by the " + calculated_by("AGT-native: agent-sre ResponseLatency"))
 
 
 def _p_row(name: str, p: dict) -> dict:
@@ -131,11 +203,13 @@ with c2:
     rows.append(_p_row("one model call", lat.get("model_call", {})))
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption(f"Timeouts {pct((lat.get('timeout_rate') or {}).get('value'), 1)} · "
-               f"retried calls {pct((lat.get('retry_rate') or {}).get('value'), 1)} of calls sent (Sentinel-specific)")
+               f"retried calls {pct((lat.get('retry_rate') or {}).get('value'), 1)} of calls sent "
+               f"({calculated_by('Sentinel-specific')})")
 
 # ── Cost ─────────────────────────────────────────────────────────────────────
 cost = m.get("cost", {})
-theme.section("Cost", "What the models cost, per unit of work.", right="AGT-native: agent-sre CostGuard; ratios Sentinel-specific")
+theme.section("Cost", "What the models cost, per unit of work.",
+              right="spend calculated by the " + calculated_by("AGT-native: agent-sre CostGuard") + "; ratios by Sentinel")
 per_inv, per_alert = cost.get("per_investigation") or {}, cost.get("per_alert") or {}
 tokens = cost.get("tokens") or {}
 theme.kpi_row([
@@ -170,7 +244,7 @@ st.caption(f"Spent on retried calls {usd(cost.get('retry_cost_usd'))} · on fail
 # ── Reliability ──────────────────────────────────────────────────────────────
 rel = m.get("reliability", {})
 theme.section("Reliability", "Do the agents and the providers behind the gateway hold up?",
-              right="AGT-native: agent-sre FleetManager, TaskSuccessRate")
+              right="calculated by the " + calculated_by("AGT-native: agent-sre FleetManager, TaskSuccessRate"))
 agents = (rel.get("agents") or {}).get("members") or {}
 providers = (rel.get("providers") or {}).get("members") or {}
 c1, c2 = st.columns(2)
@@ -208,12 +282,13 @@ theme.section("Decision quality", "Is what the agents put in front of a person g
 st.dataframe(pd.DataFrame([
     {"measure": label, "value": pct((q.get(key) or {}).get("value"), 1) if key != "evidence_improvement"
      else (f"{(q.get(key) or {}).get('value'):.1f} items" if (q.get(key) or {}).get("value") is not None else NO_DATA),
-     "evidence": (q.get(key) or {}).get("samples", 0), "source": (q.get(key) or {}).get("source", "")}
+     "samples": (q.get(key) or {}).get("samples", 0),
+     "calculated by": calculated_by((q.get(key) or {}).get("source", ""))}
     for key, label in (
         ("decision_quality", "Decision quality score"), ("evidence_grounding", "Evidence grounding"),
         ("recommendation_accuracy", "Recommendation accuracy"), ("unsupported_claim_rate", "Unsupported claims"),
         ("false_escalation_rate", "False escalations"), ("missed_escalation_rate", "Missed escalations"),
-        ("human_override_rate", "Human overrides"), ("calibration_error", "Confidence calibration error (ECE)"),
+        ("human_override_rate", "Human overrides"), ("calibration_error", "Confidence calibration error"),
         ("contradiction_rate", "Investigations with contradicting evidence"),
         ("evidence_improvement", "Evidence the models added per investigation"),
     )
@@ -248,7 +323,7 @@ with c2:
 # ── Governance gates ─────────────────────────────────────────────────────────
 gov = m.get("governance", {})
 theme.section("Governance gates", "Did every investigation pass its quality, safety, cost, latency and audit gates?",
-              right="cost and latency AGT-native: agent-os-kernel BudgetTracker")
+              right="cost and latency checked by the " + calculated_by("AGT-native: agent-os-kernel BudgetTracker"))
 gates = gov.get("gates") or {}
 st.dataframe(pd.DataFrame([
     {"gate": group, **{status: counts_.get(status, 0) for status in ("PASS", "WARN", "FAIL", "PENDING", "N/A")},
@@ -256,8 +331,9 @@ st.dataframe(pd.DataFrame([
     for group, counts_ in gates.items()
 ]) if gates else pd.DataFrame([{"": NO_DATA}]), hide_index=True, width="stretch")
 pc = gov.get("policy_compliance") or {}
-st.caption(f"Policy compliance (AGT-native: agent-os-kernel GovernanceMetrics): {pc.get('allowed', 0)} of {pc.get('checks', 0)} "
-           f"model calls allowed, {pc.get('refused', 0)} refused. Every decision, including tool calls, is in AGT's "
+st.caption(f"Policy compliance ({calculated_by('AGT-native: agent-os-kernel GovernanceMetrics')}): "
+           f"{pc.get('allowed', 0)} of {pc.get('checks', 0)} "
+           f"model calls allowed, {pc.get('refused', 0)} refused. Every decision, including tool calls, is in the toolkit's "
            "audit log (OpenTelemetry log records, agt.*).")
 
 theme.back_link()
