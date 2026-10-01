@@ -70,6 +70,27 @@ groups:
           summary: "Over half of model calls are failing; AI output is falling back to rules"
           description: "Check nas-litellm logs: provider keys, quota (429), model availability."
 
+      - alert: ModelCircuitOpen
+        # The gateway failed several calls in a row, so calls to this model are being refused
+        # without being sent and the Critic reports itself unavailable (src/llm_guard.py). Alerts
+        # are still staged for a person; only the advisory is missing. One probe call is let
+        # through every LLM_BREAKER_COOLDOWN_SECONDS, so this clears by itself when the model is back.
+        expr: max by (model) (nas_llm_circuit_state) >= 2
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Model circuit open for {{ $labels.model }}: AI advisories are unavailable"
+          description: "Check nas-litellm logs: provider keys, quota (429), model availability. docs/runbooks.md."
+
+      - alert: LLMPassBudgetExhausted
+        # A pipeline pass spent LLM_TOKEN_BUDGET_PER_PASS and later Critic or investigation calls
+        # in it were refused. A burst that big is worth knowing about; staging is unaffected.
+        expr: increase(nas_llm_budget_refusals_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "A pipeline pass spent its model token budget; later calls in it fell back to rules"
+          description: "Raise LLM_TOKEN_BUDGET_PER_PASS only if the burst is legitimate. Search the logs for llm_pass_budget_exhausted."
+
       # The rules below read the agent metrics the Agent Governance Toolkit
       # computes and OpenTelemetry exports (src/telemetry.py). They are the
       # same for every model provider behind the gateway.

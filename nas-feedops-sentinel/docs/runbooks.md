@@ -52,7 +52,8 @@ Nothing ingested in 30 minutes.
 2. Is `nas-sentinel` running and watching that folder?
    `docker logs nas-sentinel --since 30m`
 3. `data/raw/swim_live/log/.inflight/` should be empty or nearly so. Claims
-   older than 10 minutes are released automatically.
+   older than 4 minutes (a crashed scanner's) are released automatically; a
+   failed scan releases its own at once.
 
 ### LLMErrorRateHigh (warning)
 
@@ -66,6 +67,25 @@ series). The AI layer is falling back to rules. This is safe, but the advice is 
 3. Quota: there is no fallback provider. Wait for the quota to reset, raise it
    with Anthropic, or raise the budget (`LITELLM_APP_BUDGET_USD`). Meanwhile
    every alert is still staged and the Critic reports itself unavailable.
+
+### ModelCircuitOpen (warning)
+
+The gateway failed `LLM_BREAKER_THRESHOLD` calls in a row, so calls to that
+model are refused without being sent and the Critic says "unavailable" at
+once (`src/llm_guard.py`). Alerts are still staged for a person; only the
+advisory is missing. One probe call goes through every
+`LLM_BREAKER_COOLDOWN_SECONDS`, and the circuit closes when it is answered.
+1. `docker logs nas-litellm --since 30m`: provider keys, quota and availability
+   (the same checks as LLMErrorRateHigh).
+2. The worker log names the moment it opened (`llm_circuit_opened`) and closed
+   (`llm_circuit_closed`).
+
+### LLMPassBudgetExhausted (warning)
+
+One pipeline pass spent `LLM_TOKEN_BUDGET_PER_PASS` tokens across the Critic
+and the investigations; later calls in that pass were refused and fell back to
+rules. Staging is unaffected. Search the logs for `llm_pass_budget_exhausted`
+for the pass. Raise the cap only if the burst was legitimate.
 
 ### AgentBlockedFromDecidingOrWriting (critical)
 

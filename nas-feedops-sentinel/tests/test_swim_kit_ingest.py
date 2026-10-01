@@ -822,7 +822,7 @@ def test_events_that_were_never_stored_are_scanned_again_after_the_claim_times_o
 
     claimed = folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274"
     old = time.time() - swim_file_ingest.CLAIM_TIMEOUT_SECONDS - 5
-    os.utime(claimed, (old, old))
+    os.utime(claimed.with_name(claimed.name + swim_file_ingest.CLAIM_MARKER_SUFFIX), (old, old))   # the claim's age
     events, stats = swim_file_ingest.scan_swim_folder(folder, processed_dir=tmp_path / "p",
                                                       failed_dir=tmp_path / "f", defer_archive=True)
     assert len(events) == 1, "the file was not lost"
@@ -830,7 +830,7 @@ def test_events_that_were_never_stored_are_scanned_again_after_the_claim_times_o
     assert (tmp_path / "p" / "1787863348274").exists()
 
 
-def test_the_watcher_survives_a_failed_pipeline_and_leaves_the_files_claimed(tmp_path: Path, monkeypatch):
+def test_the_watcher_survives_a_failed_pipeline_and_gives_the_files_back(tmp_path: Path, monkeypatch):
     import shutil
 
     from src import swim_file_ingest
@@ -854,8 +854,9 @@ def test_the_watcher_survives_a_failed_pipeline_and_leaves_the_files_claimed(tmp
         swim_file_ingest._shutdown_requested.clear()
 
     assert calls == [1], "the pipeline was given the events"
-    assert (folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274").exists(), "and the file was not archived"
-    assert not (tmp_path / "p" / "1787863348274").exists()
+    assert (folder / "1787863348274").exists(), "and the file is back in the folder at once, to be scanned again"
+    assert not (folder / swim_file_ingest.INFLIGHT_DIR / "1787863348274").exists()
+    assert not (tmp_path / "p" / "1787863348274").exists(), "and was not archived"
 
 
 def test_a_read_only_folder_is_still_ingested_in_place(tmp_path: Path, monkeypatch):
