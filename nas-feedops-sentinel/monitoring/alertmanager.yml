@@ -1,0 +1,46 @@
+# Alertmanager for NAS FeedOps Sentinel. Prometheus evaluates monitoring/alert-rules.yml
+# and sends what fires here; this groups it, removes repeats, and posts it to Slack.
+#
+# The Slack webhook URL is a secret and is not in this file. docker-compose.yml's
+# `alertmanager` service writes SLACK_WEBHOOK_URL (from the .env files) to
+# /tmp/slack_api_url, in memory, before it starts; `api_url_file` below reads it there.
+# Without the variable the file is empty: alerts are still held and shown in the
+# Alertmanager UI (https://localhost:8448), delivery fails visibly (the
+# AlertNotificationsFailing rule), and nothing is sent anywhere.
+#
+# Checked in CI (.github/scripts/check-alerting.sh): amtool parses it and routes
+# sample alerts, and a real Alertmanager delivers one to a stand-in for Slack.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: slack
+  # One message per alert name, and per airport for the per-airport rule.
+  group_by: [alertname, airport]
+  group_wait: 30s        # collect what fires together before the first message
+  group_interval: 5m     # how soon a group that gained or lost an alert is sent again
+  repeat_interval: 4h    # reminder while it keeps firing
+  routes:
+    # Watchdog fires all the time on purpose (alert-rules.yml). It is held, not
+    # sent: seeing it in the UI means rules are reaching Alertmanager.
+    # Routes match in order, so this must stay above the catch-alls below.
+    - matchers: [alertname="Watchdog"]
+      receiver: "null"
+    # Critical: a shorter wait before the first message, and a reminder every hour.
+    - matchers: [severity="critical"]
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: "null"
+  - name: slack
+    slack_configs:
+      - api_url_file: /tmp/slack_api_url
+        send_resolved: true
+        color: '{{ if eq .Status "resolved" }}good{{ else if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+        title: '{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}CRITICAL{{ else }}WARNING{{ end }} ({{ .Alerts.Firing | len }} firing){{ else }}RESOLVED{{ end }}: {{ .GroupLabels.alertname }}{{ with .GroupLabels.airport }} at {{ . }}{{ end }}'
+        text: |-
+          {{ range .Alerts }}{{ .Annotations.summary }}
+          {{ with .Annotations.description }}{{ . }}
+          {{ end }}{{ end }}Runbook: nas-feedops-sentinel/docs/runbooks.md, "{{ .GroupLabels.alertname }}"
