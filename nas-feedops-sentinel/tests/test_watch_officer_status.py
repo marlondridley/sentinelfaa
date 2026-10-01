@@ -146,7 +146,7 @@ def test_the_narrative_is_kept_and_only_the_assessment_is_replaced():
 def test_the_dashboard_shows_the_current_view():
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parent.parent / "dashboard" / "app.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parent.parent / "dashboard" / "pages" / "0_Dashboard.py").read_text(encoding="utf-8")
     assert "current_view(_wo_latest, run(build_watch_officer_context()))" in source
     assert "brief_view.render(_wo_latest)" not in source, "the stored status is never what is rendered"
 

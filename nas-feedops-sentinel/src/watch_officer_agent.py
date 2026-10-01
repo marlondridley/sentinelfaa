@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
-from src import agent_tools, config, storage
+from src import agent_tools, config, review_queue, storage
 from src import watch_officer_assessment as rules
 from src.async_bridge import run_async
 from src.config import settings
@@ -109,7 +109,7 @@ async def _read_operating_picture(event_limit: int) -> tuple:
         await storage.get_flight_phase_counts(window_minutes=15),
         await storage.get_active_aircraft(window_minutes=5, limit=300),
         await storage.get_latency_stats(since=datetime.now(timezone.utc) - timedelta(minutes=rules.LATENCY_WINDOW_MINUTES)),
-        await storage.get_pending_staged_actions(),
+        await review_queue.open_reviews(),
         await storage.get_draft_operational_tickets(),
         await storage.get_recent_critic_results(limit=20),
     )
@@ -173,10 +173,8 @@ async def build_watch_officer_context(
         "alerts": alerts_raw[:50],
         "critical_alerts": critical_alerts,
         "critical_alert_count": len(critical_alerts),
-        "pending_actions": [
-            item.model_dump() if hasattr(item, "model_dump") else dict(item)
-            for item in pending
-        ],
+        # Each open review, and whether someone already answered it "keep monitoring" (src/review_queue.py).
+        "pending_actions": [{**review.action.model_dump(), "monitoring": review.monitoring} for review in pending],
         "pending_actions_count": len(pending),
         "draft_tickets": [
             item.model_dump() if hasattr(item, "model_dump") else dict(item)

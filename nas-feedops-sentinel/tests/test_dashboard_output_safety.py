@@ -75,10 +75,12 @@ def test_plain_keeps_the_words_and_handles_none_and_non_strings():
 
 
 @pytest.mark.parametrize("path, needle", [
-    ("dashboard/app.py", "safe_text.plain(pr.answer)"),
-    ("dashboard/app.py", 'safe_text.plain(brief.get("answer", ""))'),
-    ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(_summary(action))"),
+    ("dashboard/pages/0_Dashboard.py", "safe_text.plain(pr.answer)"),
+    ("dashboard/pages/0_Dashboard.py", 'safe_text.plain(brief.get("answer", ""))'),
+    ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(_summary(review))"),
     ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(ticket.critic_rationale)"),
+    ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(ticket.decided_by)"),
+    ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(ticket.decision_note)"),
     ("dashboard/pages/3_AI_Critic_and_Review.py", "safe_text.plain(reasoning)"),
     ("dashboard/lib/investigation_view.py", "safe_text.plain(brief.situation)"),
 ])
@@ -87,8 +89,8 @@ def test_the_pages_show_model_text_through_plain(path, needle):
 
 
 def test_no_page_hands_model_or_stored_text_to_st_markdown_raw():
-    for path, raw in [("dashboard/app.py", "st.markdown(brief.get("),
-                      ("dashboard/app.py", 'st.markdown(f"**{pr.answer}**")'),
+    for path, raw in [("dashboard/pages/0_Dashboard.py", "st.markdown(brief.get("),
+                      ("dashboard/pages/0_Dashboard.py", 'st.markdown(f"**{pr.answer}**")'),
                       ("dashboard/pages/3_AI_Critic_and_Review.py", "st.markdown(ticket.critic_rationale)"),
                       ("dashboard/pages/3_AI_Critic_and_Review.py", "st.markdown(reasoning if reasoning"),
                       ("dashboard/lib/investigation_view.py", "{brief.situation}\")")]:

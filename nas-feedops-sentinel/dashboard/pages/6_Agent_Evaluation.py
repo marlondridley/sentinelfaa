@@ -1,7 +1,7 @@
 """
 Agent Evaluation & Governance -- Layer 3 of the agent evaluation.
 
-The operator's screens show at most five AI indicators (the Overview card)
+The operator's screens show at most five AI indicators (the Dashboard card)
 and one investigation's evaluation (the Review page). This page is the rest,
 for engineering, program management and governance: is the AI layer
 measured, governed and ready to deploy?

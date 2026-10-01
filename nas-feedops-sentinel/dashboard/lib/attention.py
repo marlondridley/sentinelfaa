@@ -1,5 +1,5 @@
 """
-The Overview's attention strip: what needs the watch officer now, most
+The Dashboard's attention strip: what needs the watch officer now, most
 urgent first, each item one click from its subject (src/attention.py).
 
 A still list, not a scrolling ticker: a moving target is hard to read and

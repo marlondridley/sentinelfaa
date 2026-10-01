@@ -110,6 +110,26 @@ class AnalysisRepository:
         )
         return [dict(r) for r in rows]
 
+    async def get_latest_verdicts_for_actions(self, action_ids: list[str]) -> dict[str, dict]:
+        """
+        For each review, the Critic's newest verdict on any reading it covers, with how many of its
+        readings the Critic assessed (`verdicts`) and how many of those said escalate (`escalations`).
+        A review covers every reading of its condition; its own alert_id is only the first.
+        """
+        if not action_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT DISTINCT ON (x.action_id)
+                      x.action_id, c.alert_id, c.confidence, c.escalate, c.pattern, c.bluf, c.evaluated_at,
+                      count(*) OVER (PARTITION BY x.action_id) AS verdicts,
+                      count(*) FILTER (WHERE c.escalate) OVER (PARTITION BY x.action_id) AS escalations
+               FROM staged_action_alerts x JOIN critic_results c ON c.alert_id = x.alert_id
+               WHERE x.action_id = ANY($1::text[])
+               ORDER BY x.action_id, c.evaluated_at DESC""",
+            list(action_ids),
+        )
+        return {r["action_id"]: dict(r) for r in rows}
+
     async def get_recent_critic_results(self, limit: int = 50) -> list[dict]:
         # NOTE: column list mirrors the full critic_results schema, including the citations
         # JSONB blob (dropping it here requires confirming the dashboard doesn't render it).

@@ -1,5 +1,5 @@
 """
-The Overview's attention strip (src/attention.py): what needs the watch
+The Dashboard's attention strip (src/attention.py): what needs the watch
 officer now, most urgent first, each item linking to its exact subject.
 
 It replaced a scrolling BREAKING ticker whose items linked only to a page
@@ -16,10 +16,12 @@ import pytest
 
 from src import storage
 from src.attention import ACTION, ATTENTION, GOOD, build_attention_items
-from src.execution_gate import stage_critical_alert
+from src.auth import Decision, Principal, PrincipalSource
+from src.execution_gate import decide_staged_action, stage_critical_alert
 from src.models import AlertEvent
 
 ALL_OK = {"KDCA": "OK", "KIAD": "OK", "KBWI": "OK", "KADW": "OK"}
+SUPERVISOR = Principal("smith", "Supervisor", PrincipalSource.OIDC, roles=frozenset({"supervisor"}))
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +52,20 @@ async def test_several_pending_reviews_link_to_the_queue():
     await _stage(_critical("KDCA"), _critical("KIAD"))
     [item] = [i for i in await build_attention_items(ALL_OK, [], []) if i["severity"] == ACTION]
     assert (item["page"], item["params"], item["text"]) == ("critic", {}, "2 reviews awaiting a decision")
+
+
+async def test_a_review_someone_is_monitoring_is_attention_not_an_action():
+    """It used to read "2 reviews awaiting a decision" for as long as either stayed open, answered or not."""
+    kdca, kiad = await _stage(_critical("KDCA"), _critical("KIAD"))
+    await decide_staged_action(kdca.action_id, Decision.MONITOR, SUPERVISOR, "watching")
+
+    items = await build_attention_items(ALL_OK, [], [])
+
+    assert [(i["severity"], i["page"], i["params"]) for i in items] == [
+        (ACTION, "critic", {"review": kiad.action_id}),
+        (ATTENTION, "critic", {"show": "monitoring"}),
+    ]
+    assert items[1]["text"] == "1 review(s) being monitored"
 
 
 async def test_low_rvr_links_to_that_airports_rvr():
