@@ -284,7 +284,7 @@ vault kv put secret/postgres/credentials \
 vault kv put secret/postgres/app \
     username="${APP_DB_USER}" password="${APP_DB_PASSWORD}" database="${POSTGRES_DB}" >/dev/null
 vault kv put secret/litellm \
-    DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" >/dev/null
 # secret/sentinel/config (LITELLM_API_KEY) is written by litellm-bootstrap.sh:
 # a scoped virtual key, not the master key.

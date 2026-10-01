@@ -76,12 +76,13 @@ x-app-env: &app-env
   VAULT_AGENT_ENV_FILE: /vault/secrets/app-config.env
   # Models: proxy aliases only (instraclustr/litellm-config.yaml).
   LLM_BASE_URL: ${LLM_BASE_URL:-http://nas-litellm:4000/v1}
+  # Refuse to start if the gateway URL is this container's own loopback.
+  REQUIRE_REMOTE_LLM_PROXY: "1"
   LLM_MODEL: ${LLM_MODEL:-primary-model}
   CRITIC_MODEL: ${CRITIC_MODEL:-primary-model}
   # Empty means LLM_MODEL. Only an alias the application's LiteLLM key may call
-  # and policies/model-use.yaml allows (primary-model, gemini-backup): the
-  # gateway, not the app, decides which provider serves it (fallbacks in
-  # instraclustr/litellm-config.yaml).
+  # and policies/model-use.yaml allows (primary-model): the gateway, not the
+  # app, decides which provider serves it (instraclustr/litellm-config.yaml).
   WATCH_OFFICER_MODEL: ${WATCH_OFFICER_MODEL:-}
   INVESTIGATION_MODEL: ${INVESTIGATION_MODEL:-}
   CRITIC_ENABLED: ${CRITIC_ENABLED:-1}
@@ -252,7 +253,8 @@ services:
     <<: [*app-image, *hardened]
     container_name: nas-dashboard
     restart: unless-stopped
-    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.headless=true
+    # dashboard.serve starts the metrics server with the process (Prometheus job nas-dashboard), then runs Streamlit.
+    command: python -m dashboard.serve --server.address=0.0.0.0 --server.headless=true
     environment:
       <<: *app-env
       # Streamlit writes machine_id under $HOME; /app/.streamlit is mounted read-only.
@@ -263,6 +265,9 @@ services:
       # and nothing else, instead of a typed callsign anyone reaching the public address could use. Set to 0
       # only for a lab run with no Keycloak.
       REQUIRE_SIGN_IN: ${REQUIRE_SIGN_IN:-1}
+      # How long a sign-in lasts (at most the realm's 10 h). Roles are read at sign-in and not re-checked, so this
+      # is also the longest a removed role or a disabled account can keep acting.
+      SIGN_IN_MAX_SECONDS: ${SIGN_IN_MAX_SECONDS:-14400}
     volumes:
       - ./data:/app/data
       - dashboard-secrets:/vault/secrets:ro
@@ -465,6 +470,9 @@ services:
       - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal_worker}
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:?TEMPORAL_DB_PASSWORD is required}
       - POSTGRES_SEEDS=temporal-postgresql
+      # Prometheus metrics, scraped by monitoring/prometheus.yml (job nas-temporal). Not published on the host:
+      # only Prometheus, on this network, reads it.
+      - PROMETHEUS_ENDPOINT=0.0.0.0:8000
     ports:
       # Loopback only. Temporal has no authentication configured: anyone who
       # can reach this port can start workflows, bypassing the API's auth.

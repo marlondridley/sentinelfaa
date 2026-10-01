@@ -51,6 +51,10 @@ async def get_or_create_client() -> Client:
     return client
 
 
+def pipeline_workflow_id(cid: str) -> str:
+    return f"sentinel-pipeline-{cid}"
+
+
 async def start_pipeline_workflow(
     event_payloads: list[dict],
     label: str = "PIPELINE",
@@ -63,7 +67,7 @@ async def start_pipeline_workflow(
     handle = await client.start_workflow(
         SentinelPipelineWorkflow.run,
         args=[event_payloads, label, cid],
-        id=f"sentinel-pipeline-{cid}",
+        id=pipeline_workflow_id(cid),
         task_queue=settings.TEMPORAL_TASK_QUEUE,
     )
     _log.info("workflow_started", extra={"workflow_id": handle.id, "label": label})
