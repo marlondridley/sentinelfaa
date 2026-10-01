@@ -183,7 +183,7 @@ class TestWatchOfficer:
 
 # ── LLM narrative path ───────────────────────────────────────────────────────
 #
-# Until the CrewAI removal this path could never run: get_watch_officer_agent()
+# Until the agent was rewritten this path could never run: get_watch_officer_agent()
 # referenced an unimported `settings`, raised NameError, and every brief fell
 # back to the deterministic one without anyone noticing.
 

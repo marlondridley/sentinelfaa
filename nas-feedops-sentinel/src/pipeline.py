@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from src.alert_engine import check_alerts
 from src.config import settings
 from src.critic_agent import CriticAgent
-from src.execution_gate import condition_key, stage_critical_alert
+from src.execution_gate import condition_key, draft_escalation_tickets, stage_critical_alert
 from src.feed_health import compute_feed_health
 from src.investigation import investigate_staged
 from src.logging_config import bind_correlation_id, get_logger
@@ -16,7 +16,7 @@ from src.models import NASEvent
 from src.storage import (
     get_covering_actions, get_ongoing_condition_keys, save_alerts, save_critic_result, save_events,
 )
-from src.validators import validate_event
+from src.validators import validate_batch
 
 _log = get_logger(__name__)
 
@@ -67,10 +67,8 @@ async def run_pipeline(
         extra={"label": label, "event_count": len(events), "correlation_id": cid},
     )
 
+    validate_batch(events)
     for event in events:
-        result = validate_event(event)
-        event.validation_status = "PASSED" if result.passed else "FAILED"
-        event.validation_errors = result.errors
         EVENTS_INGESTED.labels(
             source=label.lower(),
             airport=event.airport_code or "unknown",
@@ -118,10 +116,15 @@ async def run_pipeline(
     staged_pairs = []
     for alert in critical_alerts:
         critic_for_alert = critic_results.get(alert.alert_id)
-        action = await stage_critical_alert(alert, critic_for_alert)
+        action = await stage_critical_alert(alert, critic_for_alert, draft_ticket=False)
         if action is not None:
             staged_count += 1
             staged_pairs.append((action, alert))
+
+    # Every review is in the queue; only now draft the advisory tickets, a few at a time.
+    await draft_escalation_tickets(
+        [(action, alert, critic_results.get(alert.alert_id)) for action, alert in staged_pairs]
+    )
 
     # Advisory, after staging: an investigation failure is logged and never
     # reaches the staged actions above.
