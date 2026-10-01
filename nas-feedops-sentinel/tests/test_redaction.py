@@ -250,7 +250,7 @@ def test_the_client_says_whether_the_prompt_it_sent_was_redacted(monkeypatch):
         asyncio.run(client.acall_with_tool("sys", {"name": "t", "input_schema": {}}, "callsign: UAL1234", role="critic"))
     assert seen["redacted"] is True
 
-    monkeypatch.setattr(llm, "redact_text", lambda text: text)           # a redactor that stopped working
+    monkeypatch.setattr(llm, "redact_text_counted", lambda text: (text, 0))           # a redactor that stopped working
     with pytest.raises(llm.LLMPermanentError):
         asyncio.run(client.acall_with_tool("sys", {"name": "t", "input_schema": {}}, "callsign: UAL1234", role="critic"))
     assert seen["redacted"] is False, "and the policy is told so"
