@@ -10,9 +10,9 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src import config
 
@@ -254,6 +254,20 @@ def is_surface_event(event: "NASEvent") -> bool:
 
 
 
+# nas_events stores these as INTEGER. A value outside 32 bits made asyncpg reject the whole batch it was in, and
+# the scan left every file of the batch claimed and tried them all again, for ever.
+Int32 = Annotated[int, Field(ge=-2_147_483_648, le=2_147_483_647)]
+
+
+def _without_nul(value: Any) -> Any:
+    """PostgreSQL text and JSONB cannot hold a NUL; one in a feed field rejected the whole batch."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_without_nul(v) for v in value]
+    return value
+
+
 class NASEvent(BaseModel):
     """Normalized FAA SWIM/STDDS terminal event record."""
 
@@ -287,9 +301,9 @@ class NASEvent(BaseModel):
 
     # RVR fields (APDS_RVR service)
     runway: str | None = None
-    rvr_touchdown: int | None = None   # feet
-    rvr_midpoint: int | None = None    # feet
-    rvr_rollout: int | None = None     # feet
+    rvr_touchdown: Int32 | None = None   # feet
+    rvr_midpoint: Int32 | None = None    # feet
+    rvr_rollout: Int32 | None = None     # feet
 
     # Aircraft / vehicle / track identity (SMES, TOWER_DEPARTURE, TERMINAL_AUTO)
     track_id: str | None = None
@@ -300,9 +314,9 @@ class NASEvent(BaseModel):
     # Spatial / track state (TAIS / TERMINAL_AUTO)
     lat: float | None = None              # WGS84 latitude
     lon: float | None = None              # WGS84 longitude
-    altitude_ft: int | None = None        # Reported altitude in feet
-    ground_speed_kt: int | None = None    # Ground speed in knots
-    vertical_speed_fpm: int | None = None # Vertical speed (fpm); + climbing, - descending
+    altitude_ft: Int32 | None = None        # Reported altitude in feet
+    ground_speed_kt: Int32 | None = None    # Ground speed in knots
+    vertical_speed_fpm: Int32 | None = None # Vertical speed (fpm); + climbing, - descending
     flight_phase: str | None = None       # DEPARTURE | ARRIVAL | ENROUTE | GROUND | UNKNOWN
     flight_rules: str | None = None       # IFR | VFR | SVFR
     beacon_code: str | None = None        # Transponder squawk
@@ -326,6 +340,13 @@ class NASEvent(BaseModel):
     # Provenance
     raw_message_path: str | None = None   # Path to source JSON file (replay mode)
     
+    @model_validator(mode="before")
+    @classmethod
+    def strip_nul_characters(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {key: _without_nul(value) for key, value in data.items()}
+        return data
+
     @field_validator("event_time_utc", "received_time_utc", mode="after")
     @classmethod
     def ensure_utc_awareness(cls, dt: datetime) -> datetime:

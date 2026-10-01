@@ -129,8 +129,13 @@ docstring for what each step asserts.
   duplicates or a second staged action.
 * **One consumer per file.** A scanner claims a file by renaming it into the
   folder's hidden `.inflight/` subfolder before reading it; only one rename
-  can succeed. A claim left by a crashed scanner is released after 10
-  minutes. A read-only folder is read in place.
+  can succeed. A claim does not touch the file's own timestamps (they are the
+  message's arrival); its age is the modification time of a `.claim` marker
+  beside it. A scan whose events could not be stored gives its files back at
+  once, and a message whose data the database rejects (a number past 32 bits)
+  is quarantined alone instead of holding the batch. A claim left by a crashed
+  scanner is released after 4 minutes, shorter than the janitor's 5, so the file
+  is scanned again before it can be dropped. A read-only folder is read in place.
 * **Provenance.** Every event and alert carries `data_origin`: `live` (the
   kit's folder), `replay`, `synthetic` (test fixtures and the end-to-end proof; no run mode writes it), `api`,
   or `unknown` for rows from before the tag. Alerts inherit it (`mixed` for

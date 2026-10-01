@@ -116,6 +116,7 @@ from src.swim_parse import (
 _log = get_logger(__name__)
 
 __all__ = [
+    'CLAIM_MARKER_SUFFIX',
     'CLAIM_TIMEOUT_SECONDS',
     'FAILED_DIR',
     'FolderDelivery',
@@ -168,6 +169,9 @@ __all__ = [
     '_shutdown_requested',
     'commit_scan',
     'ingest_batch',
+    'is_poison',
+    'isolate_poison',
+    'release_scan',
     'message_files',
     'read_failure_reasons',
     'read_ingest_log',
@@ -367,9 +371,15 @@ class FolderSource:
 
     def commit(self, delivery: FolderDelivery) -> None:
         _archive_to_processed(delivery.work, delivery.path, self.processed_dir)
+        _drop_claim_marker(delivery.work)
 
     def quarantine(self, delivery: FolderDelivery, reason: str) -> None:
         _move_to_failed(delivery.work, reason, self.failed_dir)
+        _drop_claim_marker(delivery.work)
+
+    def release(self, delivery: FolderDelivery) -> None:
+        """Hand the file back to the folder, to be scanned again."""
+        _release_claim(delivery.work, delivery.path)
 
 def ingest_batch(
     source: RawMessageSource,
@@ -522,8 +532,9 @@ def scan_swim_folder(
     stays claimed in .inflight/ until the caller has stored its events and calls
     commit_scan(stats). The events exist only in memory until then, so archiving
     first meant a failure in between (database down, a crash) left the file
-    marked processed with nothing stored. A file left claimed is released after
-    CLAIM_TIMEOUT_SECONDS and scanned again; stable event ids make that safe.
+    marked processed with nothing stored. Call release_scan(stats) if they cannot be stored; a file left
+    claimed by a scanner that died is released after CLAIM_TIMEOUT_SECONDS and scanned again. Stable event
+    ids make a second scan safe.
 
     processed_dir/failed_dir default to the module-level PROCESSED_DIR and
     FAILED_DIR (i.e. data/processed and data/failed). They are parameters
@@ -586,7 +597,7 @@ def watch_swim_folder(
     and logs files; it doesn't run that pipeline itself). The files of a pass
     are archived and logged only after on_events returns: if it raises, they
     stay claimed, the failure is logged, the watcher keeps running, and the
-    files are released and scanned again after CLAIM_TIMEOUT_SECONDS.
+    files are released at once and scanned again.
 
     Runs until request_shutdown() is called (installed as the SIGTERM/SIGINT
     handler in main.py) or the process is interrupted. A single in-process
@@ -617,8 +628,9 @@ def watch_swim_folder(
                     try:
                         on_events(events, stats)
                     except Exception:  # noqa: BLE001 -- the events were not stored; keep watching
-                        _log.exception("swim_pipeline_failed_files_left_claimed",
+                        _log.exception("swim_pipeline_failed_files_released",
                                        extra={"files": len(stats.pending), "events": len(events)})
+                        release_scan(stats)      # back to the folder now, not after the claim timeout
                         failures += 1
                         return 0
                 commit_scan(stats)
@@ -741,6 +753,84 @@ def commit_scan(stats: IngestStats) -> int:
     _append_log_entries([entry for *_rest, entry in pending])
     return len(pending)
 
+def release_scan(stats: IngestStats) -> int:
+    """
+    Give back every file a defer_archive scan parsed, because its events could not be stored. They return to the
+    folder at once, with their own timestamps, to be scanned again; left claimed they waited out the claim timeout,
+    and a Temporal retry of the activity in the meantime found an empty folder and succeeded. Returns how many.
+    """
+    pending, stats.pending = stats.pending, []
+    released = 0
+    for source, delivery, _entry in pending:
+        release = getattr(source, "release", None)
+        if release is not None:
+            release(delivery)
+            released += 1
+    if released:
+        _log.warning("swim_ingest_claims_released_after_failure", extra={"count": released})
+    return released
+
+
+def is_poison(exc: BaseException) -> bool:
+    """
+    True when the failure is about the data, not the database: storing the same events again can only fail
+    again. A range or encoding error, a value the driver cannot encode, a record the model refuses. An outage
+    (connection refused, a timeout) is not poison: the files are good and must be tried again.
+    """
+    import asyncpg
+
+    return isinstance(exc, (asyncpg.exceptions.DataError, asyncpg.exceptions.IntegrityConstraintViolationError,
+                            ValueError, TypeError))
+
+
+def _events_by_file(events: list[NASEvent], stats: IngestStats) -> list[tuple[int, list[NASEvent]]]:
+    """(index into stats.pending, that file's events), in the order the scan added them."""
+    out, at = [], 0
+    for index, (_source, _delivery, entry) in enumerate(stats.pending):
+        count = int(entry.get("event_count") or 0)
+        out.append((index, events[at:at + count]))
+        at += count
+    return out
+
+
+def isolate_poison(events: list[NASEvent], stats: IngestStats, store, batch_error: BaseException) -> None:
+    """
+    The pipeline failed on the whole batch. If the failure is about the data, store file by file: the files that
+    can be stored are, and each one that cannot is quarantined with its reason, so one bad message does not hold
+    the other 499 in the queue for ever. If it is about the database, nothing is judged: the claims are released
+    and the error raised again, to be retried as a whole.
+    `store(events)` is the pipeline, synchronous.
+    """
+    if not stats.pending or not is_poison(batch_error):
+        # Nothing to isolate (the events did not come from this scan's files), or not a fault of the data.
+        release_scan(stats)
+        raise batch_error
+    _log.warning("swim_ingest_batch_failed_isolating", extra={
+        "files": len(stats.pending), "error": f"{type(batch_error).__name__}: {batch_error}"})
+    kept, bad = [], 0
+    for index, file_events in _events_by_file(events, stats):
+        source, delivery, entry = stats.pending[index]
+        try:
+            if file_events:
+                store(file_events)
+            kept.append(stats.pending[index])
+        except Exception as exc:  # noqa: BLE001
+            if not is_poison(exc):
+                # The database went away part way. Give everything back, the files already stored included:
+                # stable event ids make storing them again harmless, and nothing is left half done.
+                release_scan(stats)
+                raise
+            bad += 1
+            reason = f"{type(exc).__name__}: {exc}"
+            source.quarantine(delivery, reason)
+            _append_log_entries([{**entry, "status": "failed", "error": reason[:500]}])
+            stats.files_processed -= 1
+            stats.files_failed += 1
+            _log.warning("swim_ingest_file_quarantined_poison", extra={"file_name": delivery.name, "error": reason})
+    stats.pending = kept
+    _log.warning("swim_ingest_batch_isolated", extra={"stored_files": len(kept), "quarantined_files": bad})
+
+
 def run_retention() -> None:
     """Age out what scans have left behind (see src/retention.py); rate-limited, and never raises."""
     retention.run_due(PROCESSED_DIR, FAILED_DIR)
@@ -764,10 +854,21 @@ def read_failure_reasons(limit: int = 10) -> list[dict]:
 # succeed once, so every other scanner finds the file gone and skips it -- this
 # works across processes and containers sharing a mount, with no lock server.
 # A claim left behind by a scanner that died is released after CLAIM_TIMEOUT.
+#
+# A claim does not touch the file's own timestamps. They are the message's arrival: the receipt time of its events,
+# and the age the Kit-folder janitor deletes by. The claim's age is kept apart, as the modification time of a marker
+# file beside it (.inflight/<name>.claim). The claim used to restamp the file instead, so a file released after a
+# failure looked newer than it was (events stored with a receipt time, and so a latency, later than the truth) and was
+# older than the janitor's age the moment it came back.
+#
+# A scan whose events could not be stored gives its claims back at once (release_scan); the timeout below is only
+# for a scanner that died without doing so. It is shorter than the janitor's age (Cleanup-KitLog.ps1, 5 minutes) so
+# that a file released after a crash is scanned again before the janitor can drop it.
 
 INFLIGHT_DIR = ".inflight"
+CLAIM_MARKER_SUFFIX = ".claim"
 
-CLAIM_TIMEOUT_SECONDS = 600
+CLAIM_TIMEOUT_SECONDS = 240
 
 def _claim(path: Path) -> Path | None:
     """
@@ -789,8 +890,34 @@ def _claim(path: Path) -> Path | None:
         return None              # another scanner claimed it first
     except OSError:
         return None              # e.g. the writer on a Windows host still holds it; next pass
-    os.utime(claimed)            # claim time, for stale-claim release
+    try:
+        (inflight / f"{path.name}{CLAIM_MARKER_SUFFIX}").touch()     # claim time, for stale-claim release
+    except OSError:
+        pass                     # no marker: the file's own time is used, as it was before markers
     return claimed
+
+
+def _claim_marker(work: Path) -> Path:
+    return work.with_name(f"{work.name}{CLAIM_MARKER_SUFFIX}")
+
+
+def _drop_claim_marker(work: Path) -> None:
+    try:
+        _claim_marker(work).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _release_claim(work: Path, path: Path) -> bool:
+    """Give a claimed file back to its folder, timestamps untouched. False if it was not there to give back."""
+    if work == path:
+        return False                 # a read-only folder: it was never moved
+    try:
+        os.rename(work, path)
+    except OSError:
+        return False
+    _drop_claim_marker(work)
+    return True
 
 def _release_stale_claims(source_dir: Path) -> int:
     """Return files claimed by a scanner that died back to the folder."""
@@ -801,8 +928,19 @@ def _release_stale_claims(source_dir: Path) -> int:
     cutoff = time.time() - CLAIM_TIMEOUT_SECONDS
     for f in inflight.iterdir():
         try:
-            if f.is_file() and f.stat().st_mtime < cutoff and not (source_dir / f.name).exists():
+            if not f.is_file():
+                continue
+            if f.name.endswith(CLAIM_MARKER_SUFFIX):
+                # A marker whose file is gone (archived, or released by another scanner) and that has outlived
+                # the timeout is litter.
+                if not f.with_name(f.name[: -len(CLAIM_MARKER_SUFFIX)]).exists() and f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
+                continue
+            marker = _claim_marker(f)
+            claimed_at = marker.stat().st_mtime if marker.exists() else f.stat().st_mtime
+            if claimed_at < cutoff and not (source_dir / f.name).exists():
                 os.rename(f, source_dir / f.name)
+                marker.unlink(missing_ok=True)
                 released += 1
         except OSError:
             continue
