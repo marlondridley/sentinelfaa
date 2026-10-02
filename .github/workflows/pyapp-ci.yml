@@ -106,6 +106,17 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -w /repo/instraclustr nas-feedops-sentinel:test \
             python -m pytest -p no:cacheprovider -q -o addopts= tests
 
+      - name: Files the framework mapping cites exist (the whole checkout)
+        # The suite above runs where the test image is: it carries only some of the application folder and none of
+        # the rest, so tests/test_framework_mapping.py skips what it cannot see (the workflows, instraclustr/, the
+        # README, cve-allowlist.md) and a renamed or deleted file would go unnoticed. Here the whole checkout is
+        # mounted and a path the run cannot see is a failure: REQUIRE_FULL_CHECKOUT turns the skip into one.
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo/nas-feedops-sentinel \
+            -e PYTHONPATH=/repo/nas-feedops-sentinel -e REQUIRE_FULL_CHECKOUT=1 nas-feedops-sentinel:test \
+            python -m pytest -p no:cacheprovider --noconftest -q -o addopts= \
+              tests/test_framework_mapping.py::test_every_file_the_mapping_cites_exists
+
   audit:
     name: Dependency CVE audit
     runs-on: ubuntu-latest

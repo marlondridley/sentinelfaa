@@ -13,7 +13,7 @@ That question sets every design choice below: what to ingest, when to call a mod
 - [Boundaries](#boundaries) — the contract the rest of the repository serves
 - [How it works](#how-it-works) · [The stack](#the-stack) · [Run it](#run-it) · [Prove it](#prove-it)
 - [Five-minute walkthrough](nas-feedops-sentinel/docs/walkthrough.md) · [Operations guide](nas-feedops-sentinel/docs/operations.md) · [Operator playbook](nas-feedops-sentinel/docs/playbook.md) · [Runbooks](nas-feedops-sentinel/docs/runbooks.md)
-- [How AI is governed](nas-feedops-sentinel/docs/agent-governance.md): eight boundaries, the Sentinel ↔ AGT crosswalk, custom vs off the shelf · [Agent register](nas-feedops-sentinel/policies/agent-register.yaml): who each agent is, its owner, tier and how to stop it · [Where every agent metric comes from](nas-feedops-sentinel/docs/agent-metrics.md)
+- [How AI is governed](nas-feedops-sentinel/docs/agent-governance.md): eight boundaries, the Sentinel ↔ AGT crosswalk, custom vs off the shelf · [Agent register](nas-feedops-sentinel/policies/agent-register.yaml): who each agent is, its owner, tier and how to stop it · [NIST AI RMF and ISO/IEC 42001 mapping](nas-feedops-sentinel/docs/framework-mapping.md): what is covered, partly covered and not · [Where every agent metric comes from](nas-feedops-sentinel/docs/agent-metrics.md)
 
 ---
 

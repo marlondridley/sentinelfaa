@@ -1,0 +1,472 @@
+# How Sentinel's controls line up with NIST AI RMF 1.0 and ISO/IEC 42001:2023.
+#
+# This is a mapping, not a claim of conformance. A row says which control in this repository addresses which
+# subcategory or Annex A control, how closely (`fit`), how far it goes (`status`), and where the evidence is.
+# docs/framework-mapping.md is generated from this file (`python -m src.framework_mapping --markdown`), and
+# tests/test_framework_mapping.py fails when the two disagree, when a reference is not a real subcategory or
+# control, when a cited file does not exist, or when a row is marked implemented or partial with nothing behind it.
+#
+# fit     direct   the control does what the subcategory or Annex A control asks, within its scope
+#         related  it supports it, or covers part of it
+# status  implemented     the control exists, is enforced or measured here, and has evidence
+#         partial         it exists but stops short; `note` says where
+#         not_covered     nothing here addresses it; `note` says why and what it would take
+#         organizational  an organization has to supply it (a policy, training, an audit); a repository cannot
+#         not_applicable  does not apply to this system; `note` says why, and what would change that
+#
+# Paths are from the repository root.
+
+version: "1.0"
+name: sentinel-framework-mapping
+reviewed: "2026-10-02"
+description: >
+  Sentinel's controls mapped to NIST AI RMF 1.0 and ISO/IEC 42001:2023. Mapped does not mean conformant: ISO/IEC
+  42001 certifies an organization's management system, which a code repository can supply only in part.
+
+sources:
+  - name: NIST AI RMF 1.0 (NIST AI 100-1, January 2023)
+    verified: >
+      Every subcategory identifier, and the meaning each is mapped for, was checked against the published
+      document's Core tables on 2026-10-02.
+  - name: ISO/IEC 42001:2023
+    verified: >
+      The standard is paywalled. Annex A control numbers and titles were checked against a public listing of the
+      38 controls (a vendor's summary, not the standard). Management-system clauses are cited at clause level
+      (4 to 10) only, because sub-clause numbering was not verified. Check against a licensed copy before quoting
+      this in an audit, a contract or a certification claim.
+
+controls:
+  # ── Oversight, roles, inventory ─────────────────────────────────────────────────────────────────────
+  - id: human-decision-gate
+    title: A named person decides; no agent can
+    what: >
+      Every critical alert is staged by rules. Only a signed-in operator with the right role approves, rejects or
+      overrides, and the execution gate re-checks the role before it writes. An agent's attempt to decide, write
+      or stage is blocked by the tool policy.
+    nist: [{ref: GOVERN 3.2, fit: direct}, {ref: MAP 3.5, fit: direct}]
+    iso: [{ref: A.9.2, fit: direct}, {ref: A.3.2, fit: related}, {ref: A.6.2.6, fit: related}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/src/execution_gate.py
+      - nas-feedops-sentinel/tests/test_execution_gate.py
+      - nas-feedops-sentinel/tests/test_authorization.py
+      - nas-feedops-sentinel/tests/test_tool_boundary.py
+
+  - id: agent-inventory
+    title: Every agent is registered, and the register is held to the policies
+    what: >
+      policies/agent-register.yaml lists each agent with its purpose, services, tool grants, data sent, fallback
+      and authority. Tests fail when the register and the two policies or the code disagree.
+    nist: [{ref: GOVERN 1.6, fit: direct}, {ref: MAP 2.1, fit: related}]
+    iso: [{ref: A.4.2, fit: related}, {ref: A.6.2.7, fit: related}]
+    status: implemented
+    note: Covers this system's agents. An inventory across an organization's AI systems is outside this repository.
+    evidence:
+      - nas-feedops-sentinel/policies/agent-register.yaml
+      - nas-feedops-sentinel/tests/test_agent_register.py
+
+  - id: accountable-owners
+    title: Each agent has an accountable owner
+    what: Every register entry names an owner and a last-reviewed date, and the schema refuses a blank owner.
+    nist: [{ref: GOVERN 2.1, fit: direct}]
+    iso: [{ref: A.3.2, fit: direct}]
+    status: partial
+    note: Every owner is the role "Sentinel maintainer". A named person, and lines of communication, are not recorded.
+    evidence:
+      - nas-feedops-sentinel/policies/agent-register.yaml
+      - nas-feedops-sentinel/tests/test_agent_register.py
+
+  - id: intended-use-and-limits
+    title: Intended use, boundaries and limits are written down
+    what: >
+      The README's boundaries section and the governance guide say what the system watches, what a model may and
+      may not do, and what is held back, and the register states each agent's data and fallback.
+    nist: [{ref: MAP 1.1, fit: direct}, {ref: MAP 2.2, fit: direct}]
+    iso: [{ref: A.9.4, fit: direct}, {ref: A.6.2.2, fit: related}, {ref: A.8.2, fit: related}]
+    status: implemented
+    evidence:
+      - README.md
+      - nas-feedops-sentinel/docs/agent-governance.md
+      - nas-feedops-sentinel/docs/playbook.md
+      - nas-feedops-sentinel/docs/walkthrough.md
+
+  - id: transparency-to-operators
+    title: Operators can tell what a model wrote and how it was produced
+    what: >
+      Briefs are labelled LLM-assisted or deterministic, every model call records its prompt hash, version, input
+      hash and redaction count, and a verdict carries the id of the call behind it.
+    nist: [{ref: MEASURE 2.8, fit: related}, {ref: MAP 2.2, fit: related}]
+    iso: [{ref: A.8.2, fit: related}, {ref: A.6.2.8, fit: related}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/dashboard/lib/brief_view.py
+      - nas-feedops-sentinel/tests/test_brief_view.py
+      - nas-feedops-sentinel/tests/test_model_call_provenance.py
+
+  # ── Policy and technical boundaries ─────────────────────────────────────────────────────────────────
+  - id: model-use-policy
+    title: A deny-by-default policy decides every model call
+    what: >
+      The Microsoft Agent Governance Toolkit evaluates policies/model-use.yaml before each call: role, gateway
+      alias, prompt and output limits, credentials, protected values. A refusal sends nothing and is recorded.
+    nist: [{ref: GOVERN 1.4, fit: direct}, {ref: GOVERN 1.2, fit: related}]
+    iso: [{ref: A.9.2, fit: direct}, {ref: A.9.3, fit: related}, {ref: A.2.2, fit: related}]
+    status: implemented
+    note: This is the technical enforcement of a policy. The organizational AI policy ISO/IEC 42001 asks for is separate (see ai-policy-and-management-system).
+    evidence:
+      - nas-feedops-sentinel/policies/model-use.yaml
+      - nas-feedops-sentinel/src/governance.py
+      - nas-feedops-sentinel/tests/test_governance.py
+
+  - id: tool-boundary
+    title: Each agent may call only the tools it is granted
+    what: >
+      policies/tool-use.yaml grants each agent its reads and its one response tool. Deciding, executing and writing
+      are blocked, and a call made outside any named agent is refused.
+    nist: [{ref: MEASURE 2.7, fit: related}, {ref: MAP 2.2, fit: related}, {ref: GOVERN 3.2, fit: related}]
+    iso: [{ref: A.9.2, fit: related}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/policies/tool-use.yaml
+      - nas-feedops-sentinel/src/agent_tools.py
+      - nas-feedops-sentinel/tests/test_tool_boundary.py
+
+  - id: data-leaving-the-boundary
+    title: Identifiers are withheld, pseudonymized and checked before a model sees a prompt
+    what: >
+      Models receive a bounded projection, flights as per-prompt tokens, a pattern scrub at one chokepoint, and a
+      check that the values the caller read from its records are not in the finished prompt. A hit blocks the call.
+    nist: [{ref: MEASURE 2.10, fit: direct}, {ref: MAP 4.2, fit: related}, {ref: MANAGE 1.3, fit: related}]
+    iso: [{ref: A.7.6, fit: related}, {ref: A.9.2, fit: related}]
+    status: partial
+    note: >
+      Pattern- and value-based, not a guarantee: the check knows only the values callers extracted, and short
+      codes are not checked by value. A second, independent detector is the recorded next step. Privacy
+      management proper sits in ISO/IEC 27701, outside ISO/IEC 42001.
+    evidence:
+      - nas-feedops-sentinel/src/redaction.py
+      - nas-feedops-sentinel/tests/test_redaction.py
+      - nas-feedops-sentinel/tests/test_outbound_leak_check.py
+
+  - id: untrusted-input-fencing
+    title: Feed, operator and model text reaches a model as data
+    what: >
+      Free text from outside is cut to a limit and wrapped in untrusted_data tags that it cannot close, and every
+      system prompt says what the fence means. Model output is checked by a grounding gate before it is stored.
+    nist: [{ref: MEASURE 2.7, fit: direct}, {ref: MAP 4.2, fit: related}]
+    iso: [{ref: A.6.2.4, fit: related}]
+    status: partial
+    note: Held by targeted tests. There is no systematic adversarial corpus run against every role yet.
+    evidence:
+      - nas-feedops-sentinel/src/untrusted.py
+      - nas-feedops-sentinel/tests/test_untrusted.py
+      - nas-feedops-sentinel/tests/test_guardrails_gate_eval.py
+
+  - id: access-and-identity
+    title: Operators and services have identities, and roles are bounded in time
+    what: >
+      Keycloak signs operators in with realm roles that expire, services use short-lived SPIFFE identities to
+      reach Vault over mutual TLS, and the sign-in and every decision are attributed to a person.
+    nist: [{ref: MEASURE 2.7, fit: related}, {ref: GOVERN 3.2, fit: related}]
+    iso: []
+    status: implemented
+    note: >
+      Security controls sit in ISO/IEC 27001, outside ISO/IEC 42001, so no Annex A control is mapped. An agent has
+      no identity of its own: it is a name inside its service's identity (see the agent register).
+    evidence:
+      - nas-feedops-sentinel/tests/test_keycloak_auth.py
+      - nas-feedops-sentinel/tests/test_session_and_attribution.py
+      - nas-feedops-sentinel/docs/operations.md
+
+  # ── Records, data, measurement ──────────────────────────────────────────────────────────────────────
+  - id: traceability-and-audit
+    title: Calls, decisions and investigations are recorded and tamper-evident
+    what: >
+      Every model call is a record; every status change goes to an append-only audit log whose table refuses UPDATE
+      and DELETE; every investigation is sealed with SHA-256 and re-verified, and every claim cites evidence.
+    nist: [{ref: MEASURE 2.8, fit: direct}, {ref: MANAGE 4.1, fit: related}, {ref: GOVERN 1.4, fit: related}]
+    iso: [{ref: A.6.2.8, fit: direct}, {ref: A.6.2.7, fit: related}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/src/model_telemetry.py
+      - nas-feedops-sentinel/tests/test_model_telemetry.py
+      - nas-feedops-sentinel/tests/test_e2e_proof.py
+
+  - id: data-provenance-and-quality
+    title: Data says where it came from, and bad data is stopped at ingest
+    what: >
+      Replayed, synthetic and API data is tagged data_origin by a database constraint and flagged on every page;
+      events are validated against schema and business rules at ingest.
+    nist: [{ref: MAP 2.3, fit: related}]
+    iso: [{ref: A.7.5, fit: direct}, {ref: A.7.4, fit: direct}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/tests/test_data_origin.py
+      - nas-feedops-sentinel/tests/test_data_origin_constraint.py
+      - nas-feedops-sentinel/src/validators.py
+      - nas-feedops-sentinel/tests/test_validators.py
+
+  - id: readiness-and-evaluation
+    title: A measured readiness verdict, with objectives set in a file
+    what: >
+      `python -m src.readiness` grades the last window against model-slos.yaml (grounding, decision quality,
+      latency, cost, override rate, calibration and more) and returns one verdict, usable as a deployment gate.
+    nist: [{ref: MEASURE 1.1, fit: direct}, {ref: MEASURE 2.3, fit: direct}, {ref: MANAGE 1.1, fit: direct}, {ref: MEASURE 2.5, fit: related}]
+    iso: [{ref: A.6.2.4, fit: direct}, {ref: A.6.2.6, fit: related}]
+    status: partial
+    note: The targets are starting points, set from what an operations centre needs, not from a measured baseline.
+    evidence:
+      - nas-feedops-sentinel/src/readiness.py
+      - nas-feedops-sentinel/policies/model-slos.yaml
+      - nas-feedops-sentinel/src/evaluation.py
+      - nas-feedops-sentinel/tests/test_readiness_report.py
+      - nas-feedops-sentinel/tests/test_evaluation.py
+
+  - id: production-monitoring
+    title: Behaviour in production is monitored and alerts reach a person
+    what: >
+      Prometheus alert rules cover policy refusals, blocked leaks, an agent reaching for the human gate, model error
+      rates and spend, Alertmanager posts to Slack, and the alerting path watches itself.
+    nist: [{ref: MEASURE 2.4, fit: direct}, {ref: MANAGE 4.1, fit: direct}, {ref: MEASURE 3.1, fit: related}]
+    iso: [{ref: A.6.2.6, fit: direct}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/monitoring/alert-rules.yml
+      - nas-feedops-sentinel/docs/runbooks.md
+      - nas-feedops-sentinel/tests/test_alertmanager_wiring.py
+
+  - id: adversarial-testing
+    title: Targeted tests for injection and unsafe output
+    what: >
+      Tests cover the fence, the guardrails, dashboard output safety (model and stored text is shown as text) and
+      the refusal of a decide or write tool call.
+    nist: [{ref: MEASURE 2.7, fit: direct}, {ref: MAP 5.1, fit: related}]
+    iso: [{ref: A.6.2.4, fit: related}]
+    status: partial
+    note: >
+      Individual cases, not a systematic corpus run against every agent's input path with pass and fail tracked.
+      That corpus is queued.
+    evidence:
+      - nas-feedops-sentinel/tests/test_untrusted.py
+      - nas-feedops-sentinel/tests/test_guardrails_gate_eval.py
+      - nas-feedops-sentinel/tests/test_dashboard_output_safety.py
+
+  # ── Failure, change and third parties ───────────────────────────────────────────────────────────────
+  - id: fail-safe-degradation
+    title: The mission never depends on a model
+    what: >
+      Alerts are staged and the deterministic rules run whether the model answers, fails, refuses or is not
+      configured. A circuit breaker per model alias, a per-pass token budget and one retry layer bound what a
+      failing gateway can cost, and every fallback is recorded.
+    nist: [{ref: MANAGE 2.1, fit: direct}, {ref: MANAGE 2.2, fit: related}]
+    iso: [{ref: A.6.2.6, fit: related}]
+    status: implemented
+    evidence:
+      - nas-feedops-sentinel/src/llm_guard.py
+      - nas-feedops-sentinel/tests/test_llm_budget.py
+      - nas-feedops-sentinel/tests/test_critic_agent.py
+
+  - id: disengage-an-agent
+    title: An agent can be switched off
+    what: >
+      Each register entry records the setting that stops it and the services to restart. Settings are built once
+      at import, so the change applies on restart.
+    nist: [{ref: MANAGE 2.4, fit: direct}]
+    iso: [{ref: A.6.2.6, fit: related}]
+    status: partial
+    note: There is no runtime halt. A supervisor-operated switch, with an optional and visible automatic trip, is queued.
+    evidence:
+      - nas-feedops-sentinel/policies/agent-register.yaml
+      - nas-feedops-sentinel/tests/test_agent_register.py
+
+  - id: third-party-model-governance
+    title: One model provider, behind one gateway, held there by a test
+    what: >
+      Every call goes through a single gateway by alias; a setting that names a provider directly is refused at
+      start-up; CI fails if a second provider appears. Known defects in the governance toolkit are pinned as strict
+      expected failures.
+    nist: [{ref: MANAGE 3.1, fit: direct}, {ref: MANAGE 3.2, fit: related}, {ref: GOVERN 6.1, fit: related}, {ref: GOVERN 6.2, fit: related}, {ref: MAP 4.1, fit: related}]
+    iso: [{ref: A.10.3, fit: related}, {ref: A.10.2, fit: related}]
+    status: partial
+    note: >
+      No supplier assessment, contract terms or exit plan is recorded. Claude Haiku through the public API is a
+      test configuration, not an authorized boundary for FAA operational data.
+    evidence:
+      - instraclustr/litellm-config.yaml
+      - instraclustr/tests/test_model_provider.py
+      - nas-feedops-sentinel/tests/test_llm_proxy_guard.py
+      - nas-feedops-sentinel/tests/test_agt_known_bugs.py
+
+  - id: change-control
+    title: Prompts, policies and dependencies change through review and CI
+    what: >
+      CODEOWNERS, CI on every pull request, hash-locked dependencies with pip-audit, an image scan, secret
+      scanning over history, and a register that fails when a prompt's version moves without a review.
+    nist: [{ref: MANAGE 4.2, fit: related}, {ref: MAP 4.2, fit: related}]
+    iso: [{ref: A.6.2.3, fit: related}, {ref: A.4.4, fit: related}, {ref: A.10.3, fit: related}]
+    status: implemented
+    note: Branch protection is not available on the current plan; CODEOWNERS and CI gates stand in for it.
+    evidence:
+      - .github/CODEOWNERS
+      - .github/workflows/pyapp-ci.yml
+      - nas-feedops-sentinel/cve-allowlist.md
+      - nas-feedops-sentinel/tests/test_agent_register.py
+
+  - id: alerts-reach-people
+    title: Alerts reach people, each with a runbook
+    what: >
+      Prometheus alert rules cover policy refusals, blocked leaks and an agent reaching for the human gate.
+      Alertmanager groups them and posts to Slack, firing and resolved, with a reminder while one keeps firing, and
+      each message names its runbook. The alerting path watches itself, and CI delivers a real alert to a stand-in
+      for Slack. docs/runbooks.md has one runbook per alert rule, and a test holds it.
+    nist: [{ref: MANAGE 4.3, fit: related}, {ref: MANAGE 2.3, fit: related}, {ref: GOVERN 4.3, fit: related}]
+    iso: [{ref: A.6.2.6, fit: related}]
+    status: implemented
+    note: >
+      The people told are the operating team, the AI actors this system has. Telling anyone outside it, and a record
+      kept after an incident closes, are listed in incident-communication-and-concerns.
+    evidence:
+      - nas-feedops-sentinel/monitoring/alertmanager.yml
+      - nas-feedops-sentinel/monitoring/alert-rules.yml
+      - nas-feedops-sentinel/docs/runbooks.md
+      - nas-feedops-sentinel/tests/test_alertmanager_wiring.py
+      - .github/scripts/check_alerting.py
+
+  - id: incident-communication-and-concerns
+    title: No outward incident communication, and no channel to report a concern
+    what: >
+      Slack reaches the operating team. No process tells users of the briefs, or any party outside the team, that an
+      incident happened, and nobody outside it has a way to report a concern about the system.
+    nist: [{ref: MANAGE 4.3, fit: related}, {ref: GOVERN 5.1, fit: related}]
+    iso: [{ref: A.8.4, fit: direct}, {ref: A.3.3, fit: direct}, {ref: A.8.3, fit: related}]
+    status: not_covered
+    note: >
+      Would take a decision on who the affected parties are (the controllers and managers who read a brief, a
+      customer), a reporting address or form, a rule for who is told what and when, and a short post-incident
+      record. Whether it applies depends on who uses the system beyond its operators.
+    evidence: []
+
+  - id: operator-override-feedback
+    title: An operator's override is the appeal, and it is measured
+    what: >
+      An operator approves, rejects or overrides what the system staged, with the decision and the reason recorded.
+      The override rate, missed and false escalation rates and calibration error are computed from those decisions,
+      and the readiness verdict uses them.
+    nist: [{ref: MANAGE 4.1, fit: direct}, {ref: MEASURE 3.3, fit: related}]
+    iso: []
+    status: implemented
+    note: >
+      An override appeals a recommendation. It does not report that a brief or a verdict was wrong and why: that is
+      listed in problem-reporting-channel.
+    evidence:
+      - nas-feedops-sentinel/src/evaluation_metrics.py
+      - nas-feedops-sentinel/policies/model-slos.yaml
+      - nas-feedops-sentinel/src/execution_gate.py
+      - nas-feedops-sentinel/tests/test_execution_gate.py
+
+  - id: problem-reporting-channel
+    title: An operator cannot flag an output as wrong
+    what: >
+      There is no way to mark a brief, a verdict or a planner answer as wrong, with a reason, other than deciding on
+      the staged action.
+    nist: [{ref: MEASURE 3.3, fit: direct}, {ref: GOVERN 5.2, fit: related}]
+    iso: [{ref: A.3.3, fit: direct}]
+    status: not_covered
+    note: >
+      Would take a "flag this output" control on the console that writes a record linked to the model call, counted
+      in the evaluation metrics, and a place where a maintainer reviews the flags.
+    evidence: []
+
+  # ── Risk and legal ──────────────────────────────────────────────────────────────────────────────────
+  - id: provider-data-handling-rules
+    title: The data provider's handling rules are enforced at ingest
+    what: >
+      Messages the FAA flags blockAtFAA are withheld (nothing stored, shown or sent to a model), and beacon codes
+      from flight plans that are not yet active are neither stored nor shown.
+    nist: [{ref: GOVERN 1.1, fit: related}, {ref: MAP 1.1, fit: related}]
+    iso: [{ref: A.7.3, fit: related}]
+    status: implemented
+    note: These are the data provider's terms. Which laws and regulations govern the AI layer itself is listed in legal-requirements-register.
+    evidence:
+      - nas-feedops-sentinel/src/swim_file_ingest.py
+      - nas-feedops-sentinel/tests/test_swim_kit_ingest.py
+      - nas-feedops-sentinel/tests/test_ingest_source_seam.py
+      - README.md
+
+  - id: residual-risk-documented
+    title: Limits and known defects are written down
+    what: >
+      The governance guide and the register state what each control does not do, a whole-codebase review is
+      recorded in results.md with its findings, and defects in the governance toolkit are pinned as tests.
+    nist: [{ref: MANAGE 1.4, fit: direct}, {ref: MAP 5.1, fit: related}]
+    iso: []
+    status: partial
+    note: There is no risk register with likelihood, impact and treatment per risk.
+    evidence:
+      - nas-feedops-sentinel/docs/agent-governance.md
+      - results.md
+      - nas-feedops-sentinel/tests/test_agt_known_bugs.py
+
+  - id: impact-assessment
+    title: No AI system impact assessment
+    what: No assessment of the system's impact on individuals, groups or society is recorded.
+    nist: [{ref: MAP 5.1, fit: direct}]
+    iso: [{ref: A.5.2, fit: direct}, {ref: A.5.3, fit: direct}, {ref: A.5.4, fit: direct}, {ref: A.5.5, fit: direct}]
+    status: not_covered
+    note: >
+      Would take a documented process and a first assessment of this system: who is affected by a wrong or missing
+      brief (operators, controllers, flight crews downstream), and how.
+    evidence: []
+
+  - id: decommissioning
+    title: No procedure for retiring an agent or a model
+    what: Removing an agent means removing its policy lines, prompt and register entry; no procedure says how safely.
+    nist: [{ref: GOVERN 1.7, fit: direct}]
+    iso: []
+    status: not_covered
+    note: Would take a short runbook and a register status field (active, suspended, retired).
+    evidence: []
+
+  - id: fairness-and-bias
+    title: Not assessed; the agents do not decide about people
+    what: >
+      The agents advise on feed trust and aviation data. No output decides about, ranks or profiles an individual.
+    nist: [{ref: MEASURE 2.11, fit: direct}]
+    iso: [{ref: A.5.4, fit: related}]
+    status: not_applicable
+    note: Revisit if an agent starts to handle personal data or to act on a person.
+    evidence: []
+
+  # ── What an organization has to supply ──────────────────────────────────────────────────────────────
+  - id: ai-policy-and-management-system
+    title: An AI policy, management review and internal audit
+    what: >
+      ISO/IEC 42001 asks an organization for an AI policy, defined scope and objectives, management review,
+      internal audit and continual improvement. None of those is a property of a code repository.
+    nist: [{ref: GOVERN 1.2, fit: related}, {ref: GOVERN 1.3, fit: related}, {ref: GOVERN 1.5, fit: related}]
+    iso: [{ref: A.2.2, fit: direct}, {ref: A.2.4, fit: direct}, {ref: clause 5, fit: direct}, {ref: clause 9, fit: direct}, {ref: clause 10, fit: direct}]
+    status: organizational
+    note: The repository can supply evidence to a management system; the system, its owner and its audit cycle are not here.
+    evidence: []
+
+  - id: competence-and-training
+    title: Competence, awareness and training
+    what: No training, competence or awareness records for the people who build, run or oversee the system.
+    nist: [{ref: GOVERN 2.2, fit: direct}]
+    iso: [{ref: A.4.6, fit: related}, {ref: clause 7, fit: direct}]
+    status: organizational
+    note: Operator guidance exists (the playbook), but training and competence are an organization's to record.
+    evidence: []
+
+  - id: legal-requirements-register
+    title: A register of the laws and regulations that apply to the AI layer
+    what: >
+      No list says which laws, regulations and contract terms govern this system's AI layer, which apply, and which
+      do not. Counsel decides that; the repository can hold the result and test that each entry has an owner.
+    nist: [{ref: GOVERN 1.1, fit: direct}]
+    iso: [{ref: clause 4, fit: related}]
+    status: organizational
+    note: >
+      The EU AI Act, a federal buyer's AI requirements and any sector rules need a person to decide whether they
+      apply. The register can then record each as applies, does not apply, or confirm with counsel.
+    evidence: []
