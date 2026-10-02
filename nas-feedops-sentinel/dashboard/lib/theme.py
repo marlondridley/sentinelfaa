@@ -121,6 +121,33 @@ STATUS_TONE: dict[str, str] = {
     "INSUFFICIENT DATA": "neutral",
 }
 
+# ── The KPI strip's layout (the stylesheet is in inject_theme) ──────────────────
+# A tile's drill badge sits beside its label only while the tile is wide enough for both: its content box must
+# be wider than KPI_BESIDE_MIN_PX, the widest label word beside the widest badge on any tile ("CONFORMANCE"
+# beside "BREAKDOWN →"; measure it in a browser before adding a longer one). In a narrower strip every tile
+# puts its badge on a row of its own, above the label: all of them, so a strip never mixes the two.
+# A window narrower than KPI_FOLD_BELOW_PX folds a six-tile strip into two rows of three.
+KPI_BESIDE_MIN_PX = 200
+KPI_FOLD_BELOW_PX = 1100
+_KPI_GAP_PX = 10
+_KPI_TILE_EDGES_PX = 31     # a tile's left and right padding and border: 13 + 14 + 3 + 1
+_KPI_MAX_COLUMNS = 8
+
+
+def kpi_stack_width(columns: int) -> int:
+    """The widest a strip of `columns` tiles can be and still have every tile put its badge above its label."""
+    return columns * (KPI_BESIDE_MIN_PX + _KPI_TILE_EDGES_PX) + (columns - 1) * _KPI_GAP_PX
+
+
+def _kpi_stack_rules() -> str:
+    """One container rule per column count: the strip measures itself, so the sidebar's width is accounted for."""
+    return "\n        ".join(
+        f"@container (max-width: {kpi_stack_width(n)}px) {{ "
+        f".kpis-{n} > .kpi > .kpi-drill {{ grid-row: 1; grid-column: 1 / -1; justify-self: end; }} "
+        f".kpis-{n} > .kpi > .kpi-label {{ grid-column: 1 / -1; }} }}"
+        for n in range(1, _KPI_MAX_COLUMNS + 1))
+
+
 # Page URL slugs. Streamlit derives these from the filenames under
 # dashboard/pages/ (4_Alert_Log.py -> /Alert_Log). Centralised here so a
 # page rename breaks one dict instead of a dozen hand-written hrefs.
@@ -309,7 +336,18 @@ def inject_theme() -> None:
         .tip--end::after {{ left: auto; right: 0; }}
 
         /* ── KPI strip ──────────────────────────────────────────── */
-        .kpis {{ display: grid; gap: 10px; margin: 4px 0 6px 0; }}
+        /* One grid for the whole strip, rows as well as columns. Every tile borrows the strip's rows
+           (subgrid): drill badge, label, number, footnote. So one tile's label area is as tall as its
+           neighbours', and the numbers sit on one line however long each label is. The strip is also the
+           container the stacking rules measure. No row gap: a tile carries the space below it, so the
+           rows inside a tile stay tight and a folded strip's second row still stands clear of the first. */
+        .kpis {{ display: grid; column-gap: 10px; row-gap: 0; margin: 4px 0 -4px 0; container-type: inline-size; }}
+        /* A small window (a browser snapped to half a laptop screen): six tiles across are narrower than one
+           word of their labels, and the words run into the next tile. Two rows of three instead. Wider than
+           this nothing changes. !important: the column count is an inline style (kpi_row). */
+        @media (max-width: {KPI_FOLD_BELOW_PX}px) {{
+            .kpis.kpis-6 {{ grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }}
+        }}
         .kpi {{
             background: {DARK_GRAY1};
             border: 1px solid {DARK_GRAY3};
@@ -317,16 +355,30 @@ def inject_theme() -> None:
             border-radius: 4px;
             padding: 12px 14px 11px 13px;
             text-decoration: none !important;
-            /* The drill badge and the label share the first row: the badge keeps its own width at the right
-               (row-reverse, it comes first in the markup) and the label wraps in what is left, so no drill text
-               can print over a label. A tile too narrow for the badge beside the label's longest word puts the
-               badge on a row of its own, above the label. Every other part takes a full row, as a block did. */
-            display: flex; flex-flow: row-reverse wrap; align-items: flex-start; align-content: flex-start;
-            column-gap: 8px; position: relative;
+            display: block; position: relative; margin-bottom: 10px;
             transition: background 120ms ease-out, border-color 120ms ease-out;
         }}
-        .kpi > * {{ flex: 0 0 100%; min-width: 0; }}
-        .kpi > .kpi-label {{ flex: 1 1 0; min-width: min-content; }}
+        /* A tile with a number (a facility card has none, and stays a plain block). */
+        .kpi:has(> .kpi-value) {{
+            display: grid; grid-row: span 4; grid-template-rows: subgrid;
+            grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: start;
+        }}
+        .kpi:has(> .kpi-value) > * {{ grid-column: 1 / -1; min-width: 0; }}
+        /* Wide enough for both: the badge in the label's row, at its own width on the right; the label wraps
+           in what is left, so no drill text can print over a label. A tile with no badge gives its label
+           the whole row. */
+        .kpi:has(> .kpi-value) > .kpi-drill {{
+            grid-row: 2; grid-column: 2; white-space: nowrap; margin: -2px -3px 0 0;
+        }}
+        .kpi:has(> .kpi-value) > .kpi-label {{ grid-row: 2; grid-column: 1; }}
+        .kpi:has(> .kpi-value) > .kpi-label:first-child {{ grid-column: 1 / -1; }}
+        .kpi > .kpi-value {{ grid-row: 3; }}
+        .kpi > .kpi-foot {{ grid-row: 4; }}
+        /* Too narrow for both (kpi_stack_width): every tile of the strip puts its badge in the row above
+           and gives its label the full width. The strip decides, not the tile, so they all look the same;
+           a tile with no badge leaves that row empty and its number still lines up. After the rules above,
+           which these override at equal specificity. */
+        {_kpi_stack_rules()}
         a.kpi:hover {{ background: {DARK_GRAY2}; border-color: {DARK_GRAY5}; }}
         a.kpi:hover .kpi-drill {{ opacity: 1; }}
         .kpi-label {{
@@ -343,10 +395,6 @@ def inject_theme() -> None:
         .kpi-unit {{ font-size: 17px; font-weight: 500; opacity: 0.65; margin-left: 3px; }}
         .kpi-foot {{ font-size: 13px; color: {GRAY1}; margin-top: 5px; line-height: 1.4; }}
         .kpi-spark {{ position: absolute; right: 12px; bottom: 10px; opacity: 0.75; }}
-        .kpi > .kpi-drill {{
-            /* In the row, not over it. The margins keep it where it has always sat: 10px down, 11px in. */
-            flex: 0 0 auto; white-space: nowrap; margin: -2px -3px 0 0;
-        }}
         .kpi-drill {{
             font-size: 13px; font-weight: 700; letter-spacing: 0.05em;
             color: {BLUE5}; opacity: 0.45; transition: opacity 120ms ease-out;
@@ -545,12 +593,15 @@ def event_chips(event_ids: Sequence[str], events: dict[str, dict], limit: int = 
 
 
 def kpi_row(tiles: Sequence[str], *, columns: int | None = None) -> None:
-    """Render KPI tiles as one CSS grid so they share a baseline and gutter."""
+    """
+    Render KPI tiles as one CSS grid so they share a baseline and gutter. The strip carries its column count
+    as a class (kpis-6), which is what the stylesheet folds in a small window.
+    """
     if not tiles:
         return
     cols = columns or len(tiles)
     st.markdown(
-        f'<div class="kpis" style="grid-template-columns:repeat({cols}, minmax(0,1fr));">'
+        f'<div class="kpis kpis-{cols}" style="grid-template-columns:repeat({cols}, minmax(0,1fr));">'
         + "".join(tiles)
         + "</div>",
         unsafe_allow_html=True,
