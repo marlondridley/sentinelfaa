@@ -353,6 +353,7 @@ _MIN_NUMERIC_CHARS = 5
 _MAX_VALUE_CHARS = 200       # an identifier is short; a longer value is a document, and a document is not a name
 _WORDS_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9\-_.]*[A-Za-z0-9])?")
 _JSON_DEPTH = 12
+_KEEP_DEPTH = 50     # how deep a value under a sensitive key is read; Python's own limit is about 1000 frames
 
 # A number is compared as it is written, not as a run of digits: 38.8951 is not 388951 and 12000.0 is not 120000.
 # A value that is one number (a coordinate, an altitude) and a number standing alone in the text are both read
@@ -392,19 +393,21 @@ def collect_sensitive_values(*objs: Any) -> frozenset[str]:
     """
     found: set[str] = set()
 
-    def keep(value: Any) -> None:
+    def keep(value: Any, depth: int = 0) -> None:
+        if depth > _KEEP_DEPTH:
+            return                           # nothing real nests this deep under a sensitive key; a bomb does
         if isinstance(value, dict):
             for inner in value.values():
-                keep(inner)
+                keep(inner, depth + 1)
         elif isinstance(value, (list, tuple, set, frozenset)):
             for inner in value:
-                keep(inner)
+                keep(inner, depth + 1)
         elif _is_scalar(value):
             text = str(value).strip()
             if text[:1] in ("{", "["):
                 try:
                     parsed = json.loads(text)
-                except ValueError:
+                except (ValueError, RecursionError):     # too deeply nested to parse is unreadable, not fatal
                     pass
                 else:
                     walk(parsed, 1)          # a document, not a name: what it holds under a sensitive key counts

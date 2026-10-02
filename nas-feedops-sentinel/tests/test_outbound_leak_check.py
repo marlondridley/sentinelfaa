@@ -61,6 +61,23 @@ def test_a_float_is_judged_by_its_digits_like_an_integer_not_by_its_length_as_te
     assert collect_sensitive_values({"altitude": 12000.0}) == {"12000.0"}           # five: kept, as written
 
 
+def test_a_value_nested_too_deep_to_parse_cannot_break_the_collection():
+    # A feed value under a sensitive key that is a JSON bomb: json.loads raises RecursionError, which is not a
+    # ValueError, and used to escape from here into every model call that collects its protected values.
+    bomb = "[" * 100_000
+    assert collect_sensitive_values({"raw_payload": bomb, "callsign": "AAL1234"}) == {"AAL1234"}
+
+
+def test_a_structure_nested_deeper_than_the_recursion_limit_cannot_break_the_collection():
+    deep: dict = {}
+    cursor = deep
+    for _ in range(5000):
+        cursor["a"] = {}
+        cursor = cursor["a"]
+    cursor["callsign"] = "UAL5678"
+    assert collect_sensitive_values({"aircraft_id": deep, "registration": "G-ABCD"}) == {"G-ABCD"}
+
+
 def test_pseudonyms_and_the_placeholder_are_not_values_to_withhold():
     assert collect_sensitive_values({"aircraft_id": "AC-1", "callsign": REDACTED}) == set()
 
