@@ -72,6 +72,14 @@ It is held to the rest of the system by `tests/test_agent_register.py`:
 - **No runtime switch.** Settings are built once at import
   (`src/config.py`), so every entry's `disable` takes effect when the service
   restarts. A runtime halt is a separate, queued control.
+- **Switches overlap.** Each model-calling agent has its own (`CRITIC_ENABLED`,
+  `PLANNER_ENABLED`, `WATCH_OFFICER_ENABLED`, `INVESTIGATIONS_ENABLED`), and
+  three are shared: `CRITIC_ENABLED=0` also stops the Planner and the Watch
+  Officer's overview narrative, and `INVESTIGATIONS_ENABLED=0` stops the
+  orchestrator and every investigation agent together, the Watch Officer's
+  brief included. Each entry's `note` says so. A test holds every switch to
+  the settings, to what compose forwards to the services, and to the code that
+  honours it, so the register cannot name a switch that stops nothing.
 - **Owners and tiers are judgements.** Each owner is the role "Sentinel
   maintainer" until a named person takes it, and the tiers are the author's
   reading of the rubric at the top of the file.

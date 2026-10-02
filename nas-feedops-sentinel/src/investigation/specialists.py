@@ -114,6 +114,9 @@ def _view_payload(view: Investigation) -> dict[str, Any]:
 
 
 async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tuple[dict[str, Any], Provenance]:
+    if agent == "watch_officer" and not settings.WATCH_OFFICER_ENABLED:
+        # The brief a reviewer reads is the Watch Officer's, so its switch stops it here too, not only the overview.
+        raise ModelUnavailable("the Watch Officer is switched off (WATCH_OFFICER_ENABLED)")
     client = build_llm_client(model=settings.INVESTIGATION_MODEL)
     if client is None:
         raise ModelUnavailable("no LLM client configured")
