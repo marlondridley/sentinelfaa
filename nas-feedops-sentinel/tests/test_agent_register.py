@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,7 @@ def test_an_agent_is_only_ever_granted_reads_and_responses():
 def test_an_agent_that_calls_a_model_responds_and_one_that_does_not_has_nothing_to_respond_with():
     for agent in REGISTER.agents:
         assert bool(agent.responds) == agent.calls_model, agent.id
-        assert (agent.model_setting is not None and bool(agent.prompts)) == agent.calls_model, agent.id
+        assert (bool(agent.model_settings) and bool(agent.prompts)) == agent.calls_model, agent.id
 
 
 # ── ... with the prompts ─────────────────────────────────────────────────────────────────────────────
@@ -93,8 +94,67 @@ def test_a_prompt_changed_since_it_was_reviewed_fails_until_the_register_is_upda
 
 def test_every_setting_the_register_names_exists():
     names = set(Settings.model_fields)
-    named = {a.model_setting for a in REGISTER.agents if a.model_setting} | {a.disable.setting for a in REGISTER.agents}
+    named = {s for a in REGISTER.agents for s in a.model_settings} | {a.disable.setting for a in REGISTER.agents}
     assert named <= names, sorted(named - names)
+
+
+# The modules that choose each model-calling agent's model. Every agent that calls a model has to be listed, so a
+# new one cannot be registered without saying where its model is decided.
+MODEL_SETTING_READERS = {
+    "critic": ["src/critic_agent.py"],
+    "planner": ["src/planner_agent.py"],
+    "watch_officer": ["src/watch_officer_agent.py", "src/investigation/specialists.py"],
+    "feed_diagnostician": ["src/investigation/specialists.py"],
+    "correlation_analyst": ["src/investigation/specialists.py"],
+    "red_team_critic": ["src/investigation/specialists.py"],
+}
+
+
+def test_the_model_settings_the_register_names_are_the_ones_the_agent_reads():
+    # The Watch Officer's entry named WATCH_OFFICER_MODEL alone, while the investigation brief a reviewer approves
+    # from is written by the same agent on INVESTIGATION_MODEL: changing the setting the register named left it on
+    # the old model.
+    for agent in (a for a in REGISTER.agents if a.calls_model):
+        assert agent.id in MODEL_SETTING_READERS, f"{agent.id}: say which module chooses its model"
+        read = {name for path in MODEL_SETTING_READERS[agent.id]
+                for name in re.findall(r"settings\.([A-Z_]+_MODEL)\b", (APP / path).read_text(encoding="utf-8"))}
+        assert set(agent.model_settings) == read, f"{agent.id}: register {sorted(agent.model_settings)}, code {sorted(read)}"
+
+
+# ── ... and the switches are real ────────────────────────────────────────────────────────────────────
+
+COMPOSE = yaml.safe_load((APP / "docker-compose.yml").read_text(encoding="utf-8"))["services"]
+
+
+def _forwarded(service: str) -> dict:
+    """What compose puts in a service's environment (its x-app-env anchor is merged in)."""
+    environment = COMPOSE[service].get("environment") or {}
+    return environment if isinstance(environment, dict) else dict(item.split("=", 1) for item in environment)
+
+
+def test_every_switch_the_register_names_is_forwarded_to_each_service_it_restarts():
+    # The Watch Officer's entry named LITELLM_PROXY_URL, which compose never passes to a container: setting it in
+    # .env changed nothing, and the register said it stopped the agent.
+    for agent in REGISTER.agents:
+        for service in agent.disable.restart:
+            assert agent.disable.setting in _forwarded(service), (
+                f"{agent.id}: compose does not pass {agent.disable.setting} to {service}, so setting it in .env stops nothing")
+
+
+def test_a_switch_is_not_a_value_compose_would_replace_with_the_default():
+    # `${X:-1}` treats an empty X as unset, so "set it to the empty string" cannot be a way to stop anything.
+    for agent in REGISTER.agents:
+        assert agent.disable.value.strip(), f"{agent.id}: the value that stops it is empty"
+        expression = str(_forwarded(agent.disable.restart[0])[agent.disable.setting])
+        default = re.fullmatch(r"\$\{" + agent.disable.setting + r":-([^}]*)\}", expression)
+        assert default, f"{agent.id}: expected ${{{agent.disable.setting}:-default}}, compose has {expression!r}"
+        assert default.group(1) != agent.disable.value, f"{agent.id}: the value that stops it is the default"
+
+
+@pytest.mark.parametrize("agent", REGISTER.agents, ids=lambda a: a.id)
+def test_the_value_the_register_gives_turns_the_switch_off(agent):
+    off = Settings(**{agent.disable.setting: agent.disable.value})
+    assert getattr(off, agent.disable.setting) is False, f"{agent.disable.setting}={agent.disable.value!r} is not off"
 
 
 def test_every_service_the_register_names_is_in_the_compose_file():
@@ -129,6 +189,33 @@ def test_every_agent_the_code_acts_as_is_registered():
     acted = _acting_as_literals()
     assert acted, "the walk found no acting_as() calls: the test is no longer looking at anything"
     assert acted <= set(REGISTER.by_id()), sorted(acted - set(REGISTER.by_id()))
+
+
+def _acting_as_by_variable() -> set[str]:
+    """The source files with an acting_as() call whose argument is not a string literal."""
+    found: set[str] = set()
+    for path in (APP / "src").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "acting_as"
+                    and node.args and not (isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str))):
+                found.add(path.relative_to(APP).as_posix())
+    return found
+
+
+def test_an_agent_named_by_a_variable_is_only_acted_as_where_this_test_knows_what_the_variable_holds():
+    # The literal check above cannot see acting_as(spec.name). The investigation workflow is the one place that
+    # does it, for the specialists, whose names are checked next. A second place fails here until it is accounted for.
+    assert _acting_as_by_variable() == {"src/investigation/workflow.py"}
+
+
+def test_every_specialist_the_investigation_can_run_is_registered():
+    import src.investigation.specialists as module
+
+    names = {cls.name for cls in vars(module).values()
+             if isinstance(cls, type) and isinstance(getattr(cls, "name", None), str) and hasattr(cls, "run")}
+
+    assert len(names) >= 4, f"the walk found {sorted(names)}: the test is no longer looking at the specialists"
+    assert names <= set(REGISTER.by_id()), sorted(names - set(REGISTER.by_id()))
 
 
 def test_every_registered_agent_that_the_code_names_literally_is_still_acted_as():
@@ -181,6 +268,8 @@ def test_the_command_prints_one_row_per_agent_and_how_to_stop_each(capsys):
     for agent in REGISTER.agents:
         assert agent.id in out
     assert "CRITIC_ENABLED='0'" in out
+    assert "PLANNER_ENABLED='0'" in out and "WATCH_OFFICER_ENABLED='0'" in out
+    assert "share this gate" in out, "what else the same switch stops is printed under it"
 
 
 def test_the_command_can_print_json(capsys):

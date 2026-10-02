@@ -7,8 +7,9 @@
 # is the inventory behind those policies, and tests/test_agent_register.py holds
 # the two together: a role in a policy but not here fails CI, so does a role
 # here that no policy grants, a tool grant that differs from the register's,
-# a prompt whose version changed since it was last reviewed, and a role the
-# code acts as that nobody registered.
+# a prompt whose version changed since it was last reviewed, a role the code
+# acts as that nobody registered, and a switch that compose does not forward to
+# the services it says to restart, or that the code does not honour.
 #
 # Risk tier is a judgement, written down so it can be argued with:
 #   high      its output is part of what a person reads before deciding on a
@@ -48,7 +49,7 @@ agents:
     name: Critic
     purpose: Challenges one deterministic alert and says whether it looks like a genuine operational issue.
     calls_model: true
-    model_setting: CRITIC_MODEL
+    model_settings: [CRITIC_MODEL]
     prompts: [{name: critic, version: "2.1"}]
     risk_tier: high
     risk_rationale: Its verdict is stored with the staged action a person approves.
@@ -63,13 +64,18 @@ agents:
       SQL, so it holds no flight identifiers.
     fallback: The alert is still staged by the rules; the verdict is recorded as unavailable.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: CRITIC_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+    disable:
+      setting: CRITIC_ENABLED
+      value: "0"
+      restart: [sentinel, temporal-worker, dashboard]
+      note: >
+        The same switch also stops the Planner and the Watch Officer's overview narrative: the three share this gate.
 
   - id: planner
     name: Planner
     purpose: Answers an operator's question about current feed state, alerts and taxi times.
     calls_model: true
-    model_setting: PLANNER_MODEL
+    model_settings: [PLANNER_MODEL]
     prompts: [{name: planner, version: "2.0"}]
     risk_tier: moderate
     risk_rationale: Advisory text an operator reads; nothing is staged or decided from it.
@@ -83,13 +89,18 @@ agents:
       each flight as a per-prompt token; the answer has the flights put back locally.
     fallback: A deterministic summary of the stored records.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: CRITIC_ENABLED, value: "0", restart: [dashboard]}
+    disable:
+      setting: PLANNER_ENABLED
+      value: "0"
+      restart: [dashboard]
+      note: >
+        CRITIC_ENABLED=0 also stops it, together with the Critic and the Watch Officer's overview narrative.
 
   - id: watch_officer
     name: Watch Officer
     purpose: Writes the narrative of the overview brief, and the brief a reviewer reads before approving.
     calls_model: true
-    model_setting: WATCH_OFFICER_MODEL
+    model_settings: [WATCH_OFFICER_MODEL, INVESTIGATION_MODEL]
     prompts: [{name: watch_officer, version: "2.1"}, {name: investigation_brief, version: "1.0"}]
     risk_tier: high
     risk_rationale: The investigation brief is what a reviewer reads before approving, rejecting or overriding.
@@ -103,7 +114,13 @@ agents:
       verdict, data gaps and counts. Posture, trust and counts are computed by rules, never written by the model.
     fallback: A deterministic brief computed from the same assessment.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: LITELLM_PROXY_URL, value: "", restart: [dashboard, sentinel, temporal-worker]}
+    disable:
+      setting: WATCH_OFFICER_ENABLED
+      value: "0"
+      restart: [dashboard, sentinel, temporal-worker]
+      note: >
+        Stops the overview narrative and the investigation brief, which the reviewer then gets rule-written.
+        CRITIC_ENABLED=0 also stops the narrative, and INVESTIGATIONS_ENABLED=0 also stops the brief.
 
   - id: investigation
     name: Investigation orchestrator
@@ -119,13 +136,19 @@ agents:
     data_sent: "Nothing; it calls no model."
     fallback: Not applicable; a failed collection is recorded and the staged action stays for a person.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+    disable:
+      setting: INVESTIGATIONS_ENABLED
+      value: "0"
+      restart: [sentinel, temporal-worker, dashboard]
+      note: >
+        Shared by the orchestrator and every investigation agent: switching it off stops them all, and the
+        staged action stays for a person.
 
   - id: feed_diagnostician
     name: Feed Diagnostician
     purpose: Says whether the feed or infrastructure itself is behaving abnormally.
     calls_model: true
-    model_setting: INVESTIGATION_MODEL
+    model_settings: [INVESTIGATION_MODEL]
     prompts: [{name: feed_diagnostician, version: "1.0"}]
     risk_tier: high
     risk_rationale: Its finding is part of the sealed investigation record a person reads.
@@ -139,13 +162,19 @@ agents:
       files, service health); every claim must cite an evidence id the record holds.
     fallback: A deterministic finding, marked as the fallback with its reason.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+    disable:
+      setting: INVESTIGATIONS_ENABLED
+      value: "0"
+      restart: [sentinel, temporal-worker, dashboard]
+      note: >
+        Shared by the orchestrator and every investigation agent: switching it off stops them all, and the
+        staged action stays for a person.
 
   - id: correlation_analyst
     name: Correlation Analyst
     purpose: Says whether an event is isolated or part of a broader operational pattern.
     calls_model: true
-    model_setting: INVESTIGATION_MODEL
+    model_settings: [INVESTIGATION_MODEL]
     prompts: [{name: correlation_analyst, version: "1.0"}]
     risk_tier: high
     risk_rationale: Its finding is part of the sealed investigation record a person reads.
@@ -159,13 +188,19 @@ agents:
       every claim must cite an evidence id the record holds.
     fallback: A deterministic finding, marked as the fallback with its reason.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+    disable:
+      setting: INVESTIGATIONS_ENABLED
+      value: "0"
+      restart: [sentinel, temporal-worker, dashboard]
+      note: >
+        Shared by the orchestrator and every investigation agent: switching it off stops them all, and the
+        staged action stays for a person.
 
   - id: red_team_critic
     name: Red-Team Critic
     purpose: Argues the strongest case against the other specialists' findings.
     calls_model: true
-    model_setting: INVESTIGATION_MODEL
+    model_settings: [INVESTIGATION_MODEL]
     prompts: [{name: red_team_critic, version: "1.0"}]
     risk_tier: high
     risk_rationale: Its challenges are part of the sealed investigation record a person reads.
@@ -179,7 +214,13 @@ agents:
       confidence score and endorses nothing.
     fallback: A deterministic critique, marked as the fallback with its reason.
     authority: {decide: false, stage: false, write: false, execute: false}
-    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+    disable:
+      setting: INVESTIGATIONS_ENABLED
+      value: "0"
+      restart: [sentinel, temporal-worker, dashboard]
+      note: >
+        Shared by the orchestrator and every investigation agent: switching it off stops them all, and the
+        staged action stays for a person.
 
 # Evidence a reviewer can run. Each file must exist.
 evidence:

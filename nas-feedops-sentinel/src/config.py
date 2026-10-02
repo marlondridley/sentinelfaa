@@ -300,6 +300,10 @@ class Settings(BaseSettings):
 
     # ── Agents / LLM ─────────────────────────────────────────────────────────
     CRITIC_ENABLED: bool = True
+    # Each is the agent's own switch, on top of CRITIC_ENABLED, which also stops the Critic, the Planner and the
+    # Watch Officer's overview narrative together (policies/agent-register.yaml says which stops what).
+    PLANNER_ENABLED: bool = True
+    WATCH_OFFICER_ENABLED: bool = True
     AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
     # This is an APPLICATION-FACING LiteLLM alias.
     LLM_MODEL: str = "openai/primary-model"
@@ -532,7 +536,10 @@ class Settings(BaseSettings):
             return _json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
-    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", "REQUIRE_REMOTE_LLM_PROXY", mode="before")
+    @field_validator(
+        "CRITIC_ENABLED", "PLANNER_ENABLED", "WATCH_OFFICER_ENABLED", "INVESTIGATIONS_ENABLED",
+        "REQUIRE_REMOTE_LLM_PROXY", mode="before",
+    )
     @classmethod
     def _parse_bool(cls, value: Any) -> bool:
         if isinstance(value, str):

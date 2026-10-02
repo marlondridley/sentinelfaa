@@ -55,7 +55,8 @@ class PlannerAgent:
     """Standalone Planner execution engine using LiteLLM and guardrail validation."""
 
     def __init__(self) -> None:
-        self._llm = build_llm_client(model=settings.PLANNER_MODEL) if settings.CRITIC_ENABLED else None
+        may_ask = settings.CRITIC_ENABLED and settings.PLANNER_ENABLED      # CRITIC_ENABLED=0 stops every live agent
+        self._llm = build_llm_client(model=settings.PLANNER_MODEL) if may_ask else None
         self._guardrail = OutputGuardrail()
         self._input_guard = InputGuardrail()
         self._prompt = system_prompt("planner")
