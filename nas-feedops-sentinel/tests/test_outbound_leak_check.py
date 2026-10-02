@@ -338,8 +338,9 @@ def test_the_policy_blocks_a_leak_ahead_of_every_rule_but_credentials():
     by_name = {r["name"]: r for r in rules}
     leak = by_name["no-protected-values-in-prompts"]
     assert leak["action"] == "block"
+    # The halt sits above both: while the AI layer is halted nothing else needs asking.
     assert leak["priority"] > max(r["priority"] for n, r in by_name.items()
-                                  if n not in ("no-protected-values-in-prompts", "no-credentials-in-prompts"))
+                                  if n not in ("no-protected-values-in-prompts", "no-credentials-in-prompts", "model-halted"))
     assert leak["priority"] < by_name["no-credentials-in-prompts"]["priority"]
 
 

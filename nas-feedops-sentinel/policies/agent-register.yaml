@@ -40,9 +40,11 @@ identity:
     carries no credential of its own: code inside the same service could claim
     another agent's name. A per-agent workload identity would close that.
   runtime_switch: >
-    None. Settings are built once, at import (src/config.py: settings =
-    Settings()), so each entry's `disable` takes effect when the service restarts.
-    A runtime halt is a separate, queued control.
+    One, for the whole AI layer: a supervisor's halt (src/model_halt.py), which makes the
+    model-use policy refuse every model call in every service within a couple of seconds,
+    without a restart, and is audited by the database. There is no runtime switch for a single
+    agent: each entry's `disable` is a setting that takes effect when its services restart,
+    because settings are built once, at import (src/config.py: settings = Settings()).
 
 agents:
   - id: critic

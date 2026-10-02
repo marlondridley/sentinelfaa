@@ -56,6 +56,7 @@ def test_registered_advisory_roles_are_allowed_and_audited(role):
     ({"model": "openai/some-other-alias"}, "gateway-aliases-only"),
     ({"redacted": False}, "prompts-must-be-redacted"),
     ({"protected_values_found": 1}, "no-protected-values-in-prompts"),
+    ({"model_halt": True}, "model-halted"),
     ({"prompt": "x" * 120_001}, "prompt-size-ceiling"),
     ({"max_tokens": 4096}, "output-budget-ceiling"),
     ({"prompt": f"context ... api_key={_KEY}"}, "no-credentials-in-prompts"),
@@ -88,7 +89,7 @@ def test_every_context_field_is_present_and_never_none():
     """The toolkit treats a missing field as no match, so a deny rule on it would never fire."""
     context = governance.build_context(role=None, model=None, prompt="", max_tokens=0, redacted=False)
     assert {"role", "model", "prompt_chars", "max_tokens", "redacted", "credentials_found",
-            "protected_values_found"} <= set(context)
+            "protected_values_found", "model_halt"} <= set(context)
     assert all(value is not None for value in context.values())
 
 

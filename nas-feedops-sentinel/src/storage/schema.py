@@ -295,6 +295,56 @@ _MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE critic_results       ADD COLUMN IF NOT EXISTS call_id TEXT;
         ALTER TABLE watch_officer_briefs ADD COLUMN IF NOT EXISTS call_id TEXT;
     """),
+    # The runtime halt of the AI layer (src/model_halt.py). One row, always: the CHECK allows no second, and a
+    # trigger refuses DELETE, so "no row" can never mean "not halted". The row is mutable (a halt and a resume
+    # are updates), so the audit is not left to the code that updates it: a trigger writes every update to the
+    # append-only action_audit_log, under "model_halt:<id>", with the actor and the reason. No write path, and no
+    # one with the application role, can change the state without leaving that row.
+    ("2026_10_model_halt", """
+        CREATE TABLE IF NOT EXISTS model_halt (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            halted      BOOLEAN NOT NULL DEFAULT FALSE,
+            reason      TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT 'none' CHECK (source IN ('none', 'supervisor', 'auto')),
+            actor       TEXT NOT NULL DEFAULT '',
+            changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        INSERT INTO model_halt (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+        CREATE OR REPLACE FUNCTION model_halt_no_delete()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            RAISE EXCEPTION 'model_halt always has its one row; % is not permitted on this table', TG_OP;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_model_halt_no_delete ON model_halt;
+        CREATE TRIGGER trg_model_halt_no_delete
+            BEFORE DELETE ON model_halt
+            FOR EACH ROW EXECUTE FUNCTION model_halt_no_delete();
+
+        CREATE OR REPLACE FUNCTION model_halt_audit()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            INSERT INTO action_audit_log (audit_id, action_id, previous_status, new_status, actor, note, created_at)
+            VALUES (
+                gen_random_uuid()::text,
+                'model_halt:' || gen_random_uuid()::text,
+                CASE WHEN OLD.halted THEN 'HALTED' ELSE 'RUNNING' END,
+                CASE WHEN NEW.halted THEN 'HALTED' ELSE 'RUNNING' END,
+                NEW.actor,
+                NEW.source || ': ' || NEW.reason,
+                now()
+            );
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_model_halt_audit ON model_halt;
+        CREATE TRIGGER trg_model_halt_audit
+            AFTER UPDATE ON model_halt
+            FOR EACH ROW EXECUTE FUNCTION model_halt_audit();
+    """),
 ]
 
 
