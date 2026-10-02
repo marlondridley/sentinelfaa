@@ -89,6 +89,12 @@ x-app-env: &app-env
   # An agent's own switch, with CRITIC_ENABLED above it (policies/agent-register.yaml): 0 stops it at restart.
   PLANNER_ENABLED: ${PLANNER_ENABLED:-1}
   WATCH_OFFICER_ENABLED: ${WATCH_OFFICER_ENABLED:-1}
+  # The runtime halt of the AI layer (src/model_halt.py): how long a service keeps what it read, and the optional
+  # automatic trip, which is OFF unless a deployment turns it on here. A supervisor halts and resumes from the console.
+  MODEL_HALT_CACHE_SECONDS: ${MODEL_HALT_CACHE_SECONDS:-2}
+  MODEL_AUTO_HALT_ENABLED: ${MODEL_AUTO_HALT_ENABLED:-0}
+  MODEL_AUTO_HALT_THRESHOLD: ${MODEL_AUTO_HALT_THRESHOLD:-3}
+  MODEL_AUTO_HALT_WINDOW_SECONDS: ${MODEL_AUTO_HALT_WINDOW_SECONDS:-300}
   MAX_CRITIC_PER_PASS: ${MAX_CRITIC_PER_PASS:-5}
   INVESTIGATIONS_ENABLED: ${INVESTIGATIONS_ENABLED:-1}
   MAX_LLM_INVESTIGATIONS_PER_PASS: ${MAX_LLM_INVESTIGATIONS_PER_PASS:-3}
