@@ -44,15 +44,24 @@ def _value_samples(pair) -> dict[str, Any]:
     return dict(zip(("value", "samples"), pair))
 
 
+def subsets(calls: list[dict], verdicts: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """
+    (calls that reached a model, those that got a reply, Critic verdicts with a confidence that a person decided).
+    The populations several metrics share; src/evaluation_evidence.py lists the same ones row by row.
+    """
+    sent = [c for c in calls if c["outcome"] not in NOT_SENT_OUTCOMES]
+    return (sent, [c for c in sent if c["outcome"] in RESPONDED],
+            [v for v in verdicts if v.get("confidence") is not None and v.get("action_status") in DECIDED])
+
+
 def aggregate(evaluations: list[InvestigationEvaluation], calls: list[dict], verdicts: list[dict],
               investigations: list[Investigation], config: GateConfig, engine: Any) -> dict[str, Any]:
     """The metric groups for a window. Every value names its kind: AGT-native, AGT-compatible or Sentinel-specific."""
-    sent = [c for c in calls if c["outcome"] not in NOT_SENT_OUTCOMES]
+    sent, responded, decided = subsets(calls, verdicts)
     window = _Window(
         evaluations=evaluations, calls=calls, verdicts=verdicts, investigations=investigations, config=config,
         engine=engine, model_runs=[e for e in evaluations if e.used_model], sent=sent,
-        responded=[c for c in sent if c["outcome"] in RESPONDED],
-        decided=[v for v in verdicts if v.get("confidence") is not None and v.get("action_status") in DECIDED])
+        responded=responded, decided=decided)
     agents = _agent_fleet(window)
     return {"quality": _quality_metrics(window), "latency": _latency_metrics(window),
             "cost": _cost_metrics(window), "reliability": _reliability_metrics(window, agents),

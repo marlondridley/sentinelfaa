@@ -29,7 +29,7 @@ calculation while the installed AGT has a known defect) or Sentinel-specific
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -280,6 +280,7 @@ class WindowEvaluation:
     calls: list[dict]
     verdicts: list[dict]
     metrics: dict[str, Any]
+    records: list[Investigation] = field(default_factory=list)    # the sealed records, for their step logs
 
 
 async def evaluate_window(hours: float, config: GateConfig | None = None) -> WindowEvaluation:
@@ -293,4 +294,5 @@ async def evaluate_window(hours: float, config: GateConfig | None = None) -> Win
     calls = await storage.get_model_calls_since(since)
     verdicts = await storage.get_critic_verdicts_since(since)
     return WindowEvaluation(since=since, until=until, investigations=evaluations, calls=calls, verdicts=verdicts,
-                            metrics=aggregate(evaluations, calls, verdicts, investigations, config, engine))
+                            metrics=aggregate(evaluations, calls, verdicts, investigations, config, engine),
+                            records=investigations)

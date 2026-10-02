@@ -18,7 +18,7 @@ None of this counts against the five minutes.
 
 ## The five minutes
 
-### 0:00 · The question (Overview)
+### 0:00 · The question (Dashboard)
 
 **Say:** "This watches the FAA's SWIM feeds for the four Potomac TRACON airports. It answers one question: can we trust the aircraft-movement data SWIM is publishing right now, and if not, who needs to look at what?"
 
@@ -30,7 +30,7 @@ None of this counts against the five minutes.
 
 ### 0:45 · Isolated or sector-wide? (Feed Health)
 
-Click the **schema conformance** or **lag** tile. Every number on the Overview is a link, and Feed Health opens on the view that number came from.
+Click the **schema conformance** or **lag** tile. Every number on the Dashboard is a link, and Feed Health opens on the view that number came from.
 
 **Show:** the **Service by facility** matrix, one cell per SWIM service per airport.
 
@@ -38,7 +38,7 @@ Click the **schema conformance** or **lag** tile. Every number on the Overview i
 
 ### 1:30 · What fired, and where (Alert Log)
 
-Back on the Overview, click the **CRITICAL** tile. The Alert Log arrives pre-filtered.
+Back on the Dashboard, click the **Recent alerts** tile. The Alert Log is the record of every alert; a CRITICAL one shows where its review stands and links to it.
 
 **Show:**
 - **Where the alerts cluster**: concentration in one rule points at one root cause.
@@ -47,9 +47,9 @@ Back on the Overview, click the **CRITICAL** tile. The Alert Log arrives pre-fil
 
 **Say:** "Seven deterministic rules produce every alert. Three are CRITICAL: a disconnected feed, runway visual range below 1,200 feet, and a degraded ISMC link. Every CRITICAL alert is staged for a human by rules, whether or not any model answers."
 
-### 2:15 · The human decides (AI Critic & Review)
+### 2:15 · The human decides (Review Queue)
 
-Open **AI Critic & Review** and go to the **Human review queue**.
+Open **Review Queue**, or click a line under **Review queue** on the Dashboard: it opens that review.
 
 **Show:**
 - One staged action, labelled synthetic on its face, with the Watch Officer's **bottom line**.

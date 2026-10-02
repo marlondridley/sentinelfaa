@@ -1,11 +1,14 @@
 """
-Operational Alert Log -- the triage console.
+Alert Log -- the record of every alert the rules raised.
 
-Answers "what does the duty manager need to act on, and in what order?"
+Answers "what was raised, where and when?" It is the record, not the work
+queue: a CRITICAL alert is decided on the Review Queue, as one review per
+condition, and each CRITICAL alert here says where its review stands and
+links to it.
 
-This page is the far end of every alert drill-down on the Overview page.
-"205 open alerts" there is a link to here; "14 critical" is a link to here
-with `?severity=CRITICAL` already applied. That is the whole reason the
+This page is the far end of every alert drill-down on the Dashboard.
+"205 recent alerts" there is a link to here; a severity count is a link to
+here with `?severity=CRITICAL` already applied. That is the whole reason the
 filter state is read from the URL rather than only from widgets: a number
 on a status board is useless if seeing what is behind it means arriving on
 a fresh page and rebuilding the filter by hand.
@@ -19,7 +22,7 @@ Accepted query parameters, all optional and all case-insensitive:
                               under the Triage tiles, not at the bottom
     ?focus=newest             the same, led by the newest matching alert
 
-Every tile on this page is itself a drill-down. The Triage tiles narrow to
+Every tile on this page is itself a drill-down. The severity tiles narrow to
 their severity, a facility tile to its airport, and both keep the rest of
 the current filter and open the records under the tiles: a click shows the
 alerts behind the number, where the eye already is.
@@ -41,18 +44,19 @@ import streamlit as st
 from lib import theme
 from lib.data import as_utc, bucket_counts
 from lib.page_setup import bootstrap_page
-from src import storage
+from src import review_queue, storage
 from src.async_bridge import run_async as run
 
 bootstrap_page(page_title="Alert Log — PCT FeedOps Sentinel", page_icon="\U0001F6A8")
 
 theme.page_header(
-    "Operational Alert Log",
-    "What does the duty manager need to act on, and in what order?",
+    "Alert Log",
+    "What did the rules raise, where and when?",
     detail=(
-        "Every alert here was raised by a deterministic rule in the alert engine "
-        "against an ingested SWIM message -- none is model-generated. Severity is "
-        "assigned by the rule that fired, not inferred."
+        "The record of every reading. Every alert here was raised by a deterministic rule in "
+        "the alert engine against an ingested SWIM message -- none is model-generated, and "
+        "severity is assigned by the rule that fired. A CRITICAL alert is decided on the Review "
+        "Queue, one review per condition; the Review column says where that stands."
     ),
 )
 
@@ -67,7 +71,7 @@ if not alerts_raw:
         "No alerts in the log</div>"
         f'<div style="color:{theme.GRAY3};font-size:14px;margin-top:5px;">'
         "Either the system is healthy or nothing has been ingested yet. Check "
-        "messages ingested on the Overview page to tell the two apart."
+        "messages ingested on the Dashboard to tell the two apart."
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -75,9 +79,27 @@ if not alerts_raw:
     st.stop()
 
 df = pd.DataFrame(alerts_raw)
-for _col in ("severity", "alert_type", "airport_code", "service_name", "description"):
+for _col in ("alert_id", "severity", "alert_type", "airport_code", "service_name", "description"):
     if _col not in df.columns:
         df[_col] = None
+
+# What became of each CRITICAL alert: the review that covers it, and where that stands
+# (src/review_queue.py: awaiting a decision, or answered "keep monitoring").
+_covering = run(storage.get_covering_actions(list(df.loc[df["severity"] == "CRITICAL", "alert_id"].dropna())))
+_monitored = {r.action.action_id for r in review_queue.monitored(run(review_queue.open_reviews()))}
+AWAITING = "Awaiting decision"
+
+
+def _review_state(alert_id: str | None, severity: str | None) -> str:
+    covering = _covering.get(alert_id)
+    if covering is None:
+        return "No review" if severity == "CRITICAL" else "—"
+    if covering["status"] == "PENDING":
+        return "Monitoring" if covering["action_id"] in _monitored else AWAITING
+    return str(covering["status"]).capitalize()
+
+
+df["review"] = [_review_state(a, s) for a, s in zip(df["alert_id"], df["severity"])]
 df["triggered_at"] = df["triggered_at"].map(as_utc)
 df = df.sort_values("triggered_at", ascending=False, na_position="last")
 
@@ -106,7 +128,7 @@ _services = sorted(str(s) for s in df["service_name"].dropna().unique())
 
 theme.section(
     "Filter",
-    "Arrives pre-filtered when opened from an Overview tile.",
+    "Arrives pre-filtered when opened from a Dashboard tile.",
     right=f"{len(df):,} alerts in store",
 )
 
@@ -177,7 +199,10 @@ if newest is not None and pd.notna(newest):
 else:
     age_display, age_unit, age_tone = "—", "", "neutral"
 
-theme.section("Triage", "Everything below reflects the filter above.", tone="bad" if n_crit else "info")
+# In reviews, the unit a person decides: many CRITICAL readings are one review.
+_awaiting_reviews = len({_covering[a]["action_id"] for a in view.loc[view["review"] == AWAITING, "alert_id"]})
+
+theme.section("In this view", "Everything below reflects the filter above.", tone="bad" if n_crit else "info")
 
 _SHOW = "SHOW ↓"   # the tiles' drill badge: the alerts open right below
 theme.kpi_row(
@@ -186,7 +211,8 @@ theme.kpi_row(
                   foot=f"of {len(df):,} in the store",
                   href=_link(focus="records") if len(view) else None, drill=_SHOW),
         theme.kpi("Critical", f"{n_crit:,}", tone="bad" if n_crit else "ok",
-                  foot="Supervisor action required" if n_crit else "None in this view",
+                  foot=(f"{_awaiting_reviews} review(s) awaiting a decision" if _awaiting_reviews
+                        else "No review awaiting a decision" if n_crit else "None in this view"),
                   href=_link(severity="CRITICAL", focus="records") if n_crit else None, drill=_SHOW),
         theme.kpi("Warning", f"{n_warn:,}", tone="warn" if n_warn else "ok",
                   foot="Monitor and corroborate",
@@ -208,7 +234,7 @@ if view.empty:
 
 
 def _record_card(record: pd.Series) -> None:
-    """One alert in full: what fired, where, when, and where to look next."""
+    """One alert in full: what fired, where, when, where its review stands, and where to look next."""
     _sev = str(record.get("severity") or "UNKNOWN")
     with st.container(border=True):
         st.markdown(
@@ -245,21 +271,32 @@ def _record_card(record: pd.Series) -> None:
             f'{theme._esc(record.get("event_id") or "—")}</div>',
             unsafe_allow_html=True,
         )
+        _link_style = f"color:{theme.BLUE5};font-size:14px;text-decoration:none;font-weight:600;"
+        links = []
+        covering = _covering.get(record.get("alert_id"))
+        if covering:
+            # Open, it is where the decision is made; decided, it opens as the record of who decided and why.
+            said = (str(record.get("review")) if covering["status"] == "PENDING" else
+                    "Review " + str(covering["status"]).lower()
+                    + (f' by {covering["decided_by"]}' if covering.get("decided_by") else ""))
+            links.append(
+                f'<a href="{theme.drill_href("critic", review=covering["action_id"])}" target="_self" '
+                f'style="{_link_style}">{theme._esc(said)}: open its review &rarr;</a>')
         if record.get("airport_code"):
-            st.markdown(
+            links.append(
                 f'<a href="{theme.drill_href("health", airport=str(record["airport_code"]))}" '
-                f'target="_self" style="color:{theme.BLUE5};font-size:14px;'
-                f'text-decoration:none;font-weight:600;">'
-                f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>',
-                unsafe_allow_html=True,
-            )
+                f'target="_self" style="{_link_style}">'
+                f'Check {theme._esc(record["airport_code"])} feed health &rarr;</a>')
+        if links:
+            st.markdown('<div style="display:flex;gap:24px;flex-wrap:wrap;">' + "".join(links) + "</div>",
+                        unsafe_allow_html=True)
 
 
-_COLS = ["Triggered (UTC)", "Severity", "Alert type", "Airport", "Service", "Description"]
+_COLS = ["Triggered (UTC)", "Severity", "Review", "Alert type", "Airport", "Service", "Description"]
 _table = view.copy()
 _table["Triggered (UTC)"] = _table["triggered_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
-_table = _table.rename(columns={"severity": "Severity", "alert_type": "Alert type", "airport_code": "Airport",
-                                "service_name": "Service", "description": "Description"})
+_table = _table.rename(columns={"severity": "Severity", "review": "Review", "alert_type": "Alert type",
+                                "airport_code": "Airport", "service_name": "Service", "description": "Description"})
 
 
 def _records(title: str, question: str) -> None:
@@ -275,6 +312,8 @@ def _records(title: str, question: str) -> None:
         column_config={
             "Description": st.column_config.TextColumn(width="large"),
             "Severity": st.column_config.TextColumn(width="small"),
+            "Review": st.column_config.TextColumn(
+                width="small", help="Where the review covering a CRITICAL alert stands. Select the row to open it."),
         },
     )
     rows = selection.get("selection", {}).get("rows", []) if isinstance(selection, dict) else []

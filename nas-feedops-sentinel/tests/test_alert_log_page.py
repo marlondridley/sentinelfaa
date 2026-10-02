@@ -2,11 +2,14 @@
 The Alert Log drills down from every number (dashboard/pages/4_Alert_Log.py).
 
 Run headlessly through Streamlit's AppTest against the in-memory store:
-- the Triage tiles and the facility tiles are links that narrow the view,
+- the severity tiles and the facility tiles are links that narrow the view,
   keep the rest of the filter, and open the matching records right under the
   tiles (?focus=records), or lead with the newest alert (?focus=newest);
 - "Which rules are firing" plots each rule's alert count, not a row count
-  that drew every rule at 1.
+  that drew every rule at 1;
+- it is the record, not the work queue: a CRITICAL alert says where its
+  review stands and links to it. It used to say "Supervisor action required"
+  and offer no way to the review where that action is taken.
 """
 from __future__ import annotations
 
@@ -21,10 +24,13 @@ pytest.importorskip("streamlit", reason="the page renders through Streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from src import storage  # noqa: E402
+from src.auth import Decision, Principal, PrincipalSource  # noqa: E402
+from src.execution_gate import decide_staged_action, stage_critical_alert  # noqa: E402
 from src.models import AlertEvent  # noqa: E402
 
 PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "pages" / "4_Alert_Log.py"
 NOW = datetime.now(timezone.utc)
+SUPERVISOR = Principal("smith", "Supervisor", PrincipalSource.OIDC, roles=frozenset({"supervisor"}))
 
 
 @pytest.fixture
@@ -130,3 +136,45 @@ async def test_which_rules_are_firing_plots_alert_counts_not_rows(db):
     assert labels["mark"]["type"] == "text" and labels["encoding"]["text"]["field"] == "total", \
         "each bar is labelled with its number"
     assert bars["encoding"]["y"]["sort"][0] == "ALERT_FEED_STALE", "the busiest rule first"
+
+
+# ── The record, not the work queue ────────────────────────────────────────────
+
+async def _staged_critical(db):
+    critical = _alert("ALERT_LOW_RVR", "CRITICAL", "KBWI", 5, text="RVR 600 ft on 10")
+    await db.save_alerts([critical, _alert("ALERT_FEED_STALE", "WARNING", "KBWI", 30)])
+    return await stage_critical_alert(critical)
+
+
+def _review_by_severity(at: AppTest) -> dict[str, str]:
+    [records] = [d.value for d in at.dataframe]
+    return dict(zip(records["Severity"], records["Review"]))
+
+
+async def test_a_critical_alert_says_where_its_review_stands_and_links_to_it(db):
+    review = await _staged_critical(db)
+
+    at = _run(focus="newest")
+
+    assert _review_by_severity(at) == {"CRITICAL": "Awaiting decision", "WARNING": "—"}
+    html = _html(at)
+    assert f'href="AI_Critic_and_Review?review={review.action_id}"' in html, "the newest alert's card opens its review"
+    assert "1 review(s) awaiting a decision" in html and "Supervisor action required" not in html
+
+
+async def test_the_review_column_follows_what_was_decided(db):
+    review = await _staged_critical(db)
+    await decide_staged_action(review.action_id, Decision.MONITOR, SUPERVISOR, "watching")
+
+    at = _run(focus="newest")
+    assert _review_by_severity(at)["CRITICAL"] == "Monitoring"
+    assert f'href="AI_Critic_and_Review?review={review.action_id}"' in _html(at), "still open, still reachable"
+
+    await decide_staged_action(review.action_id, Decision.REJECT, SUPERVISOR, "sensor artefact")
+
+    at = _run(focus="newest")
+    html = _html(at)
+    assert _review_by_severity(at)["CRITICAL"] == "Rejected"
+    assert "Review rejected by smith" in html
+    assert f'href="AI_Critic_and_Review?review={review.action_id}"' in html, "decided, it opens as the record"
+    assert "No review awaiting a decision" in html
