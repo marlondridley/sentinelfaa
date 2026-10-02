@@ -73,6 +73,9 @@ class Objective:
     max: float | None = None         # lower is better: the maximum value
     required: bool = True
     min_samples: int = 1
+    data: str = ""                   # what it is measured from, in words
+    watch_officer: str = ""          # what a watch officer does when it is off target
+    system_engineer: str = ""        # ... and a system engineer
 
 
 @dataclass
@@ -88,8 +91,12 @@ class ObjectiveResult:
     budget_used: float | None
     required: bool
     detail: str
-    source: str
+    source: str                      # which component calculated it (docs/agent-metrics.md), not the data
     min_samples: int = 1
+    unit: str = ""                   # what `samples` counts: "investigations", "model calls sent", ...
+    data: str = ""
+    watch_officer: str = ""
+    system_engineer: str = ""
 
 
 @dataclass
@@ -119,7 +126,8 @@ def load_spec(path: Path | None = None) -> tuple[dict[str, Any], list[Objective]
         if (raw.get("target") is None) == (raw.get("max") is None):
             raise ValueError(f"objective {raw['name']!r} needs exactly one of target or max")
         cleaned = {k: v for k, v in raw.items() if k in names}
-        cleaned["description"] = " ".join(str(cleaned.get("description", "")).split())
+        for text in ("description", "data", "watch_officer", "system_engineer"):
+            cleaned[text] = " ".join(str(cleaned.get(text, "")).split())
         cleaned.setdefault("label", raw["name"].replace("_", " ").capitalize())
         objectives.append(Objective(**cleaned))
     return data, objectives
@@ -184,7 +192,8 @@ def grade(objectives: list[Objective], metrics: dict[str, Any], at_risk: float) 
             shown = f"{_pct(value)} over {samples} {unit} (objective at least {_pct(obj.target)})"
         else:
             status, value, used = limit_status(value, obj.max, samples, at_risk, obj.min_samples)
-            shown = f"{_num(value)} over {samples} {unit} (objective at most {_num(obj.max)})"
+            shown = (f"{_in_unit(obj.name, value)} over {samples} {unit} "
+                     f"(objective at most {_in_unit(obj.name, obj.max)})")
         detail = shown if value is not None and samples else f"no {unit} in the window"
         if status == NO_DATA and samples and samples < obj.min_samples:
             detail += f"; {obj.min_samples} needed to judge"
@@ -193,12 +202,21 @@ def grade(objectives: list[Objective], metrics: dict[str, Any], at_risk: float) 
         results.append(ObjectiveResult(
             name=obj.name, label=obj.label, description=obj.description, status=status, value=value,
             target=obj.target, limit=obj.max, samples=samples, budget_used=used, required=obj.required,
-            detail=detail, source=source, min_samples=obj.min_samples,
+            detail=detail, source=source, min_samples=obj.min_samples, unit=unit, data=obj.data,
+            watch_officer=obj.watch_officer, system_engineer=obj.system_engineer,
         ))
     return results
 
 
 async def build_report(hours: float | None = None, spec_path: Path | None = None) -> Report:
+    return (await build_report_with_window(hours, spec_path))[0]
+
+
+async def build_report_with_window(hours: float | None = None, spec_path: Path | None = None):
+    """
+    (the report, the evaluated window it was graded from). The window is what src/evaluation_evidence.py lists
+    row by row behind each objective; it is None when a record failed its integrity check.
+    """
     from src.evaluation import evaluate_window, load_gate_config
 
     spec, objectives = load_spec(spec_path)
@@ -207,7 +225,7 @@ async def build_report(hours: float | None = None, spec_path: Path | None = None
     min_calls = int(spec.get("min_calls", 20))
     now = datetime.now(timezone.utc)
 
-    integrity_error = None
+    integrity_error, evaluated = None, None
     try:
         evaluated = await evaluate_window(window, load_gate_config(spec_path))
         metrics, calls = evaluated.metrics, len(evaluated.calls)
@@ -223,7 +241,7 @@ async def build_report(hours: float | None = None, spec_path: Path | None = None
         reasons.insert(0, f"an investigation record failed its integrity check: {integrity_error}")
     return Report(verdict=verdict, reasons=reasons, window_hours=window,
                   generated_at=now.isoformat(timespec="seconds"), calls=calls, objectives=results,
-                  breakdown=metrics)
+                  breakdown=metrics), evaluated
 
 
 def decide(results: list[ObjectiveResult], calls: int, min_calls: int) -> tuple[str, list[str]]:
@@ -260,8 +278,15 @@ def _pct(x: float | None) -> str:
     return "inf" if math.isinf(x) else f"{x:.1%}"
 
 
-def _num(x: float | None) -> str:
-    return "n/a" if x is None else f"{x:.4g}"
+def _in_unit(name: str, x: float | None) -> str:
+    """A lower-is-better value in its own unit, as the page shows it: seconds, dollars, or a rate as a percentage."""
+    if x is None:
+        return "n/a"
+    if name.endswith("_seconds"):
+        return f"{x:.1f} s"
+    if name.endswith("_usd"):
+        return f"${x:.4f}"
+    return f"{x:.1%}"
 
 
 def render_text(report: Report) -> str:
@@ -273,7 +298,7 @@ def render_text(report: Report) -> str:
         f"{'objective':<34}{'status':<10}{'value':>12}  {'budget used':>11}  samples",
     ]
     for r in report.objectives:
-        value = _pct(r.value) if r.target is not None else _num(r.value)
+        value = _pct(r.value) if r.target is not None else _in_unit(r.name, r.value)
         req = "" if r.required else "  (informational)"
         lines.append(f"{r.label:<34}{r.status:<10}{value:>12}  {_pct(r.budget_used):>11}  {r.samples}{req}")
     counts = report.breakdown.get("counts") or {}

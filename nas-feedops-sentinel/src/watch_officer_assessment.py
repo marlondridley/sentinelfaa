@@ -239,6 +239,26 @@ def assess(context: dict[str, Any], signals: dict[str, Any] | None = None, *, no
     return fit_above_the_fold(result)
 
 
+def _open_work(critical: list, reviews: list, at: str = "") -> tuple[str, str]:
+    """
+    The headline and the sentence for open CRITICAL work, in the review queue's unit (src/review_queue.py):
+    reviews awaiting a decision, not readings -- one condition firing forty times is one decision. A review
+    someone chose to keep monitoring is open and asks nobody. With no review on record, the alerts are what waits.
+    """
+    span = f"from the last {ALERT_MAX_AGE_HOURS} h"
+    awaiting = [r for r in reviews if not r.get("monitoring")]
+    watched = len(reviews) - len(awaiting)
+    if awaiting:
+        return (f"{len(awaiting)} REVIEW(S) AWAIT A DECISION",
+                f"{len(awaiting)} review(s){at} of critical alerts {span} await a person"
+                + (f"; {watched} more being monitored." if watched else "."))
+    if watched:
+        return (f"{watched} CRITICAL CONDITION(S) BEING MONITORED",
+                f"{watched} critical condition(s){at} {span} are open and being monitored; none awaits a decision.")
+    return (f"{len(critical)} CRITICAL ALERT(S) NEED A DECISION",
+            f"{len(critical)} critical alert(s){at} {span} await a person.")
+
+
 def _status_and_bluf(result, health, current, current_critical, current_reviews, stale_reviews, historical) -> None:
     if health.state == "DOWN":
         result.status, result.status_line = "RED", "DATA PICTURE: DOWN — our feed, not the airports"
@@ -257,11 +277,12 @@ def _status_and_bluf(result, health, current, current_critical, current_reviews,
         where = "catching up" if health.scope == "backlog" else f"degraded at {', '.join(health.stale_airports)}"
         if reliable:
             airports = sorted({a["airport_code"] for a in reliable if a.get("airport_code")})
+            headline, sentence = _open_work(
+                reliable, [r for r in current_reviews if r.get("airport_code") not in stale],
+                at=f" at {', '.join(airports)}" if airports else "")
             result.status = "RED"
-            result.status_line = f"{len(reliable)} CRITICAL ALERT(S) NEED A DECISION — feed {where}"
-            result.bluf = (f"{len(reliable)} critical alert(s)" + (f" at {', '.join(airports)}" if airports else "")
-                           + f" from the last {ALERT_MAX_AGE_HOURS} h await a person. {health.reason}"
-                           " Treat the degraded picture as unverified until it recovers.")
+            result.status_line = f"{headline} — feed {where}"
+            result.bluf = f"{sentence} {health.reason} Treat the degraded picture as unverified until it recovers."
         else:
             result.status = "AMBER"
             result.status_line = ("DATA PICTURE: CATCHING UP — a backlog, not live" if health.scope == "backlog"
@@ -272,8 +293,9 @@ def _status_and_bluf(result, health, current, current_critical, current_reviews,
                             " cannot be verified while that feed is degraded.")
     else:
         if current_critical:
-            result.status, result.status_line = "RED", f"{len(current_critical)} CRITICAL ALERT(S) NEED A DECISION"
-            result.bluf = f"Data is current. {len(current_critical)} critical alert(s) from the last {ALERT_MAX_AGE_HOURS} h await a person."
+            result.status = "RED"
+            result.status_line, sentence = _open_work(current_critical, current_reviews)
+            result.bluf = f"Data is current. {sentence}"
         elif current or current_reviews:
             result.status, result.status_line = "AMBER", "OPEN ITEMS — data is current"
             result.bluf = (f"Data is current. {len(current)} alert(s) and {len(current_reviews)} review(s) from the "
@@ -307,10 +329,13 @@ def _actions(health, current_critical, current_reviews, stale_reviews, fresh_art
         acts.append(BriefAction(
             action=f"Close {what} {why}.", owner=WATCH_OFFICER,
             done_when=f"None in the queue is older than {ALERT_MAX_AGE_HOURS} h."))
-    if current_reviews or current_critical:
-        n = len(current_reviews) or len(current_critical)
+    # What still asks for a person: a review nobody has answered. One being monitored already has its answer.
+    awaiting = [r for r in current_reviews if not r.get("monitoring")]
+    if awaiting or (current_critical and not current_reviews):
+        n = len(awaiting) or len(current_critical)
         acts.append(BriefAction(
-            action=f"Decide the {n} open review(s)" + (" once the feed is current." if health.state == "DOWN" else "."),
+            action=(f"Decide the {n} review(s) awaiting a decision"
+                    + (" once the feed is current." if health.state == "DOWN" else ".")),
             owner=DUTY_MANAGER, done_when="Each has Approve, Reject or Monitor recorded."))
     return acts[:MAX_ACTIONS]
 
