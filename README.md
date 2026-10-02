@@ -283,8 +283,9 @@ nas-feedops-sentinel/     the application
   tests/                  the pytest suite, with real SWIM captures in fixtures/swim_kit/
   scripts/                end-to-end proof, Keycloak setup, diagnostics
   docs/                   operations, playbook, runbooks, walkthrough, agent governance and metrics
-  jumpstart/              the FAA SCDS Jumpstart Kit (L3Harris/swim-jumpstart), a live-run
-                          script and one custom output class
+  jumpstart/              where the FAA SCDS Jumpstart Kit (L3Harris) is unpacked; the kit is
+                          git-ignored (restricted-rights license), only our live-run script
+                          and one custom output class are tracked
   keycloak/  monitoring/  prompts/  docker/
 reference/                Temporal's docker-compose quickstart, kept for reference
 ```
