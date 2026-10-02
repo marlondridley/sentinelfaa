@@ -105,8 +105,14 @@ is a guarantee; the design is that a miss in one is not enough.
 - The value check knows only the values callers extracted. An identifier that
   appears only inside free text nobody parsed is not on its list.
 - A 4-digit code (a beacon code) cannot be told from a number in prose, so
-  values under 5 digits are not checked by value; the keyed and pattern layers
-  cover them.
+  values under 5 digits are not checked by value, counted in digits (so `100.0`
+  is as short as `100`); the keyed and pattern layers cover them. A longer
+  number is compared as written (`38.8951` is found as `-38.8951`, not in
+  `388951`), but a 5-digit altitude or track number can still equal a number
+  that is in the prompt for another reason; that call is refused and falls back
+  to rules, which is the safe direction.
+- Every value a caller read is looked for, however many there are: there is no
+  cap that would leave the shortest identifiers of a large snapshot unchecked.
 - `redacted` in the policy says the scrub is stable (it asks the same patterns
   that ran it). It is not an independent check; layer 4 is.
 - Detection is still pattern- and value-based. Names, e-mail addresses and
