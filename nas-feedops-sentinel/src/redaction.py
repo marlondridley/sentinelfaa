@@ -347,18 +347,39 @@ def pseudonymize_structured(obj: Any, pseudonyms: Pseudonymizer) -> Any:
 
 # Shorter values are too common to mean anything, and a 4-digit code (a beacon code, 1200) cannot be told from
 # a threshold in prose ("RVR below 1200 ft"). The keyed and pattern layers cover those; this one does not
-# pretend to.
+# pretend to. "Short" is counted in digits for a number, so 100.0 (three digits) is as short as 100.
 _MIN_VALUE_CHARS = 4
 _MIN_NUMERIC_CHARS = 5
 _MAX_VALUE_CHARS = 200       # an identifier is short; a longer value is a document, and a document is not a name
-# A prompt names at most a few hundred values; the cap keeps the check bounded if a caller hands it a table.
-MAX_PROTECTED_VALUES = 2000
 _WORDS_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9\-_.]*[A-Za-z0-9])?")
 _JSON_DEPTH = 12
+
+# A number is compared as it is written, not as a run of digits: 38.8951 is not 388951 and 12000.0 is not 120000.
+# A value that is one number (a coordinate, an altitude) and a number standing alone in the text are both read
+# with these. In the text a number is standalone when it is not part of a word or an identifier (evt-12345,
+# abc12345def), which is the same "stands alone" the identifier check applies.
+_NUMBER_RE = re.compile(r"[+-]?(\d+)(?:\.(\d+))?")
+_NUMBER_IN_TEXT_RE = re.compile(r"(?<![\w.])(?<!\w-)[+-]?(\d+)(?:\.(\d+))?(?!\w)")
 
 
 def _normalise(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _number(whole: str, fraction: str | None) -> tuple[str, int]:
+    """
+    A number as written, without its sign, the zeros before it and the zeros after its decimal point, and how
+    many digits that leaves: ("38.8951", 6), and ("12000", 5) for both 12000 and 12000.0.
+    """
+    whole = whole.lstrip("0") or "0"
+    fraction = (fraction or "").rstrip("0")
+    return (f"{whole}.{fraction}" if fraction else whole), len(whole) + len(fraction)
+
+
+def _is_short_number(text: str) -> bool:
+    """True for a value that is one number with fewer than _MIN_NUMERIC_CHARS digits: 1200, 100.0, 3.5."""
+    match = _NUMBER_RE.fullmatch(text)
+    return bool(match) and _number(match.group(1), match.group(2))[1] < _MIN_NUMERIC_CHARS
 
 
 def collect_sensitive_values(*objs: Any) -> frozenset[str]:
@@ -388,8 +409,7 @@ def collect_sensitive_values(*objs: Any) -> frozenset[str]:
                 else:
                     walk(parsed, 1)          # a document, not a name: what it holds under a sensitive key counts
                     return
-            if (_MIN_VALUE_CHARS <= len(text) <= _MAX_VALUE_CHARS
-                    and not (text.isdigit() and len(text) < _MIN_NUMERIC_CHARS)
+            if (_MIN_VALUE_CHARS <= len(text) <= _MAX_VALUE_CHARS and not _is_short_number(text)
                     and text != REDACTED and not _TOKEN_RE.fullmatch(text)):
                 found.add(text)
 
@@ -418,25 +438,35 @@ def count_leaks(text: str, protected: Any) -> int:
 
     A value is found when it stands alone (not inside a longer word), in any case, and an identifier is also
     found with its characters split by spaces or punctuation: AAL123 is found in "AAL 123" and "AAL-123", and
-    G-ABCD in "GABCD". Numbers are compared as written, so a coordinate is found as -77.0364 or 77.0364 but
-    not as a run of unrelated digits.
+    G-ABCD in "GABCD". A number is compared as written: a coordinate is found as -77.0364 or 77.0364, and
+    12000.0 as 12000, but 38.8951 is not found in 388951. Every value is looked for. The cost is the size of the
+    values plus the size of the text, so there is no cap that would leave the callsigns of a large table unchecked.
     """
     if not text or not protected:
         return 0
-    values = sorted({v for v in protected if isinstance(v, str)}, key=lambda v: (-len(v), v))[:MAX_PROTECTED_VALUES]
-    names: set[str] = set()      # has a letter: may be written split into words
-    numbers: set[str] = set()    # digits only, with separators: compared whole
-    for value in values:
+    names: set[str] = set()          # has a letter: may be written split into words
+    digit_groups: set[str] = set()   # digits split by separators (123-456-789): compared as the run of digits
+    numbers: set[str] = set()        # one number: compared as written
+    for value in {v for v in protected if isinstance(v, str)}:
+        as_number = _NUMBER_RE.fullmatch(value.strip())
+        if as_number:
+            written, digits = _number(as_number.group(1), as_number.group(2))
+            if digits >= _MIN_NUMERIC_CHARS:
+                numbers.add(written)
+            continue
         key = _normalise(value)
         if len(key) < _MIN_VALUE_CHARS:
             continue
-        (names if any(c.isalpha() for c in key) else numbers).add(key)
-    if not names and not numbers:
+        if any(c.isalpha() for c in key):
+            names.add(key)
+        elif len(key) >= _MIN_NUMERIC_CHARS:
+            digit_groups.add(key)
+    if not names and not digit_groups and not numbers:
         return 0
-    words = [_normalise(w) for w in _WORDS_RE.findall(text)]
+    words = [_normalise(w) for w in _WORDS_RE.findall(text)] if names or digit_groups else []
     hits: set[str] = set()
     for i, word in enumerate(words):
-        if word in names or word in numbers:
+        if word in names or word in digit_groups:
             hits.add(word)
         joined = word
         for width in (2, 3):                 # an identifier split across up to three words
@@ -445,4 +475,7 @@ def count_leaks(text: str, protected: Any) -> int:
             joined += words[i + width - 1]
             if joined in names:
                 hits.add(joined)
+    if numbers:
+        in_text = {_number(m.group(1), m.group(2))[0] for m in _NUMBER_IN_TEXT_RE.finditer(text)}
+        hits |= {f"#{n}" for n in numbers & in_text}     # "#": a number never collides with an identifier's key
     return len(hits)
