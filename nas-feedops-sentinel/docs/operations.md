@@ -277,6 +277,13 @@ natively on the host (the launcher's `-WithLiveFeed` starts it with
 `jumpstart/run-live.ps1`). The edge stays a JVM JMS consumer: the SCDS Guideline
 makes JMS the only authorized API, so there is no Python AMQP client to write.
 
+The kit itself is not in this repository: its LICENSE is a restricted-rights
+notice, so `.gitignore` excludes everything under `jumpstart/` except our two
+files, `run-live.ps1` and `IngestFolderFileOutput.java`. After a fresh clone,
+download the kit from SCDS and unpack it over `nas-feedops-sentinel/jumpstart/`
+(it supplies `lib/jumpstart-jar-with-dependencies.jar`, which the launcher and the
+writer's compile step need).
+
 ### What the JVM hands over
 
 The stock kit acknowledges a message (JMS `AUTO_ACKNOWLEDGE`) when its output
@@ -366,8 +373,8 @@ runnable script.
 
 ### Launching
 
-`run-live.ps1` builds `jumpstart/lib/swim-ingest-output.jar` from the tracked source
-(it needs a JDK, `javac` and `jar`, not only a JRE), then runs the kit. By hand:
+`run-live.ps1` builds `jumpstart/lib/swim-ingest-output.jar` from the tracked writer
+source (it needs a JDK, `javac` and `jar`, not only a JRE), then runs the kit. By hand:
 
 ```bat
 cd jumpstart
