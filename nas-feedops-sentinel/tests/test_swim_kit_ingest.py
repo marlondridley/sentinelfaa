@@ -24,6 +24,7 @@ Break any of those three flags and every message lands in data/failed/.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import pytest
 from pathlib import Path
@@ -657,6 +658,97 @@ def test_only_discrete_surface_events_count_toward_a_spike(surface_event_type, s
     assert bool(found) is spikes
 
 
+def _publish_like_the_kit(source: Path, folder: Path, *, hold=None) -> Path:
+    """
+    Put `source` into `folder` the way the Kit does (IngestFolderFileOutput.persist): write a hidden temp file, then
+    rename it into place in one step, so the folder never lists a message that is still being written.
+
+    That is what lets a scan claim whatever it lists, at once: the polling watcher has no quiet period
+    (debounce_seconds applies only to the file-event path). shutil.copy does not keep the contract. It creates the
+    final name, writes it, then chmods it, and a scan that landed in that gap claimed the file mid-copy, so the copy
+    died with FileNotFoundError (the intermittent failure of the polling test below).
+
+    `hold`, if given, is called with the finished temp file just before it is published, to keep that gap open.
+    """
+    import os
+    import shutil
+
+    temp = folder / f".{source.name}.tmp"
+    shutil.copyfile(source, temp)
+    if hold is not None:
+        hold(temp)
+    final = folder / source.name
+    os.replace(temp, final)
+    return final
+
+
+class _ScanCounter:
+    """Counts the watcher's finished scans, so a test waits on them instead of sleeping and hoping."""
+
+    def __init__(self, monkeypatch) -> None:
+        import threading
+
+        from src import swim_file_ingest
+
+        self.done = 0
+        self._changed = threading.Condition()
+        real_scan = swim_file_ingest.scan_swim_folder
+
+        def counted(*args, **kwargs):
+            try:
+                return real_scan(*args, **kwargs)
+            finally:
+                with self._changed:
+                    self.done += 1
+                    self._changed.notify_all()
+
+        monkeypatch.setattr(swim_file_ingest, "scan_swim_folder", counted)
+
+    def wait_for(self, count: int, timeout: float = 10.0) -> bool:
+        """Block until `count` scans have finished in all; False if that took longer than `timeout`."""
+        with self._changed:
+            return self._changed.wait_for(lambda: self.done >= count, timeout)
+
+
+@contextlib.contextmanager
+def _polling_watcher(tmp_path: Path, monkeypatch, poll_seconds: float):
+    """
+    Run the live watcher in polling mode on tmp_path/log, with the ingest log stubbed out and its archive folders
+    under tmp_path. Yields (folder, ingested, scans): the folder it watches, the event count of every pass that
+    ingested anything, and a _ScanCounter. Stops the watcher on exit.
+    """
+    import threading
+
+    from src import swim_file_ingest
+
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
+    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", poll_seconds)
+    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
+    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
+    # Not under test, and with no database it only connects, fails and logs an error into a failing test's report.
+    monkeypatch.setattr(swim_file_ingest, "run_retention", lambda: None)
+    monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "processed")
+    monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "failed")
+    scans = _ScanCounter(monkeypatch)
+
+    watched = tmp_path / "log"
+    watched.mkdir()
+    ingested: list[int] = []
+    worker = threading.Thread(
+        target=swim_file_ingest.watch_swim_folder,
+        kwargs={"source_dir": watched, "reconcile_interval": 3600, "debounce_seconds": 0.2,
+                "on_events": lambda events, stats: ingested.append(len(events))},
+        daemon=True,
+    )
+    worker.start()
+    try:
+        yield watched, ingested, scans
+    finally:
+        swim_file_ingest.request_shutdown()
+        worker.join(timeout=10)
+        swim_file_ingest._shutdown_requested.clear()
+
+
 def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monkeypatch):
     """
     With SWIM_WATCH_POLLING (on in compose), a file the kit writes is picked up
@@ -664,40 +756,56 @@ def test_polling_watcher_ingests_a_new_file_within_seconds(tmp_path: Path, monke
     cross a Windows/macOS host bind mount, which is how the live watcher was
     waiting up to five minutes for every message.
     """
-    import shutil
-    import threading
+    import time
+
+    with _polling_watcher(tmp_path, monkeypatch, poll_seconds=0.5) as (watched, ingested, scans):
+        # The file has to arrive after the startup scan of the empty folder, or it proves nothing about polling.
+        assert scans.wait_for(1), "the watcher never made its startup scan"
+        _publish_like_the_kit(CAPTURE / "1787863348274", watched)
+        deadline = time.monotonic() + 10
+        while not ingested and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert ingested == [1], "the new TDLS message should be ingested within seconds"
+
+
+def test_polling_watcher_leaves_a_message_alone_until_the_writer_has_published_it(tmp_path: Path, monkeypatch):
+    """
+    The polling watcher claims whatever a scan lists, at once. That is safe only because the Kit never lists a
+    message it is still writing. Hold a writer in that gap while the watcher scans every 50 ms: nothing may be
+    listed, claimed or ingested until the rename, and then the message is ingested whole, once.
+
+    This is the flake in test_polling_watcher_ingests_a_new_file_within_seconds made certain. Its stand-in writer was
+    shutil.copy, which creates the final name before it has finished with the file, so a scan that landed in that
+    gap claimed it out from under the copy (FileNotFoundError). It was intermittent because the test also slept
+    exactly three poll intervals before copying, so the copy landed on a scan tick. Make _publish_like_the_kit an
+    in-place copy and this test fails every time.
+    """
     import time
 
     from src import swim_file_ingest
 
-    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLLING", True)
-    monkeypatch.setattr(config.settings, "SWIM_WATCH_POLL_SECONDS", 0.5)
-    monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
-    monkeypatch.setattr(swim_file_ingest, "_append_log_entries", lambda entries: None)
-    monkeypatch.setattr(swim_file_ingest, "PROCESSED_DIR", tmp_path / "processed")
-    monkeypatch.setattr(swim_file_ingest, "FAILED_DIR", tmp_path / "failed")
+    name = "1787863348274"
+    processed = tmp_path / "processed" / name
 
-    watched = tmp_path / "log"
-    watched.mkdir()
-    got: list[int] = []
-    worker = threading.Thread(
-        target=swim_file_ingest.watch_swim_folder,
-        kwargs={"source_dir": watched, "reconcile_interval": 3600, "debounce_seconds": 0.2,
-                "on_events": lambda events, stats: got.append(len(events))},
-        daemon=True,
-    )
-    worker.start()
-    try:
-        time.sleep(1.5)  # past the startup scan of an empty folder
-        shutil.copy(CAPTURE / "1787863348274", watched / "1787863348274")
+    with _polling_watcher(tmp_path, monkeypatch, poll_seconds=0.05) as (watched, ingested, scans):
+        assert scans.wait_for(1), "the watcher never made its startup scan"
+
+        def hold(temp: Path) -> None:
+            # Several scans start and finish while the message is complete on disk but not yet published.
+            assert scans.wait_for(scans.done + 3), "the watcher stopped scanning"
+            assert ingested == [], "the watcher ingested a message the writer had not published"
+            assert not (watched / swim_file_ingest.INFLIGHT_DIR).exists(), "the watcher claimed it"
+            assert swim_file_ingest.message_files(watched) == [], "a scan was shown it"
+            assert temp.exists()
+
+        _publish_like_the_kit(CAPTURE / name, watched, hold=hold)
+
         deadline = time.monotonic() + 10
-        while not got and time.monotonic() < deadline:
-            time.sleep(0.2)
-        assert got == [1], "the new TDLS message should be ingested within seconds"
-    finally:
-        swim_file_ingest.request_shutdown()
-        worker.join(timeout=10)
-        swim_file_ingest._shutdown_requested.clear()
+        while not processed.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert processed.exists(), "once published, the message is ingested and archived"
+        assert scans.wait_for(scans.done + 2), "the watcher stopped scanning"
+        assert ingested == [1], "and ingested once, not again by a later scan"
 
 
 # ── One consumer per file ─────────────────────────────────────────────────────
