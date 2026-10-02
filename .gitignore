@@ -89,6 +89,16 @@ datarawswim_live/
 jumpstart-latest/
 *.zip
 
+# The FAA SCDS Jumpstart Kit (L3Harris). Its LICENSE is a restricted-rights
+# notice, so the kit is not redistributed: everything under jumpstart/ is
+# ignored except our own two files, the live launcher and the ingest writer.
+# Download the kit from SCDS and unpack it over nas-feedops-sentinel/jumpstart/.
+# (`**/` re-includes the directories so git can reach the two files.)
+nas-feedops-sentinel/jumpstart/**
+!nas-feedops-sentinel/jumpstart/**/
+!nas-feedops-sentinel/jumpstart/run-live.ps1
+!nas-feedops-sentinel/jumpstart/src/main/java/com/harris/cinnato/outputs/IngestFolderFileOutput.java
+
 # ── Local Claude Code settings (per-developer, never shared) ──────────────────
 .claude/settings.local.json
 
