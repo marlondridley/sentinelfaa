@@ -8,6 +8,7 @@ than it can show, and when docs/framework-mapping.md no longer matches what the 
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 
 import pytest
@@ -37,13 +38,39 @@ def _resolve(path: str) -> Path | None:
     """
     A path from the repository root, or None when this run cannot see it: the test image holds only some of the
     application folder and none of the rest of the repository. A developer's checkout sees all of it.
+
+    CI also runs this test against the whole checkout with REQUIRE_FULL_CHECKOUT=1, where a path it cannot see is
+    a failure, not a skip: otherwise the files the image does not carry (the workflows, instraclustr/, the README)
+    would never be checked by anything that blocks a merge.
     """
+    def unseen() -> None:
+        assert not os.environ.get("REQUIRE_FULL_CHECKOUT"), (
+            f"{path}: this run cannot see it, and REQUIRE_FULL_CHECKOUT says it must")
+
     if path.startswith("nas-feedops-sentinel/"):
         inside = path.removeprefix("nas-feedops-sentinel/")
         if not FULL_CHECKOUT and inside.split("/")[0] not in IMAGE_DIRS:
-            return None
+            return unseen()
         return APP / inside
-    return REPO / path if (REPO / "nas-feedops-sentinel").is_dir() else None
+    if not (REPO / "nas-feedops-sentinel").is_dir():
+        return unseen()
+    return REPO / path
+
+
+def test_a_run_that_must_see_the_whole_checkout_fails_instead_of_skipping_what_it_cannot_see(monkeypatch, tmp_path):
+    monkeypatch.setitem(globals(), "FULL_CHECKOUT", False)                 # what the test image looks like
+    monkeypatch.setitem(globals(), "REPO", tmp_path)                       # and it has no repository around it
+    monkeypatch.delenv("REQUIRE_FULL_CHECKOUT", raising=False)
+    assert _resolve("nas-feedops-sentinel/cve-allowlist.md") is None       # skipped, as in the image
+    assert _resolve(".github/workflows/pyapp-ci.yml") is None
+    assert _resolve("nas-feedops-sentinel/src/redaction.py") is not None   # in the image: never a problem
+
+    monkeypatch.setenv("REQUIRE_FULL_CHECKOUT", "1")
+    with pytest.raises(AssertionError, match="cve-allowlist.md"):
+        _resolve("nas-feedops-sentinel/cve-allowlist.md")
+    with pytest.raises(AssertionError, match="pyapp-ci.yml"):
+        _resolve(".github/workflows/pyapp-ci.yml")
+    assert _resolve("nas-feedops-sentinel/src/redaction.py") is not None
 
 
 def test_every_file_the_mapping_cites_exists():
@@ -130,7 +157,7 @@ def test_the_document_says_it_is_a_mapping_and_what_was_verified():
 # ── A reference must be real, and a row must not overstate ───────────────────────────────────────────
 
 @pytest.mark.parametrize("ref", ["GOVERN 7.1", "GOVERN 1.8", "MAP 6.1", "MAP 3.6", "MEASURE 2.14", "MANAGE 4.4",
-                                 "FOO 1.1", "govern 1.1", "MAP 1", "MAP 1.0", ""])
+                                 "FOO 1.1", "govern 1.1", "MAP 1", "MAP 1.0", "", "GOVERN 1.1\n", " GOVERN 1.1"])
 def test_a_nist_reference_that_is_not_a_subcategory_is_refused(ref):
     raw = _raw()
     raw["controls"][0]["nist"] = [{"ref": ref, "fit": "direct"}]
@@ -139,7 +166,7 @@ def test_a_nist_reference_that_is_not_a_subcategory_is_refused(ref):
         fm.Mapping.model_validate(raw)
 
 
-@pytest.mark.parametrize("ref", ["A.1.2", "A.11.2", "A.6.2.9", "A.5.6", "A.6.2", "clause 3", "clause 11", "6.1.4", ""])
+@pytest.mark.parametrize("ref", ["A.1.2", "A.11.2", "A.6.2.9", "A.5.6", "A.6.2", "clause 3", "clause 11", "6.1.4", "", "clause 4\n"])
 def test_an_iso_reference_that_is_not_a_control_or_a_clause_is_refused(ref):
     raw = _raw()
     raw["controls"][0]["iso"] = [{"ref": ref, "fit": "direct"}]
