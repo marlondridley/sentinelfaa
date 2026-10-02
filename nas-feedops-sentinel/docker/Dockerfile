@@ -88,8 +88,9 @@ COPY scripts/ ./scripts/
 # Deployment files the tests pin (Keycloak serves HTTPS only; the realm fits
 # Keycloak's columns; docs/operations.md and the launcher/edge source are
 # checked by tests/test_swim_launcher.py -- see .dockerignore for what of
-# jumpstart/ actually reaches this COPY). Test stage only; not in the shipped image.
-COPY docker-compose.yml ./
+# jumpstart/ actually reaches this COPY; .env.example is pinned against compose by
+# tests/test_model_halt_deployment.py). Test stage only; not in the shipped image.
+COPY docker-compose.yml .env.example ./
 COPY keycloak/realm-nas-sentinel.json ./keycloak/
 COPY .streamlit/secrets.toml.example .streamlit/config.toml ./.streamlit/
 COPY docs/ ./docs/
