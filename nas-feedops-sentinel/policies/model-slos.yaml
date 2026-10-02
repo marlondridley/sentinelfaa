@@ -26,6 +26,11 @@
 # hundred calls against a 95% objective as an exhausted budget
 # (tests/test_agt_known_bugs.py).
 #
+# Each objective also says what its number is for (the Agent Evaluation page
+# shows all three beside it): `data` is what it is measured from, and
+# `watch_officer` / `system_engineer` are what that person does when it is
+# off target. A number nobody can act on has no place on the page.
+#
 # `required: false` objectives never block a verdict for lack of evidence
 # (operators decide rarely; not every gateway reports cost), but a miss on
 # one still means NOT READY. `min_samples` is how much evidence an
@@ -39,6 +44,17 @@ objectives:
   # ── The health table (Agent Evaluation & Governance page) ───────────────
   - name: decision_quality
     label: Decision quality
+    data: >
+      Each investigation's evaluation: the grounding gate's check of the
+      model's claims, and the operator's decision once one is recorded.
+    watch_officer: >
+      Below target, read the investigation's evidence list before deciding;
+      do not rely on its summary.
+    system_engineer: >
+      Open the lowest-scoring investigations. A failed grounding criterion
+      points at the agent named; a failed correctness criterion means
+      operators decided against the recommendation, so review the Critic's
+      prompt against those decisions.
     description: >
       Mean score of each investigation's evaluation (agent-sre
       EvaluationEngine): grounding of the model's claims, and whether the
@@ -48,6 +64,15 @@ objectives:
 
   - name: evidence_grounding
     label: Evidence grounding
+    data: >
+      The grounding gate's check of every claim a model made, per
+      investigation: does each cite evidence that was collected?
+    watch_officer: >
+      Below target, treat a line under "Established by the evidence" as
+      unverified unless you can follow its evidence ids.
+    system_engineer: >
+      Open the investigations listed; each names the agent whose claims were
+      rejected. Fix that agent's prompt, or the evidence it is given.
     description: >
       Mean share of each investigation's model claims that cite only
       evidence that was collected.
@@ -56,6 +81,15 @@ objectives:
 
   - name: human_override_rate
     label: Human override
+    data: >
+      Operators' recorded decisions on the recommendations the Critic made
+      with a stated confidence.
+    watch_officer: >
+      It is your overrides being counted. Keep writing the decision note: it
+      is how the reason is found later.
+    system_engineer: >
+      Read the override notes in the decision audit trail. Edits of the same
+      kind, repeated, are a recommendation to rewrite.
     description: Decided actions the operator overrode (edited the recommendation before sign-off).
     max: 0.20
     min_samples: 10
@@ -63,6 +97,14 @@ objectives:
 
   - name: unsupported_claim_rate
     label: Unsupported claims
+    data: >
+      Every claim a model made, as judged by the grounding gate.
+    watch_officer: >
+      Above the limit, expect more "rules only" investigations: an agent
+      whose claims are rejected falls back to its rules.
+    system_engineer: >
+      Each row names the agent that was rejected. Check that agent's prompt,
+      and whether evidence collection returned what it needed.
     description: >
       Model claims the grounding gate rejected for citing nothing, or
       evidence never collected: the measured hallucination rate.
@@ -71,12 +113,29 @@ objectives:
 
   - name: investigation_latency_p95_seconds
     label: P95 investigation time
+    data: >
+      The opened and sealed times on each investigation record.
+    watch_officer: >
+      Above the limit, a new review can wait that long for its
+      investigation; if it cannot wait, decide on the alert and its
+      readings.
+    system_engineer: >
+      Each row names its slowest stage. Check the gateway's latency and
+      retries for that agent (Latency, by agent) before raising the limit.
     description: 95th percentile time from an investigation opening to its sealed record.
     max: 120
     min_samples: 5
 
   - name: cost_per_investigation_usd
     label: Cost / investigation
+    data: >
+      The gateway's reported cost of each model call, summed per
+      investigation.
+    watch_officer: >
+      Nothing to do.
+    system_engineer: >
+      Open the costliest investigations: look for retries, a long context
+      (Orchestration, context size by agent) or duplicate calls.
     description: Mean gateway-reported model spend per investigation that used a model.
     max: 0.25
     min_samples: 5
@@ -84,6 +143,15 @@ objectives:
 
   - name: agent_failure_rate
     label: Agent failure
+    data: >
+      Each agent step that tried a model, from the investigation's step log,
+      and each Critic or Planner call.
+    watch_officer: >
+      Above the limit, more investigations are "rules only". They are still
+      valid; the AI's contribution is absent.
+    system_engineer: >
+      Each row names the agent and why it fell back. Check provider
+      availability and output validity for that agent first.
     description: >
       Agent invocations that tried a model and fell back to rules, or
       errored.
@@ -92,6 +160,15 @@ objectives:
 
   - name: missed_escalation_rate
     label: Missed escalation
+    data: >
+      Reviews an operator approved for escalation, against what the Critic
+      had said.
+    watch_officer: >
+      Do not read "don't escalate" from the AI as clearance: these are the
+      cases where a person escalated anyway.
+    system_engineer: >
+      Each row is a real escalation the Critic argued against. Review its
+      reasoning on those alerts and adjust its prompt.
     description: >
       Actions an operator approved for escalation where the Critic had said
       not to escalate.
@@ -101,6 +178,15 @@ objectives:
 
   - name: audit_completeness
     label: Audit completeness
+    data: >
+      Each investigation's audit gate: the sealed record's hash, model
+      provenance, model calls on record, and the human decision.
+    watch_officer: >
+      A failing row is an investigation whose record cannot be fully vouched
+      for: say so in your decision note and tell the system engineer.
+    system_engineer: >
+      Any miss blocks readiness. The row says which audit check failed; a
+      hash mismatch is an integrity incident, not a tuning task.
     description: >
       Investigations whose audit gate passed: sealed record verifies,
       model provenance recorded, every model call on record, human decision
@@ -111,36 +197,88 @@ objectives:
   # ── Reliability and governance ──────────────────────────────────────────
   - name: policy_compliance
     label: Policy compliance
+    data: >
+      Every model call attempted, and whether the model-use and tool-use
+      policies allowed it.
+    watch_officer: >
+      Nothing to do.
+    system_engineer: >
+      Each refusal names its policy rule. One refusal is the policy working;
+      a pattern means an agent attempts what it should not, or a policy is
+      too tight.
     description: Model calls the model-use and tool-use policies allowed, out of all attempted.
     target: 0.99
 
   - name: availability
     label: Model availability
+    data: >
+      Every model call that was sent, and how it ended.
+    watch_officer: >
+      Below target, expect "rules only" investigations and slower summaries
+      until the provider recovers.
+    system_engineer: >
+      Rows show the failed calls by agent and error. Check the model gateway
+      and the provider (Reliability, Providers).
     description: Model calls sent that came back with a usable answer.
     target: 0.95
 
   - name: output_validity
     label: Output validity
+    data: >
+      Every answer a model returned, checked against its output schema.
+    watch_officer: >
+      Nothing to do.
+    system_engineer: >
+      Rows name the agent whose answers needed repair or were rejected.
+      Tighten that agent's output instructions or its schema.
     description: Answers that met the output schema without the repair request.
     target: 0.90
 
   - name: model_call_latency_p95_seconds
     label: P95 model call
+    data: >
+      The wall time of each model call that was sent, retries and repair
+      included.
+    watch_officer: >
+      Nothing to do.
+    system_engineer: >
+      The slowest calls are listed by agent. Look at that agent's retries
+      and prompt size before the provider.
     description: 95th percentile wall time of one model call, retries and repair included.
     max: 30
 
   - name: false_escalation_rate
     label: False escalation
+    data: >
+      Reviews where the Critic recommended escalating, and what the operator
+      decided.
+    watch_officer: >
+      A high rate means the AI over-escalates: weigh an "escalate"
+      suggestion against the readings, not on its own.
+    system_engineer: >
+      Each row is an escalation an operator rejected; the reason is its note
+      in the audit trail. Use them to tighten the Critic's prompt.
     description: Escalations the Critic recommended that the operator rejected.
     max: 0.30
     min_samples: 10
     required: false
 
   - name: calibration_error
-    label: Confidence calibration (ECE)
-    description: >
-      Expected calibration error of the Critic's stated confidence against
+    label: Confidence calibration
+    data: >
+      Each decided recommendation: the Critic's stated confidence, and
       whether the operator agreed with it.
+    watch_officer: >
+      Above the limit, do not read the AI's confidence percentage as a
+      probability.
+    system_engineer: >
+      Rows show confident verdicts an operator disagreed with. Recalibrate
+      the Critic's confidence instructions; do not raise the limit.
+    description: >
+      How far the Critic's stated confidence is from how often operators
+      agreed with it (the expected calibration error, ECE). 0% is perfectly
+      calibrated; 15% means its confidence is off by fifteen points on
+      average.
     max: 0.15
     min_samples: 30
     required: false

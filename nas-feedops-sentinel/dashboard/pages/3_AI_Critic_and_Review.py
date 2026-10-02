@@ -1,28 +1,38 @@
 """
-AI Critic & Human Review: Critic verdicts, the HITL execution-gate review
-queue, and the decision audit trail.
+Review Queue: the CRITICAL conditions that need a person's decision, what the
+AI suggests for each, and the audit trail of what was decided.
 
-Answers mission question 7: what should the operator do next -- and turns
-that into an attributed approve / monitor / override / reject workflow.
+This is the page where work is done. The Dashboard says what needs someone;
+the Alert Log is the record of every reading; here a named operator approves,
+overrides, rejects or keeps monitoring one review at a time.
 
 The one invariant on this page: nothing an AI produces executes anything.
 The Critic's verdict is advisory, the staged action sits PENDING until a
 human decides, and every transition is written to `action_audit_log` with
 the actor string resolved by bootstrap_page().
 
-The queue is a triage table, one row per review (one review per condition:
-src/execution_gate.py), filtered by facility, AI suggestion, alert type and
-confidence. A review's full detail -- investigation, evaluation, ticket, the
-readings it covers -- opens in a drawer, where it is approved, overridden,
-monitored or rejected one at a time. Reject and Continue monitoring can also
-be applied to selected rows at once; each review still gets its own audit
-row, decided by the same gate call.
+Everything on it counts reviews (one per condition: src/execution_gate.py),
+never readings, and its three numbers are its own rows (src/review_queue.py):
+
+  Awaiting decision       nobody has answered yet -- the queue
+  AI suggests escalation  those of the queue the Critic would escalate
+  Monitoring              answered "keep watching": out of the queue, still
+                          open, still decidable from its detail
+
+A tile opens the rows it counts (?show=awaiting|escalate|monitoring). A
+review's full detail -- investigation, evaluation, ticket, the readings it
+covers -- opens in a drawer (?review=<action id> opens one by link; a
+decided one opens read-only, as the record of who decided and why). Reject
+and Continue monitoring can also be applied to selected rows at once; each
+review still gets its own audit row, decided by the same gate call.
+
+The Critic's own activity, reading by reading, is at the bottom: it is
+evidence about the AI, not a second queue.
 """
 from __future__ import annotations
 
 import hashlib
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,10 +44,10 @@ import pandas as pd
 import streamlit as st
 
 from lib import agent_eval, safe_text, theme
-from lib.data import format_ts, parse_json_str_list
+from lib.data import format_ts, parse_json_str_list, waited
 from lib.investigation_view import load_investigation, render_investigation
 from lib.page_setup import bootstrap_page
-from src import storage
+from src import review_queue, storage
 from src.async_bridge import run_async as run
 from src.auth import AuthorizationError, Decision, authorize, can_decide, format_actor
 from src.config import settings
@@ -45,13 +55,11 @@ from src.execution_gate import (
     DecisionNotRecorded,
     decide_staged_action,
     get_action_audit_log,
-    get_pending_staged_actions,
     get_recent_staged_actions,
 )
-from src.storage import get_ticket_by_action_id
+from src.review_queue import OpenReview
 
-_principal = bootstrap_page(page_title="AI Critic & Review — PCT FeedOps Sentinel", page_icon="\U0001F916")
-
+_principal = bootstrap_page(page_title="Review Queue — PCT FeedOps Sentinel", page_icon="\U0001F916")
 
 
 def _allowed(decision: Decision) -> bool:
@@ -82,63 +90,43 @@ def _decide(action_id: str, decision: Decision, note: str | None, **override) ->
     st.rerun()
 
 
-alerts_raw = run(storage.get_recent_alerts(limit=500))
-
 theme.page_header(
-    "AI Critic & Human Review",
-    "Which CRITICAL alerts are genuinely safety-significant, and which are data artifacts?",
+    "Review Queue",
+    "Which CRITICAL conditions need a decision, and what does the AI suggest?",
     detail=(
-        "The Critic reads alerts and their surrounding events and proposes an "
-        "escalation verdict. It cannot act on that verdict. Anything it recommends is "
-        "staged as a PENDING action that stays inert until a named human approves, "
-        "overrides or rejects it, and every one of those decisions is appended to the "
-        "immutable audit log at the bottom of this page."
+        "One review per condition, however many readings it has. The Critic reads a condition's "
+        "alerts and events and suggests whether to escalate; it cannot act on that. Each review "
+        "stays inert until a named person approves, overrides or rejects it. Continue monitoring "
+        "takes it out of the queue and keeps it open. Every decision is appended to the audit "
+        "trail below."
     ),
 )
 
-# ── Reviews: loaded once, opened from the verdicts and from the queue ──────────
-_pending_actions = run(get_pending_staged_actions())
-_by_id = {a.action_id: a for a in _pending_actions}
-
+# ── Open reviews: loaded once, the same rows behind every number on the page ───
+alerts_raw = run(storage.get_recent_alerts(limit=500))
 _alert_by_id = {a.get("alert_id"): a for a in alerts_raw}
-# Newest verdict per alert: the storage call returns newest first.
-_verdict = {}
-for _v in run(storage.get_critic_verdicts_for_alerts([a.alert_id for a in _pending_actions if a.alert_id])):
-    _verdict.setdefault(_v["alert_id"], _v)
-_tickets = {a.action_id: run(get_ticket_by_action_id(a.action_id)) for a in _pending_actions}
+
+_reviews = run(review_queue.open_reviews())
+_by_id = {r.action.action_id: r for r in _reviews}
+_awaiting = review_queue.awaiting(_reviews)
+_monitored = review_queue.monitored(_reviews)
+_escalations = review_queue.escalations(_reviews)
 
 
-def _suggests(action) -> str:
-    v = _verdict.get(action.alert_id) or {}
-    if v.get("confidence") is None:
-        return "No AI review"
-    return "Escalate" if v.get("escalate") else "Don't escalate"
-
-
-def _summary(action) -> str:
+def _summary(review: OpenReview) -> str:
     """The Critic's one-line summary; a verdict with none (older, or the model left it out) shows its verdict and confidence."""
-    v = _verdict.get(action.alert_id) or {}
-    if v.get("bluf"):
-        return v["bluf"]
-    if v.get("confidence") is not None:
-        return f"No written summary for this review. The AI says {_suggests(action).lower()}, {v['confidence']:.0%} confident."
+    if (review.verdict or {}).get("bluf"):
+        return review.verdict["bluf"]
+    if review.confidence is not None:
+        return (f"No written summary for this review. The AI says {review.suggests.lower()}, "
+                f"{review.confidence:.0%} confident.")
     return "Not reviewed by the AI yet."
 
 
-def _waited(since: datetime | None) -> str:
-    if since is None:
-        return "—"
-    minutes = int((datetime.now(timezone.utc) - since).total_seconds() // 60)
-    return f"{minutes // 1440} d {minutes % 1440 // 60} h" if minutes >= 1440 else (
-        f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min")
-
-
-def _review_detail(action) -> None:
+def _review_detail(review: OpenReview) -> None:
     """Everything behind one review: summary, readings, investigation, evaluation, ticket, decision."""
-    ticket = _tickets.get(action.action_id)
-    verdict = _verdict.get(action.alert_id) or {}
+    action, ticket, verdict = review.action, review.ticket, review.verdict or {}
     origin = (_alert_by_id.get(action.alert_id) or {}).get("data_origin", "unknown")
-    conf = verdict.get("confidence")
     st.markdown(
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">'
         + theme.status_chip(ticket.posture if ticket else "ACTION")
@@ -147,16 +135,25 @@ def _review_detail(action) -> None:
         + ('<span class="chip" style="color:' + theme.ORANGE5 + ";border-color:" + theme.TONES["warn"][1]
            + ';padding:2px 8px;font-size:13px;">' + theme._esc(origin.upper()) + " DATA</span>"
            if origin != "live" else "")
-        + '<span class="mono" style="margin-left:auto;font-size:13px;color:' + theme.GRAY1 + ';">AI suggests '
-        + theme._esc(_suggests(action).lower()) + (f" · {conf:.0%}" if conf is not None else "") + "</span></div>",
+        + '<span class="mono" style="margin-left:auto;font-size:13px;color:' + theme.GRAY1 + ';">'
+        + theme._esc(review.ai_line) + "</span></div>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"**AI summary:** {safe_text.plain(_summary(action))}")
+    if review.monitoring:
+        st.caption(
+            f"Being monitored since {format_ts(ticket.decided_at)[:16].replace('T', ' ')} UTC"
+            + (f" by {safe_text.plain(ticket.decided_by)}" if ticket.decided_by else "")
+            + (f": {safe_text.plain(ticket.decision_note)}" if ticket.decision_note else ".")
+        )
+    st.markdown(f"**AI summary:** {safe_text.plain(_summary(review))}")
     covered = run(storage.get_covered_alert_ids(action.action_id))
     first, last = action.first_seen_at or action.created_at, action.last_seen_at or action.created_at
+    assessed = verdict.get("verdicts") or 0
     st.markdown(
         f"**{action.occurrences:,} reading(s)** of this condition, {format_ts(first)[:16].replace('T', ' ')}"
         f" to {format_ts(last)[:16].replace('T', ' ')} UTC."
+        + (f" The AI assessed {assessed:,} of them; {verdict.get('escalations') or 0:,} said escalate."
+           if assessed > 1 else "")
     )
     known = [_alert_by_id[a] for a in covered if a in _alert_by_id]
     if known:
@@ -179,6 +176,23 @@ def _review_detail(action) -> None:
         if ticket.critic_rationale:
             with st.expander("AI Critic rationale"):
                 st.markdown(safe_text.plain(ticket.critic_rationale))
+
+    if action.status != "PENDING":
+        # No longer open: the record of what happened, with nothing left to decide.
+        when = f" on {format_ts(action.decided_at)[:16].replace('T', ' ')} UTC" if action.decided_at else ""
+        st.markdown(
+            f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.GRAY3};'
+            f'background:{theme.DARK_GRAY2};border-radius:3px;padding:8px 11px;margin:10px 0;'
+            f'font-size:14px;color:{theme.GRAY5};"><b>{theme._esc(action.status.title())}</b>'
+            + (f" by {theme._esc(action.decided_by)}" if action.decided_by else "") + theme._esc(when)
+            + (f'<div style="margin-top:4px;color:{theme.GRAY3};">Note: {theme._esc(action.decision_note)}</div>'
+               if action.decision_note else "")
+            + (f'<div style="margin-top:4px;color:{theme.GRAY3};">Signed off as: '
+               f'{theme._esc(action.overridden_recommendation)}</div>' if action.overridden_recommendation else "")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        return
 
     st.markdown(
         f'<div style="border:1px solid {theme.DARK_GRAY3};border-left:3px solid {theme.BLUE5};'
@@ -208,7 +222,7 @@ def _review_detail(action) -> None:
         _decide(action.action_id, Decision.APPROVE, note)
     if b2.button("Continue monitoring", key=f"monitor_{action.action_id}", use_container_width=True,
                  disabled=not _allowed(Decision.MONITOR),
-                 help=_why_not(Decision.MONITOR) or "Keep the staged action PENDING; mark the ticket MONITORING"):
+                 help=_why_not(Decision.MONITOR) or "Take it out of the queue and keep it open, under Monitoring"):
         _decide(action.action_id, Decision.MONITOR, note)
     if b3.button("Reject", key=f"reject_{action.action_id}", use_container_width=True,
                  disabled=not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
@@ -222,7 +236,7 @@ def _open_review(action_id: str) -> None:
 
 @st.dialog("Confirm decision")
 def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
-    chosen = [_by_id[a] for a in action_ids if a in _by_id]
+    chosen = [_by_id[a].action for a in action_ids if a in _by_id]
     verb = {Decision.REJECT: "Reject", Decision.MONITOR: "Continue monitoring"}[decision]
     st.markdown(f"**{verb}** {len(chosen)} review(s), covering {sum(a.occurrences for a in chosen):,} reading(s):")
     st.markdown("\n".join(f"- {a.airport_code or '—'} · {a.alert_type} · {a.occurrences:,} reading(s)"
@@ -249,217 +263,150 @@ def _confirm_bulk(decision: Decision, action_ids: list[str]) -> None:
         st.rerun()
 
 
-# A link that names a review (the attention strip, the Overview's investigation
-# card) opens it, once: the parameter is dropped so closing the drawer is final.
+# A link that names a review (the Dashboard, the attention strip, the Alert Log,
+# a number on Agent Evaluation) opens it, once: the parameter is dropped so
+# closing the drawer is final. One that is no longer open opens read-only.
 _linked = st.query_params.get("review")
 if _linked:
     del st.query_params["review"]
+    if _linked not in _by_id:
+        _closed = run(review_queue.find(_linked))
+        if _closed is not None:
+            _by_id[_linked] = _closed
     if _linked in _by_id:
         _open_review(_linked)
     else:
-        st.info("That review has already been decided or merged; the queue below shows what is open.")
+        st.info("No review has that id; the queue below shows what is open.")
 
-# ── Critic verdicts ───────────────────────────────────────────────────────────
-_critic_rows_all = run(storage.get_recent_critic_results(limit=50))
-
-_cri_total = len(_critic_rows_all)
-_cri_escalate = sum(1 for r in _critic_rows_all if r.get("escalate"))
-_cri_cascade = sum(1 for r in _critic_rows_all if r.get("pattern") == "CASCADE_FAILURE")
-_cri_isolated = sum(1 for r in _critic_rows_all if r.get("pattern") == "ISOLATED_FAULT")
-_cri_avg_conf = (
-    sum(r.get("confidence", 0) or 0 for r in _critic_rows_all) / _cri_total
-) if _cri_total else None
-
-theme.section(
-    "Critic verdicts",
-    "Advisory only — no verdict here has executed anything.",
-    tone="bad" if _cri_escalate else "info",
-)
+# ── The numbers: each one is rows of the table below, and opens them ──────────
+AWAITING, MONITORING = "awaiting", "monitoring"
+# ?show=escalate is the awaiting view with the AI's escalations picked out.
+_show = str(st.query_params.get("show") or "").lower()
+_SHOW = "SHOW ↓"
 
 theme.kpi_row(
     [
-        theme.kpi(
-            "Alerts evaluated", f"{_cri_total:,}", tone="info",
-            foot="Most recent 50 Critic runs",
-            href=theme.drill_href("alerts", severity="CRITICAL"),
-            drill="SOURCE →",
-        ),
-        theme.kpi(
-            "Escalations suggested", f"{_cri_escalate:,}",
-            tone="bad" if _cri_escalate else "ok",
-            foot="Awaiting a human decision below" if _cri_escalate else "None suggested",
-        ),
-        theme.kpi(
-            "Mean confidence",
-            f"{_cri_avg_conf:.0%}" if _cri_avg_conf is not None else "—",
-            tone="neutral",
-            foot="Model-reported — not a measured accuracy",
-        ),
-        theme.kpi(
-            "Cascade failures", f"{_cri_cascade:,}",
-            tone="bad" if _cri_cascade else "ok",
-            foot="Multiple services failing together",
-        ),
-        theme.kpi(
-            "Isolated faults", f"{_cri_isolated:,}", tone="info",
-            foot="Contained to one service or facility",
-        ),
+        theme.kpi("Awaiting decision", f"{len(_awaiting):,}", tone="bad" if _awaiting else "ok",
+                  foot=(f"{sum(r.action.occurrences for r in _awaiting):,} reading(s) behind them"
+                        if _awaiting else "Nothing waiting for anyone"),
+                  href=theme.drill_href("critic", show=AWAITING) if _awaiting else None, drill=_SHOW),
+        theme.kpi("AI suggests escalation", f"{len(_escalations):,}", tone="bad" if _escalations else "ok",
+                  foot=f"of the {len(_awaiting):,} awaiting a decision" if _awaiting else "Nothing to assess",
+                  href=theme.drill_href("critic", show="escalate") if _escalations else None, drill=_SHOW),
+        theme.kpi("Monitoring", f"{len(_monitored):,}", tone="warn" if _monitored else "neutral",
+                  foot="Answered “keep watching”; still open" if _monitored else "None",
+                  href=theme.drill_href("critic", show=MONITORING) if _monitored else None, drill=_SHOW),
+        theme.kpi("Longest wait", waited(min((r.waiting_since for r in _awaiting), default=None)),
+                  tone="warn" if _awaiting else "neutral",
+                  foot="Oldest review awaiting a decision" if _awaiting else "No review is waiting"),
     ],
-    columns=5,
+    columns=4,
 )
 
-if not _critic_rows_all:
-    st.info(
-        "No Critic verdicts yet. Configure LLM_PROVIDER in .env and trigger a CRITICAL "
-        "alert to populate this view."
-    )
-else:
-    _alert_id_to_row = {a.get("alert_id"): a for a in alerts_raw}
-    _PATTERN_TONE = {
-        "CASCADE_FAILURE": "bad",
-        "ISOLATED_FAULT": "warn",
-        "WEATHER_CORRELATED": "warn",
-        "DATA_ANOMALY": "info",
-        "TRANSIENT": "neutral",
-        "UNKNOWN": "neutral",
-    }
-    _latest_verdicts = st.expander(f"Latest Critic verdicts ({min(10, _cri_total)})", expanded=False)
-    _covering = run(storage.get_covering_actions([r.get("alert_id") for r in _critic_rows_all[:10]]))
-    _cited_events = run(storage.get_events_by_ids(sorted({
-        e for r in _critic_rows_all[:10] for e in parse_json_str_list(r.get("citations", "[]"), "citations")})))
-    for cr in _critic_rows_all[:10]:
-        alert_row = _alert_id_to_row.get(cr.get("alert_id"), {})
-        conf = cr.get("confidence")
-        conf_str = f"{conf:.0%}" if conf is not None else "N/A"
-        pattern = str(cr.get("pattern", "UNKNOWN"))
-        escalate = bool(cr.get("escalate"))
-        reasoning = cr.get("reasoning", "")
-        alert_type = alert_row.get("alert_type", "—")
-        airport = alert_row.get("airport_code", "—")
-        service = alert_row.get("service_name", "—")
-        _ptone = _PATTERN_TONE.get(pattern, "neutral")
-
-        with _latest_verdicts, st.container(border=True):
-            st.markdown(
-                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
-                '<span style="font-size:16px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
-                + theme._esc(alert_type) + "</span>"
-                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
-                + theme._esc(airport) + " · " + theme._esc(service) + "</span>"
-                '<span class="chip" style="color:' + theme.TONES[_ptone][0]
-                + ";border-color:" + theme.TONES[_ptone][1]
-                + ';padding:2px 8px;font-size:13px;">' + theme._esc(pattern) + "</span>"
-                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
-                "confidence " + theme._esc(conf_str) + "</span>"
-                + (
-                    '<span class="chip" style="color:' + theme.RED5
-                    + ";border-color:" + theme.TONES["bad"][1]
-                    + ";background:" + theme.TONES["bad"][2]
-                    + ';margin-left:auto;padding:2px 9px;font-size:13px;">'
-                    "ESCALATE TO SUPERVISOR</span>"
-                    if escalate else
-                    '<span class="mono" style="margin-left:auto;font-size:13px;color:'
-                    + theme.GRAY1 + ';">no escalation proposed</span>'
-                )
-                + "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(safe_text.plain(reasoning) if reasoning else "_No reasoning recorded._")
-            cits = parse_json_str_list(cr.get("citations", "[]"), "citations")
-            if cits:
-                st.markdown(theme.event_chips(cits, _cited_events), unsafe_allow_html=True)
-            # The verdict is advisory; what a person acts on is the review covering its alert.
-            review = _covering.get(cr.get("alert_id"))
-            if review and review["status"] == "PENDING" and review["action_id"] in _by_id:
-                if st.button("Review escalation" if escalate else "Open review", key=f"verdict_{cr.get('alert_id')}",
-                             type="primary" if escalate else "secondary"):
-                    _open_review(review["action_id"])
-            elif review:
-                st.caption(f"Review {review['status'].lower()}"
-                           + (f" by {review['decided_by']}" if review.get("decided_by") else "") + ".")
-            else:
-                st.caption("No review: only CRITICAL alerts are staged for a decision.")
-
-# ── Human review queue (HITL execution gate) ──────────────────────────────────
-
+# ── The queue (HITL execution gate) ───────────────────────────────────────────
 theme.section(
-    "Human review queue",
-    "One review per condition; nothing executes until a named operator decides.",
-    tone="bad" if _pending_actions else "ok",
-    right=f"{len(_pending_actions)} review(s) · {sum(a.occurrences for a in _pending_actions):,} reading(s)",
+    "Reviews",
+    "One per condition; nothing executes until a named operator decides.",
+    tone="bad" if _awaiting else ("warn" if _monitored else "ok"),
+    right=f"{len(_awaiting)} awaiting · {len(_monitored)} monitoring",
 )
 
-if not _pending_actions:
+if not _reviews:
     st.markdown(
         f'<div style="border:1px solid {theme.TONES["ok"][1]};border-left:3px solid '
         f'{theme.GREEN5};background:{theme.TONES["ok"][2]};border-radius:4px;padding:14px 16px;">'
         f'<div style="color:{theme.GREEN5};font-size:16px;font-weight:700;">Queue empty</div>'
         f'<div style="color:{theme.GRAY3};font-size:14px;margin-top:4px;">'
-        "All staged actions have been decided, or no CRITICAL alert has produced one."
+        "Every review has been decided, or no CRITICAL alert has produced one."
         "</div></div>",
         unsafe_allow_html=True,
     )
 else:
-    _rows = pd.DataFrame([{
-        "action_id": a.action_id,
-        "Last reading (UTC)": a.last_seen_at or a.created_at,
-        "Facility": a.airport_code or "—",
-        "Alert": (a.alert_type or "—").removeprefix("ALERT_"),
-        "Readings": a.occurrences,
-        "AI suggests": _suggests(a),
-        "Confidence": round(100 * c) if (c := (_verdict.get(a.alert_id) or {}).get("confidence")) is not None else None,
-        "AI summary": _summary(a),
-        "Waiting": _waited(a.first_seen_at or a.created_at),
-        "Ticket": _tickets[a.action_id].status if _tickets.get(a.action_id) else "—",
-    } for a in _pending_actions]).sort_values("Last reading (UTC)", ascending=False)
+    _labels = {AWAITING: f"Awaiting decision ({len(_awaiting)})", MONITORING: f"Monitoring ({len(_monitored)})"}
+    _view_name = st.segmented_control(
+        "Show", list(_labels), format_func=_labels.get, key="q_show", label_visibility="collapsed",
+        default=MONITORING if _show == MONITORING or (not _awaiting and _show != AWAITING) else AWAITING,
+    ) or AWAITING
+    _shown = _monitored if _view_name == MONITORING else _awaiting
 
-    def _counted(column: str):
-        return lambda value: f"{value} ({int((_rows[column] == value).sum())})"
+    if not _shown:
+        st.info("Nothing is awaiting a decision." if _view_name == AWAITING else "Nothing is being monitored.")
+    else:
+        def _row(review: OpenReview) -> dict:
+            a = review.action
+            row = {
+                "action_id": a.action_id,
+                "Last reading (UTC)": a.last_seen_at or a.created_at,
+                "Facility": a.airport_code or "—",
+                "Alert": (a.alert_type or "—").removeprefix("ALERT_"),
+                "Readings": a.occurrences,
+                "AI suggests": review.suggests,
+                "Confidence": round(100 * review.confidence) if review.confidence is not None else None,
+                "AI summary": _summary(review),
+            }
+            if review.monitoring:
+                return row | {"Monitoring since (UTC)": review.ticket.decided_at,
+                              "By": review.ticket.decided_by or "—",
+                              "Note": review.ticket.decision_note or "—"}
+            return row | {"Waiting": waited(review.waiting_since)}
 
-    f1, f2, f3, f4 = st.columns([1.1, 1.6, 1.5, 0.9])
-    facilities = f1.pills("Facility", sorted(_rows["Facility"].unique()), selection_mode="multi",
-                          format_func=_counted("Facility"), key="q_facility")
-    suggests = f2.pills("AI suggests", [s for s in ("Escalate", "Don't escalate", "No AI review")
-                                        if s in set(_rows["AI suggests"])],
-                        selection_mode="multi", format_func=_counted("AI suggests"), key="q_suggests")
-    alerts = f3.pills("Alert", sorted(_rows["Alert"].unique()), selection_mode="multi",
-                      format_func=_counted("Alert"), key="q_alert")
-    confident = f4.toggle("AI ≥ 80%", key="q_confident", help="Only reviews the AI rated at 80% confidence or more")
-    _keep = pd.Series(True, index=_rows.index)
-    for column, chosen in (("Facility", facilities), ("AI suggests", suggests), ("Alert", alerts)):
-        if chosen:
-            _keep &= _rows[column].isin(chosen)
-    if confident:
-        _keep &= _rows["Confidence"].fillna(0) >= 80
-    _view = _rows[_keep].reset_index(drop=True)
+        _rows = pd.DataFrame([_row(r) for r in _shown]).sort_values("Last reading (UTC)", ascending=False)
 
-    _picked = st.dataframe(
-        _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True,
-        # A selection is only meaningful for the rows it was made on: a decision
-        # or a filter that changes them starts a fresh table (and selection).
-        key="q_table_" + hashlib.sha256("|".join(_view["action_id"]).encode()).hexdigest()[:12],
-        on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
-        column_config={
-            "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
-            "Readings": st.column_config.NumberColumn(format="%d"),
-            "Confidence": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d%%"),
-            "AI summary": st.column_config.TextColumn(width="large"),
-        },
-    )
-    _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows if 0 <= i < len(_view)]
+        def _counted(column: str):
+            return lambda value: f"{value} ({int((_rows[column] == value).sum())})"
 
-    a1, a2, a3, a4 = st.columns([1.2, 1.5, 2.1, 2.4])
-    if a1.button("Open review", type="primary", use_container_width=True, disabled=len(_chosen) != 1,
-                 help="Select one row: its investigation, evaluation, readings and decision"):
-        _open_review(_chosen[0])
-    if a2.button(f"Reject selected ({len(_chosen)})", use_container_width=True,
-                 disabled=not _chosen or not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
-        _confirm_bulk(Decision.REJECT, _chosen)
-    if a3.button(f"Continue monitoring selected ({len(_chosen)})", use_container_width=True,
-                 disabled=not _chosen or not _allowed(Decision.MONITOR), help=_why_not(Decision.MONITOR)):
-        _confirm_bulk(Decision.MONITOR, _chosen)
-    a4.caption("Select rows to reject or monitor several reviews at once. "
-               "Approving an escalation is one review at a time, from its detail.")
+        _suggestions = [s for s in (review_queue.ESCALATE, review_queue.NO_ESCALATION, review_queue.NO_AI_REVIEW)
+                        if s in set(_rows["AI suggests"])]
+        f1, f2, f3, f4 = st.columns([1.1, 1.6, 1.5, 0.9])
+        facilities = f1.pills("Facility", sorted(_rows["Facility"].unique()), selection_mode="multi",
+                              format_func=_counted("Facility"), key=f"q_facility_{_view_name}")
+        suggests = f2.pills("AI suggests", _suggestions, selection_mode="multi",
+                            format_func=_counted("AI suggests"), key=f"q_suggests_{_view_name}",
+                            default=[review_queue.ESCALATE] if _show == "escalate" and _view_name == AWAITING
+                            and review_queue.ESCALATE in _suggestions else None)
+        alerts = f3.pills("Alert", sorted(_rows["Alert"].unique()), selection_mode="multi",
+                          format_func=_counted("Alert"), key=f"q_alert_{_view_name}")
+        confident = f4.toggle("AI ≥ 80%", key=f"q_confident_{_view_name}",
+                              help="Only reviews the AI rated at 80% confidence or more")
+        _keep = pd.Series(True, index=_rows.index)
+        for column, chosen in (("Facility", facilities), ("AI suggests", suggests), ("Alert", alerts)):
+            if chosen:
+                _keep &= _rows[column].isin(chosen)
+        if confident:
+            _keep &= _rows["Confidence"].fillna(0) >= 80
+        _view = _rows[_keep].reset_index(drop=True)
+
+        _picked = st.dataframe(
+            _view.drop(columns=["action_id"]), hide_index=True, use_container_width=True,
+            # A selection is only meaningful for the rows it was made on: a decision
+            # or a filter that changes them starts a fresh table (and selection).
+            key="q_table_" + hashlib.sha256("|".join(_view["action_id"]).encode()).hexdigest()[:12],
+            on_select="rerun", selection_mode="multi-row", height=min(38 + 35 * len(_view), 420),
+            column_config={column: config for column, config in {
+                "Last reading (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
+                "Monitoring since (UTC)": st.column_config.DatetimeColumn(format="MMM D HH:mm"),
+                "Readings": st.column_config.NumberColumn(format="%d"),
+                "Confidence": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d%%"),
+                "AI summary": st.column_config.TextColumn(width="large"),
+            }.items() if column in _view.columns},
+        )
+        _chosen = [_view.loc[i, "action_id"] for i in _picked.selection.rows if 0 <= i < len(_view)]
+
+        a1, a2, a3, a4 = st.columns([1.2, 1.5, 2.1, 2.4])
+        if a1.button("Open review", type="primary", use_container_width=True, disabled=len(_chosen) != 1,
+                     help="Select one row: its investigation, evaluation, readings and decision"):
+            _open_review(_chosen[0])
+        if a2.button(f"Reject selected ({len(_chosen)})", use_container_width=True,
+                     disabled=not _chosen or not _allowed(Decision.REJECT), help=_why_not(Decision.REJECT)):
+            _confirm_bulk(Decision.REJECT, _chosen)
+        if _view_name == AWAITING:
+            if a3.button(f"Continue monitoring selected ({len(_chosen)})", use_container_width=True,
+                         disabled=not _chosen or not _allowed(Decision.MONITOR), help=_why_not(Decision.MONITOR)):
+                _confirm_bulk(Decision.MONITOR, _chosen)
+            a4.caption("A decided or monitored review leaves this list. "
+                       "Approving an escalation is one review at a time, from its detail.")
+        else:
+            a4.caption("Still open: approve, override or reject one from its detail.")
 
 # ── Decision audit trail ──────────────────────────────────────────────────────
 theme.section(
@@ -509,5 +456,97 @@ else:
         mime="text/csv",
         help="For an incident record or an external review.",
     )
+
+# ── The Critic's own activity: evidence about the AI, not a second queue ──────
+# Counted per reading it assessed, decided or not, so these numbers are not the
+# queue's: one review covers many readings, and most of these are long decided.
+_critic_rows_all = run(storage.get_recent_critic_results(limit=50))
+_cri_total = len(_critic_rows_all)
+
+theme.section(
+    "AI Critic activity",
+    "Reading by reading. Advisory only: no verdict here has executed anything.",
+    tone="neutral",
+    right=f"last {_cri_total} assessed reading(s)" if _cri_total else "",
+)
+
+if not _critic_rows_all:
+    st.info(
+        "No Critic verdicts yet. Configure LLM_PROVIDER in .env and trigger a CRITICAL "
+        "alert to populate this view."
+    )
+else:
+    _confidences = [r["confidence"] for r in _critic_rows_all if r.get("confidence") is not None]
+    st.caption(
+        f"Of the last {_cri_total} readings the Critic assessed: "
+        f"{sum(1 for r in _critic_rows_all if r.get('escalate'))} said escalate · "
+        + (f"mean confidence {sum(_confidences) / len(_confidences):.0%} (model-reported) · " if _confidences else "")
+        + f"{sum(1 for r in _critic_rows_all if r.get('pattern') == 'CASCADE_FAILURE')} cascade failure · "
+        f"{sum(1 for r in _critic_rows_all if r.get('pattern') == 'ISOLATED_FAULT')} isolated fault."
+    )
+    _PATTERN_TONE = {
+        "CASCADE_FAILURE": "bad",
+        "ISOLATED_FAULT": "warn",
+        "WEATHER_CORRELATED": "warn",
+        "DATA_ANOMALY": "info",
+        "TRANSIENT": "neutral",
+        "UNKNOWN": "neutral",
+    }
+    _latest_verdicts = st.expander(f"Latest Critic verdicts ({min(10, _cri_total)})", expanded=False)
+    _covering = run(storage.get_covering_actions([r.get("alert_id") for r in _critic_rows_all[:10]]))
+    _cited_events = run(storage.get_events_by_ids(sorted({
+        e for r in _critic_rows_all[:10] for e in parse_json_str_list(r.get("citations", "[]"), "citations")})))
+    for cr in _critic_rows_all[:10]:
+        alert_row = _alert_by_id.get(cr.get("alert_id"), {})
+        conf = cr.get("confidence")
+        conf_str = f"{conf:.0%}" if conf is not None else "N/A"
+        pattern = str(cr.get("pattern", "UNKNOWN"))
+        escalate = bool(cr.get("escalate"))
+        reasoning = cr.get("reasoning", "")
+        alert_type = alert_row.get("alert_type", "—")
+        airport = alert_row.get("airport_code", "—")
+        service = alert_row.get("service_name", "—")
+        _ptone = _PATTERN_TONE.get(pattern, "neutral")
+
+        with _latest_verdicts, st.container(border=True):
+            st.markdown(
+                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+                '<span style="font-size:16px;font-weight:650;color:' + theme.LIGHT_GRAY5 + ';">'
+                + theme._esc(alert_type) + "</span>"
+                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
+                + theme._esc(airport) + " · " + theme._esc(service) + "</span>"
+                '<span class="chip" style="color:' + theme.TONES[_ptone][0]
+                + ";border-color:" + theme.TONES[_ptone][1]
+                + ';padding:2px 8px;font-size:13px;">' + theme._esc(pattern) + "</span>"
+                '<span class="mono" style="font-size:13px;color:' + theme.GRAY1 + ';">'
+                "confidence " + theme._esc(conf_str) + "</span>"
+                + (
+                    '<span class="chip" style="color:' + theme.RED5
+                    + ";border-color:" + theme.TONES["bad"][1]
+                    + ";background:" + theme.TONES["bad"][2]
+                    + ';margin-left:auto;padding:2px 9px;font-size:13px;">'
+                    "ESCALATE TO SUPERVISOR</span>"
+                    if escalate else
+                    '<span class="mono" style="margin-left:auto;font-size:13px;color:'
+                    + theme.GRAY1 + ';">no escalation proposed</span>'
+                )
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(safe_text.plain(reasoning) if reasoning else "_No reasoning recorded._")
+            cits = parse_json_str_list(cr.get("citations", "[]"), "citations")
+            if cits:
+                st.markdown(theme.event_chips(cits, _cited_events), unsafe_allow_html=True)
+            # The verdict is advisory; what a person acts on is the review covering its alert.
+            covering = _covering.get(cr.get("alert_id"))
+            if covering and covering["status"] == "PENDING" and covering["action_id"] in _by_id:
+                if st.button("Review escalation" if escalate else "Open review", key=f"verdict_{cr.get('alert_id')}",
+                             type="primary" if escalate else "secondary"):
+                    _open_review(covering["action_id"])
+            elif covering:
+                st.caption(f"Review {covering['status'].lower()}"
+                           + (f" by {covering['decided_by']}" if covering.get("decided_by") else "") + ".")
+            else:
+                st.caption("No review: only CRITICAL alerts are staged for a decision.")
 
 theme.back_link()

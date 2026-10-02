@@ -161,7 +161,7 @@ p95 model call time is over 30 s, the readiness objective.
 Over 20% of agent invocations fall back to rules. Investigations are mostly
 rules-only.
 1. Agent Evaluation → Reliability → Agents: which agent?
-2. Its fallback reason is in the investigation's step log (Review page →
+2. Its fallback reason is in the investigation's step log (Review Queue →
    investigation → steps), for example "model call failed", "model
    conclusion not one of …", or "model produced no claim grounded in the
    evidence".

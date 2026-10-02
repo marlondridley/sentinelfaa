@@ -72,6 +72,16 @@ def format_ts(value: Any, length: int = 19) -> str:
     return ""
 
 
+def waited(since: datetime | None) -> str:
+    """How long ago, in the largest two units that matter to someone waiting: '12 min', '3 h 5 min', '2 d 4 h'."""
+    if since is None:
+        return "—"
+    minutes = max(0, int((datetime.now(timezone.utc) - since).total_seconds() // 60))
+    if minutes >= 1440:
+        return f"{minutes // 1440} d {minutes % 1440 // 60} h"
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
 def as_utc(value: Any) -> datetime | None:
     """
     Coerce a timestamp field from a storage row into an aware UTC datetime.

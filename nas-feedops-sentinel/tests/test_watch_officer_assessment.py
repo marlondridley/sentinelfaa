@@ -135,9 +135,56 @@ def test_a_current_critical_alert_on_a_healthy_feed_is_red_with_a_decision_for_t
                                pending_actions_count=1)
     a = wa.assess(context, now=NOW)
     assert (a.status, a.current_critical_count, a.current_review_count) == ("RED", 1, 1)
-    assert a.status_line == "1 CRITICAL ALERT(S) NEED A DECISION"
+    assert a.status_line == "1 REVIEW(S) AWAIT A DECISION"
     assert [(x.owner) for x in a.actions] == [wa.DUTY_MANAGER] and "Approve, Reject or Monitor" in a.actions[0].done_when
     assert a.consistency_warnings == []
+
+
+# -- the brief counts what the review queue counts (src/review_queue.py) ----------------------------------
+#
+# It used to say "56 CRITICAL ALERT(S) NEED A DECISION" above a queue of two reviews: it counted readings,
+# and it counted the ones someone had already answered "continue monitoring".
+
+def _condition(airport: str, readings: int, **review) -> tuple[list[dict], dict]:
+    """One condition firing `readings` times in the last hour, and the one review that covers them all."""
+    alerts = [_alert(f"{airport}-{i}", "ALERT_LOW_RVR", airport, NOW - timedelta(minutes=50 - i),
+                     description=f"Low RVR 600 ft at {airport}") for i in range(readings)]
+    return alerts, _review(alerts[0]["alert_id"], "ALERT_LOW_RVR", airport, NOW - timedelta(minutes=10), **review)
+
+
+def _open(*conditions: tuple[list[dict], dict]) -> dict:
+    alerts = [a for readings, _ in conditions for a in readings]
+    return _healthy_context(alerts=alerts, critical_alerts=alerts, critical_alert_count=len(alerts),
+                            pending_actions=[review for _, review in conditions], pending_actions_count=len(conditions))
+
+
+def test_forty_readings_of_one_condition_are_one_decision():
+    a = wa.assess(_open(_condition("KDCA", 40)), now=NOW)
+    assert (a.status, a.status_line) == ("RED", "1 REVIEW(S) AWAIT A DECISION")
+    assert a.bluf.startswith("Data is current. 1 review(s) of critical alerts from the last 6 h await a person.")
+    assert a.actions[0].action == "Decide the 1 review(s) awaiting a decision."
+
+
+def test_a_review_someone_is_monitoring_is_open_and_asks_nobody():
+    a = wa.assess(_open(_condition("KDCA", 40, monitoring=True)), now=NOW)
+    assert (a.status, a.status_line) == ("RED", "1 CRITICAL CONDITION(S) BEING MONITORED")
+    assert "none awaits a decision" in a.bluf
+    assert a.actions == [], "the decision asked for was already given"
+    assert a.consistency_warnings == []
+
+
+def test_what_awaits_and_what_is_monitored_are_counted_apart():
+    a = wa.assess(_open(_condition("KDCA", 40, monitoring=True), _condition("KIAD", 3), _condition("KBWI", 5)), now=NOW)
+    assert a.status_line == "2 REVIEW(S) AWAIT A DECISION"
+    assert "2 review(s) of critical alerts from the last 6 h await a person; 1 more being monitored." in a.bluf
+    assert [x.action for x in a.actions] == ["Decide the 2 review(s) awaiting a decision."]
+
+
+def test_a_critical_alert_no_review_covers_is_still_counted_as_itself():
+    alert = _alert("c1", "ALERT_FEED_DISCONNECTED", "KIAD", NOW - timedelta(minutes=20))
+    a = wa.assess(_healthy_context(alerts=[alert], critical_alerts=[alert], critical_alert_count=1), now=NOW)
+    assert a.status_line == "1 CRITICAL ALERT(S) NEED A DECISION"
+    assert a.actions[0].action == "Decide the 1 review(s) awaiting a decision."
 
 
 def test_one_stale_airport_is_degraded_not_down():

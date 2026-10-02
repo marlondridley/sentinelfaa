@@ -84,13 +84,13 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 
 | Question | Where it is answered |
 |---|---|
-| Is the PCT feed alive right now? | Overview verdict; Feed Health: ingest volume and delivery lag |
-| Can we trust the current aircraft picture? | Overview verdict; Live Airspace: stale and no-data status |
+| Is the PCT feed alive right now? | Dashboard verdict; Feed Health: ingest volume and delivery lag |
+| Can we trust the current aircraft picture? | Dashboard verdict; Live Airspace: stale and no-data status |
 | Which airport is driving the traffic load? | Live Airspace: per-airport counts |
 | What phase of flight is most active? | Live Airspace: phase breakdown |
 | Are tracks stale, missing, or abnormal? | Feed Health: schema conformance; Live Airspace: movement profile |
 | Is this isolated or sector-wide? | Feed Health: service-by-facility matrix; Alert Log: spread across facilities |
-| What should the operator do next? | AI Critic & Review: the staged action, its investigation, and the decision |
+| What should the operator do next? | Review Queue: the staged action, its investigation, and the decision |
 
 ---
 
@@ -217,7 +217,7 @@ Agents remain advisory. They cannot approve an escalation, stage an operational 
 
 This separation allows Sentinel to standardize AI governance across different model providers without allowing the governance framework to redefine mission-specific operational semantics.
 
-Every metric and gate check on the Agent Evaluation page names its category in its **Source** column. Each metric's category, and the AGT defect behind each AGT-compatible one, is in [docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md); how each boundary is enforced, and which test proves it, is in [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md).
+Every metric and gate check on the Agent Evaluation page says who calculated it, in words ("Calculated by"): the toolkit, Sentinel's calculation of a toolkit metric, or Sentinel's own check. Each metric's category, and the AGT defect behind each AGT-compatible one, is in [docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md); how each boundary is enforced, and which test proves it, is in [docs/agent-governance.md](nas-feedops-sentinel/docs/agent-governance.md).
 
 ---
 
@@ -278,7 +278,7 @@ launch_nas_sentinel.ps1   one-command local launcher (Windows / PowerShell)
 instraclustr/             infrastructure: Postgres, PgBouncer, Vault, LiteLLM
 nas-feedops-sentinel/     the application
   src/                    ingest, pipeline, alert rules, gate, investigation, storage, API, Temporal
-  dashboard/              the Streamlit console: Overview and six pages, including Agent Evaluation
+  dashboard/              the Streamlit console: the Dashboard and six pages, including Agent Evaluation
   policies/               AGT model-use and tool-use policies; readiness objectives and gate limits
   tests/                  the pytest suite, with real SWIM captures in fixtures/swim_kit/
   scripts/                end-to-end proof, Keycloak setup, diagnostics
