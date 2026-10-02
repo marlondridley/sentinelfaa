@@ -11,9 +11,13 @@ checked against:
 - its **aggregation**: how individual observations combine;
 - the **installed AGT implementation**: what version 3.7.0 actually returns.
 
-Each metric then falls into one of three categories, and every value and gate
-on the Agent Evaluation page names its category first in its **Source** column
-(`src/agt_metrics.py` `CATEGORIES`):
+Each metric then falls into one of three categories (`src/agt_metrics.py`
+`CATEGORIES`), and every value and gate carries its category in its source
+label. The Agent Evaluation page does not show the tag: it says who
+calculated the number, in words, under **Calculated by** ("Agent Governance
+Toolkit", "Sentinel's calculation of a toolkit metric", "Sentinel's own
+check"). The page's **Source** column is something else: the data the number
+is measured from.
 
 - **AGT-native.** AGT defines the semantic and implements it correctly. The
   value comes from the AGT component named, read only through the paths the

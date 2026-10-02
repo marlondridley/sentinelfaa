@@ -284,7 +284,7 @@ lower, suppress or stage an alert.
 - `src/swim_parse.py` and `src/swim_feed_tais.py`: FAA data handling,
   including `blockAtFAA` withholding and beacon-code release only for active
   flight plans.
-- The Overview verdict (GREEN/AMBER/RED) is computed from conformance, lag
+- The Dashboard verdict (GREEN/AMBER/RED) is computed from conformance, lag
   and open CRITICAL alerts, with no model consulted.
 - The investigation workflow's order never depends on model output.
 

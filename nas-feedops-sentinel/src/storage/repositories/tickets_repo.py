@@ -216,6 +216,17 @@ class TicketsRepository:
         )
         return _row_to_ticket(row) if row else None
 
+    async def get_by_action_ids(self, action_ids: list[str]) -> dict[str, OperationalTicket]:
+        """Each of these actions' latest ticket, in one query."""
+        if not action_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT DISTINCT ON (action_id) * FROM operational_tickets
+               WHERE action_id = ANY($1::text[]) ORDER BY action_id, generated_at DESC""",
+            list(action_ids),
+        )
+        return {r["action_id"]: _row_to_ticket(r) for r in rows}
+
     async def _transition(self, ticket_id: str, new_status: str, actor: str, note: str) -> OperationalTicket | None:
         async with UnitOfWork(self._pool) as uow:
             return await self.transition_in(uow.conn, ticket_id, new_status, actor, note)

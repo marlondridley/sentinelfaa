@@ -81,6 +81,7 @@ __all__ = [
     "get_staged_actions_by_ids",
     "get_audit_log_for_actions",
     "get_critic_verdicts_for_alerts",
+    "get_latest_critic_verdicts_for_actions",
     "save_planner_result",
     "get_recent_planner_results",
     "save_critic_result",
@@ -111,6 +112,7 @@ __all__ = [
     "get_draft_operational_tickets",
     "get_ticket_by_id",
     "get_ticket_by_action_id",
+    "get_tickets_by_action_ids",
     "mark_operational_ticket_monitoring",
     "decide_staged_action_with_ticket",
 ]
@@ -342,6 +344,11 @@ async def get_critic_verdicts_for_alerts(alert_ids: list[str]) -> list[dict]:
     return await repo.get_critic_verdicts_for_alerts(alert_ids)
 
 
+async def get_latest_critic_verdicts_for_actions(action_ids: list[str]) -> dict[str, dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_latest_verdicts_for_actions(action_ids)
+
+
 # ── Agent analysis (critic_results / planner_results) ─────────────────────────
 
 async def get_recent_critic_results(limit: int = 50) -> list[dict]:
@@ -472,6 +479,11 @@ async def get_ticket_by_id(ticket_id: str) -> OperationalTicket | None:
 async def get_ticket_by_action_id(action_id: str) -> OperationalTicket | None:
     repo = TicketsRepository(await get_db_pool())
     return await repo.get_by_action_id(action_id)
+
+
+async def get_tickets_by_action_ids(action_ids: list[str]) -> dict[str, OperationalTicket]:
+    repo = TicketsRepository(await get_db_pool())
+    return await repo.get_by_action_ids(action_ids)
 
 
 async def mark_operational_ticket_monitoring(
