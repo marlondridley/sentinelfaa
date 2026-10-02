@@ -129,8 +129,15 @@ def reload_policy() -> None:
 
 def build_context(
     *, role: str | None, model: str | None, prompt: str, max_tokens: int, redacted: bool,
+    protected_values_found: int = 0,
 ) -> dict[str, Any]:
-    """The evaluation context. Every field is always present and never None."""
+    """
+    The evaluation context. Every field is always present and never None.
+
+    protected_values_found is how many of the values the caller read from its records and must not send
+    (src/redaction.py count_leaks) turned up in the prompt. The caller computes it; this module only carries it
+    to the policy, which refuses the call when it is above zero.
+    """
     return {
         "action": "model_call",
         "role": role or UNREGISTERED_ROLE,
@@ -139,15 +146,18 @@ def build_context(
         "max_tokens": int(max_tokens),
         "redacted": bool(redacted),
         "credentials_found": len(CredentialRedactor.find_matches(prompt)),
+        "protected_values_found": max(0, int(protected_values_found)),
     }
 
 
 def evaluate_model_call(
     *, role: str | None, model: str | None, prompt: str, max_tokens: int, redacted: bool,
+    protected_values_found: int = 0,
 ) -> GovernanceDecision:
     """Ask the model-use policy whether this call may be sent."""
     context = build_context(
         role=role, model=model, prompt=prompt, max_tokens=max_tokens, redacted=redacted,
+        protected_values_found=protected_values_found,
     )
     decision = _evaluate(settings.MODEL_POLICY_PATH, context, what="Model-use")
     if not decision.allowed:
@@ -156,7 +166,8 @@ def evaluate_model_call(
             "model_call_refused_by_policy",
             extra={"role": context["role"], "rule": decision.rule, "reason": decision.reason,
                    "model": context["model"], "prompt_chars": context["prompt_chars"],
-                   "credentials_found": context["credentials_found"]},
+                   "credentials_found": context["credentials_found"],
+                   "protected_values_found": context["protected_values_found"]},
         )
     return decision
 

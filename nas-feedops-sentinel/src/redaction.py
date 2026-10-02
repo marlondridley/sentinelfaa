@@ -33,6 +33,7 @@ identifying detail buried in free text.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -221,9 +222,24 @@ def redact_text_counted(text: str) -> tuple[str, int]:
     """
     if not text:
         return text, 0
-    text, n_fields = _FIELD_VALUE_RE.subn(lambda m: f"{m.group('prefix')}\"{REDACTED}\"", text)
-    text, n_xml = _XML_FIELD_RE.subn(
-        lambda m: f"<{m.group('tag')}{m.group('attrs') or ''}>{REDACTED}</{m.group('tag')}>", text)
+    n_fields = n_xml = 0
+
+    def _field(m: re.Match[str]) -> str:
+        nonlocal n_fields
+        if _TOKEN_RE.fullmatch(m.group("value").strip("\"'")):
+            return m.group(0)                       # a pseudonym chosen on purpose, not an identifier
+        n_fields += 1
+        return f"{m.group('prefix')}\"{REDACTED}\""
+
+    def _xml(m: re.Match[str]) -> str:
+        nonlocal n_xml
+        if _TOKEN_RE.fullmatch(m.group("value").strip()):
+            return m.group(0)
+        n_xml += 1
+        return f"<{m.group('tag')}{m.group('attrs') or ''}>{REDACTED}</{m.group('tag')}>"
+
+    text = _FIELD_VALUE_RE.sub(_field, text)
+    text = _XML_FIELD_RE.sub(_xml, text)
     text, n_input = _redact_input_values(text)
     text, n_tail = _TAIL_NUMBER_RE.subn(REDACTED, text)
     text, n_callsign = _CALLSIGN_RE.subn(REDACTED, text)
@@ -232,5 +248,237 @@ def redact_text_counted(text: str) -> tuple[str, int]:
 
 
 def is_redacted(text: str) -> bool:
-    """True when redact_text() would change nothing: there is nothing left in `text` that it removes."""
+    """
+    True when redact_text() would change nothing: there is nothing left in `text` that it removes.
+
+    This says the scrub is stable, not that it found everything: it asks the same patterns that did the
+    scrub. It is not an independent check; count_leaks() below is.
+    """
     return redact_text(text) == text
+
+
+# ── Pseudonyms: a model can tell two flights apart without learning which flights they are ────────────────
+#
+# redact_structured() drops every sensitive key, so a model shown two aircraft cannot say "the same aircraft
+# lost track twice". pseudonymize_structured() keeps that distinction for the keys that name a flight or
+# vehicle, as a token that means nothing outside one prompt, and still drops every measurement (a position,
+# an altitude, a beacon code, a raw payload), which has no use as a name.
+
+# The sensitive keys that identify a flight, aircraft or vehicle: these get a token. The rest of
+# SENSITIVE_FIELDS (positions, altitudes, codes, raw payloads) are dropped.
+IDENTITY_FIELDS: frozenset[str] = frozenset({
+    "aircraft_id", "track_id", "callsign", "vehicle_id", "flight_id", "flightid", "acid", "gufi",
+    "tail_number", "registration", "aircraftid", "acaddress", "tracknum",
+})
+_IDENTITY_LOWER = frozenset(f.lower() for f in IDENTITY_FIELDS)
+
+# What a pseudonym looks like. redact_text() leaves a value of this shape alone, so the second pass over a
+# serialized prompt does not blank out what the first pass chose to keep.
+_TOKEN_RE = re.compile(r"AC-\d{1,6}")
+_TOKEN_IN_TEXT_RE = re.compile(r"(?<![\w-])AC-\d{1,6}(?![\w-])")
+
+
+class Pseudonymizer:
+    """
+    Stable tokens (AC-1, AC-2, ...) for the identifiers in ONE prompt.
+
+    The same identifier gets the same token for as long as the instance lives, whatever its case or spacing, so
+    a model can follow one flight through a prompt. Tokens are sequential and keep no key or hash of the value:
+    an identifier is short and guessable, so a hash of it would be reversed by anyone who tried every candidate.
+    Make one per prompt; a token must not mean the same flight in two prompts.
+    """
+
+    def __init__(self) -> None:
+        self._tokens: dict[str, str] = {}      # normalised identifier -> token
+        self._shown: dict[str, str] = {}       # token -> the identifier as first written
+
+    def token(self, value: Any) -> str:
+        written = " ".join(str(value).split())
+        token = self._tokens.setdefault(written.upper(), f"AC-{len(self._tokens) + 1}")
+        self._shown.setdefault(token, written)
+        return token
+
+    def reveal(self, text: str) -> str:
+        """
+        `text` with this prompt's tokens put back as the identifiers they stand for, for an answer that is
+        shown to an authorised operator on this system and never sent anywhere. A token the model made up
+        (AC-9 when only AC-1 to AC-3 were issued) has nothing to stand for and stays as it is.
+        """
+        if not self._shown or not text:
+            return text
+        return _TOKEN_IN_TEXT_RE.sub(lambda m: self._shown.get(m.group(0), m.group(0)), text)
+
+
+def _is_scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
+def pseudonymize_structured(obj: Any, pseudonyms: Pseudonymizer) -> Any:
+    """
+    redact_structured() that keeps who-is-who: an IDENTITY_FIELDS key keeps its place with a token for its
+    value; every other SENSITIVE_FIELDS key is dropped. A sensitive key holding anything but a plain value
+    (a nested object, a list) is dropped whole.
+    """
+    if isinstance(obj, dict):
+        out: dict[Any, Any] = {}
+        for key, value in obj.items():
+            lowered = str(key).lower()
+            if lowered in _IDENTITY_LOWER:
+                if _is_scalar(value) and str(value).strip():
+                    out[key] = pseudonyms.token(value)
+            elif lowered not in _SENSITIVE_LOWER:
+                out[key] = pseudonymize_structured(value, pseudonyms)
+        return out
+    if isinstance(obj, list):
+        return [pseudonymize_structured(item, pseudonyms) for item in obj]
+    return obj
+
+
+# ── The leak check: look for the values themselves, not for what they look like ──────────────────────────
+#
+# Every pattern above is a guess about the shape of an identifier. The code that builds a prompt knows
+# something better: the actual values it read from the record (the callsign, the registration, the
+# coordinates). count_leaks() takes those and looks for them in what is about to be sent. It does not depend
+# on a format anyone anticipated, so it finds what the patterns miss: a registration written G-ABCD, a
+# callsign with a letter where the pattern expects a digit.
+#
+# It only verifies. If it also did the scrubbing it would ask the same question twice, which is the problem
+# with is_redacted(). A hit refuses the call (policies/model-use.yaml), and the agent falls back to its rules.
+
+# Shorter values are too common to mean anything, and a 4-digit code (a beacon code, 1200) cannot be told from
+# a threshold in prose ("RVR below 1200 ft"). The keyed and pattern layers cover those; this one does not
+# pretend to. "Short" is counted in digits for a number, so 100.0 (three digits) is as short as 100.
+_MIN_VALUE_CHARS = 4
+_MIN_NUMERIC_CHARS = 5
+_MAX_VALUE_CHARS = 200       # an identifier is short; a longer value is a document, and a document is not a name
+_WORDS_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9\-_.]*[A-Za-z0-9])?")
+_JSON_DEPTH = 12
+_KEEP_DEPTH = 50     # how deep a value under a sensitive key is read; Python's own limit is about 1000 frames
+
+# A number is compared as it is written, not as a run of digits: 38.8951 is not 388951 and 12000.0 is not 120000.
+# A value that is one number (a coordinate, an altitude) and a number standing alone in the text are both read
+# with these. In the text a number is standalone when it is not part of a word or an identifier (evt-12345,
+# abc12345def), which is the same "stands alone" the identifier check applies.
+_NUMBER_RE = re.compile(r"[+-]?(\d+)(?:\.(\d+))?")
+_NUMBER_IN_TEXT_RE = re.compile(r"(?<![\w.])(?<!\w-)[+-]?(\d+)(?:\.(\d+))?(?!\w)")
+
+
+def _normalise(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _number(whole: str, fraction: str | None) -> tuple[str, int]:
+    """
+    A number as written, without its sign, the zeros before it and the zeros after its decimal point, and how
+    many digits that leaves: ("38.8951", 6), and ("12000", 5) for both 12000 and 12000.0.
+    """
+    whole = whole.lstrip("0") or "0"
+    fraction = (fraction or "").rstrip("0")
+    return (f"{whole}.{fraction}" if fraction else whole), len(whole) + len(fraction)
+
+
+def _is_short_number(text: str) -> bool:
+    """True for a value that is one number with fewer than _MIN_NUMERIC_CHARS digits: 1200, 100.0, 3.5."""
+    match = _NUMBER_RE.fullmatch(text)
+    return bool(match) and _number(match.group(1), match.group(2))[1] < _MIN_NUMERIC_CHARS
+
+
+def collect_sensitive_values(*objs: Any) -> frozenset[str]:
+    """
+    The values held under a SENSITIVE_FIELDS key anywhere in `objs`, as the strings a prompt would show.
+
+    Call it on the raw records BEFORE they are projected, scrubbed or pseudonymized: its answer is "what must
+    not reach the model", and it has to be asked of the data that still has it. A raw payload carried as a JSON
+    string is read too, since the identifiers inside it are the ones the keyed layer cannot see.
+    """
+    found: set[str] = set()
+
+    def keep(value: Any, depth: int = 0) -> None:
+        if depth > _KEEP_DEPTH:
+            return                           # nothing real nests this deep under a sensitive key; a bomb does
+        if isinstance(value, dict):
+            for inner in value.values():
+                keep(inner, depth + 1)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for inner in value:
+                keep(inner, depth + 1)
+        elif _is_scalar(value):
+            text = str(value).strip()
+            if text[:1] in ("{", "["):
+                try:
+                    parsed = json.loads(text)
+                except (ValueError, RecursionError):     # too deeply nested to parse is unreadable, not fatal
+                    pass
+                else:
+                    walk(parsed, 1)          # a document, not a name: what it holds under a sensitive key counts
+                    return
+            if (_MIN_VALUE_CHARS <= len(text) <= _MAX_VALUE_CHARS and not _is_short_number(text)
+                    and text != REDACTED and not _TOKEN_RE.fullmatch(text)):
+                found.add(text)
+
+    def walk(obj: Any, depth: int) -> None:
+        if depth > _JSON_DEPTH:
+            return
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if str(key).lower() in _SENSITIVE_LOWER:
+                    keep(value)
+                else:
+                    walk(value, depth + 1)
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for item in obj:
+                walk(item, depth + 1)
+
+    for obj in objs:
+        walk(obj, 0)
+    return frozenset(found)
+
+
+def count_leaks(text: str, protected: Any) -> int:
+    """
+    How many of the `protected` values appear in `text`. Never the values themselves: the answer is logged,
+    audited and exported as a metric, and it must not carry what it found.
+
+    A value is found when it stands alone (not inside a longer word), in any case, and an identifier is also
+    found with its characters split by spaces or punctuation: AAL123 is found in "AAL 123" and "AAL-123", and
+    G-ABCD in "GABCD". A number is compared as written: a coordinate is found as -77.0364 or 77.0364, and
+    12000.0 as 12000, but 38.8951 is not found in 388951. Every value is looked for. The cost is the size of the
+    values plus the size of the text, so there is no cap that would leave the callsigns of a large table unchecked.
+    """
+    if not text or not protected:
+        return 0
+    names: set[str] = set()          # has a letter: may be written split into words
+    digit_groups: set[str] = set()   # digits split by separators (123-456-789): compared as the run of digits
+    numbers: set[str] = set()        # one number: compared as written
+    for value in {v for v in protected if isinstance(v, str)}:
+        as_number = _NUMBER_RE.fullmatch(value.strip())
+        if as_number:
+            written, digits = _number(as_number.group(1), as_number.group(2))
+            if digits >= _MIN_NUMERIC_CHARS:
+                numbers.add(written)
+            continue
+        key = _normalise(value)
+        if len(key) < _MIN_VALUE_CHARS:
+            continue
+        if any(c.isalpha() for c in key):
+            names.add(key)
+        elif len(key) >= _MIN_NUMERIC_CHARS:
+            digit_groups.add(key)
+    if not names and not digit_groups and not numbers:
+        return 0
+    words = [_normalise(w) for w in _WORDS_RE.findall(text)] if names or digit_groups else []
+    hits: set[str] = set()
+    for i, word in enumerate(words):
+        if word in names or word in digit_groups:
+            hits.add(word)
+        joined = word
+        for width in (2, 3):                 # an identifier split across up to three words
+            if i + width > len(words):
+                break
+            joined += words[i + width - 1]
+            if joined in names:
+                hits.add(joined)
+    if numbers:
+        in_text = {_number(m.group(1), m.group(2))[0] for m in _NUMBER_IN_TEXT_RE.finditer(text)}
+        hits |= {f"#{n}" for n in numbers & in_text}     # "#": a number never collides with an identifier's key
+    return len(hits)
