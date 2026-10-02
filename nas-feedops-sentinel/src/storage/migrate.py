@@ -64,6 +64,9 @@ async def apply_grants(conn: asyncpg.Connection, role: str) -> None:
             await conn.execute(f'GRANT SELECT, INSERT ON TABLE "{table}" TO {role}')
         elif table == "schema_migrations":
             await conn.execute(f'GRANT SELECT ON TABLE "{table}" TO {role}')
+        elif table == "model_halt":
+            # One row that is read and updated, never inserted or deleted (the migration inserts it).
+            await conn.execute(f'GRANT SELECT, UPDATE ON TABLE "{table}" TO {role}')
         else:
             await conn.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "{table}" TO {role}')
     await conn.execute(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}")

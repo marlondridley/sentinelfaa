@@ -29,6 +29,16 @@ def _fresh_circuit_breakers():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_model_halt():
+    """What a process has read of the halt state is cached; one test's halt must not refuse the next test's calls."""
+    from src import model_halt
+
+    model_halt.reset()
+    yield
+    model_halt.reset()
+
+
+@pytest.fixture(autouse=True)
 async def _close_this_loops_db_pool():
     yield
     await close_db_pool()

@@ -39,7 +39,7 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from lib import safe_text, theme  # noqa: E402
+from lib import halt_view, safe_text, theme  # noqa: E402
 from lib.agent_eval import (  # noqa: E402
     CALCULATED_BY_HELP, NO_DATA, calculated_by, pct, render_evidence, seconds, usd,
 )
@@ -48,7 +48,7 @@ from src import readiness  # noqa: E402
 from src.async_bridge import run_async as run  # noqa: E402
 from src.evaluation_evidence import evidence_for  # noqa: E402
 
-bootstrap_page(page_title="Agent Evaluation — PCT FeedOps Sentinel", page_icon="🧪")
+_principal = bootstrap_page(page_title="Agent Evaluation — PCT FeedOps Sentinel", page_icon="🧪")
 
 theme.page_header(
     "Agent Evaluation & Governance",
@@ -59,6 +59,8 @@ theme.page_header(
         "Targets are policies/model-slos.yaml, starting points rather than measured results."
     ),
 )
+
+halt_view.render_panel(_principal)
 
 _WINDOWS = {"Last 24 hours": 24.0, "Last 72 hours": 72.0, "Last 7 days": 168.0, "Last 30 days": 720.0}
 _choice = st.segmented_control("Window", list(_WINDOWS), default="Last 24 hours") or "Last 24 hours"
