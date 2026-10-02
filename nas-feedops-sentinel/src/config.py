@@ -300,6 +300,10 @@ class Settings(BaseSettings):
 
     # ── Agents / LLM ─────────────────────────────────────────────────────────
     CRITIC_ENABLED: bool = True
+    # Each is the agent's own switch, on top of CRITIC_ENABLED, which also stops the Critic, the Planner and the
+    # Watch Officer's overview narrative together (policies/agent-register.yaml says which stops what).
+    PLANNER_ENABLED: bool = True
+    WATCH_OFFICER_ENABLED: bool = True
     AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
     # This is an APPLICATION-FACING LiteLLM alias.
     LLM_MODEL: str = "openai/primary-model"
@@ -455,6 +459,18 @@ class Settings(BaseSettings):
     PLANNER_QUESTION_MAX_CHARS: int = 500
     MODEL_ACTION_COOLDOWN_SECONDS: float = 20.0
 
+    # The runtime halt of the AI layer (src/model_halt.py). The halt state is read before every model call and
+    # kept for MODEL_HALT_CACHE_SECONDS, so a halt set in one service reaches the others within that long.
+    # The automatic trip is OFF unless a deployment turns it on: it halts every model call after
+    # MODEL_AUTO_HALT_THRESHOLD refusals that signal a real fault (a credential or a protected value found in a
+    # prompt) inside MODEL_AUTO_HALT_WINDOW_SECONDS, in one process. It is visible when it trips, and only a
+    # supervisor resumes. An automatic trip can be provoked on purpose to switch the AI layer off, which is why it
+    # is optional.
+    MODEL_HALT_CACHE_SECONDS: float = 2.0
+    MODEL_AUTO_HALT_ENABLED: bool = False
+    MODEL_AUTO_HALT_THRESHOLD: int = 3
+    MODEL_AUTO_HALT_WINDOW_SECONDS: float = 300.0
+
     # Run schema bootstrap + migrations whenever a process opens its pool.
     # True for tests and local runs. The compose services set it false and run
     # `python -m src.storage.migrate` once, as the schema owner, so the
@@ -532,7 +548,10 @@ class Settings(BaseSettings):
             return _json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
-    @field_validator("CRITIC_ENABLED", "INVESTIGATIONS_ENABLED", "REQUIRE_REMOTE_LLM_PROXY", mode="before")
+    @field_validator(
+        "CRITIC_ENABLED", "PLANNER_ENABLED", "WATCH_OFFICER_ENABLED", "INVESTIGATIONS_ENABLED",
+        "REQUIRE_REMOTE_LLM_PROXY", mode="before",
+    )
     @classmethod
     def _parse_bool(cls, value: Any) -> bool:
         if isinstance(value, str):

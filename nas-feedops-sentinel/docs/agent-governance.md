@@ -43,6 +43,82 @@ The short version: **agents advise, rules escalate, people decide.**
                dashboard layers 1-3, readiness verdict, deployment gate
 ```
 
+## The agent register: `policies/agent-register.yaml`
+
+Seven principals act in the advisory layer: the Critic, the Planner, the Watch
+Officer, the investigation orchestrator (no model) and the three investigation
+specialists. The register is one file that says, for each, what it is for, who
+owns it, its risk tier and why, which services it runs in, the tools it is
+granted, what data it is sent, what it falls back to, and how to stop it.
+`python -m src.agent_register` prints it.
+
+It is held to the rest of the system by `tests/test_agent_register.py`:
+- the agents that call a model are exactly the roles `model-use.yaml` allows,
+  and the register's tool lists are exactly `tool-use.yaml`'s grants, so a role
+  or a grant cannot change in one place;
+- every prompt belongs to an agent, and a prompt whose version moved since it was
+  reviewed fails until the register is updated with it;
+- every setting, service and test the register names exists, and every
+  `acting_as()` role in the code is registered;
+- no agent has any authority: `decide`, `stage`, `write` and `execute` are
+  false, and the schema refuses a register that says otherwise.
+
+The controls in this guide are mapped to NIST AI RMF 1.0 and ISO/IEC 42001:2023 in
+[framework-mapping.md](framework-mapping.md), which says what is implemented, partial,
+not covered and organizational, with the evidence for each.
+
+**Limits, stated plainly.**
+- **Identity.** A service has its own SPIFFE identity; an agent runs inside a
+  service and is a string in OpenTelemetry baggage. It is enforced by the two
+  policies and recorded on every call, but carries no credential of its own, so
+  code in the same service could claim another agent's name. A per-agent
+  workload identity would close that, and is not built.
+- **One runtime switch, for the whole layer.** A supervisor's halt (below) stops
+  every model call at runtime. There is no runtime switch for a single agent:
+  settings are built once at import (`src/config.py`), so every entry's `disable`
+  takes effect when the service restarts.
+- **Switches overlap.** Each model-calling agent has its own (`CRITIC_ENABLED`,
+  `PLANNER_ENABLED`, `WATCH_OFFICER_ENABLED`, `INVESTIGATIONS_ENABLED`), and
+  three are shared: `CRITIC_ENABLED=0` also stops the Planner and the Watch
+  Officer's overview narrative, and `INVESTIGATIONS_ENABLED=0` stops the
+  orchestrator and every investigation agent together, the Watch Officer's
+  brief included. Each entry's `note` says so. A test holds every switch to
+  the settings, to what compose forwards to the services, and to the code that
+  honours it, so the register cannot name a switch that stops nothing.
+- **Owners and tiers are judgements.** Each owner is the role "Sentinel
+  maintainer" until a named person takes it, and the tiers are the author's
+  reading of the rubric at the top of the file.
+
+## The halt: `src/model_halt.py`
+
+One switch makes every model call refuse, in every service, without a restart. A
+supervisor halts it, or resumes it, on the Agent Evaluation page; both need a reason.
+While it is halted the first rule of `model-use.yaml` (`model-halted`) refuses every
+call, nothing is sent, and each agent falls back to its deterministic rules exactly as
+it does when a model fails. Alerts are still staged and the human gate is untouched,
+because the mission never depended on a model. That is why halting is cheap here.
+
+- **The state is one row in the database,** read before every model call and kept for
+  `MODEL_HALT_CACHE_SECONDS` (2 s), so a halt reaches the other services within that long.
+- **The audit is the database's.** A trigger writes every change to the append-only
+  `action_audit_log` (`model_halt:<id>`, with the actor and the reason), a second trigger
+  refuses DELETE, and the application role may only read and update the row. No code
+  path, and nobody holding that role, can change the state unrecorded.
+- **A state that cannot be read halts.** An unknown state is not "running". A database
+  the migrate job has not reached has no table at all, which is not a halt, so a rolling
+  deploy keeps working.
+- **It is visible.** A banner on every page says who halted it, when and why;
+  `ModelLayerHalted` is a critical alert; the runbook says what to do.
+- **An optional automatic trip** (`MODEL_AUTO_HALT_ENABLED`, off by default) halts after
+  `MODEL_AUTO_HALT_THRESHOLD` refusals within `MODEL_AUTO_HALT_WINDOW_SECONDS` for a
+  credential or a protected value found in a prompt. It counts only those: a
+  misconfigured role or an oversized prompt is a bug to fix, not an attack to halt for.
+  A trip is as visible as a human's halt, and only a supervisor resumes it. It is
+  optional because it can be provoked on purpose to switch the AI layer off. The count
+  is per process: each service counts the refusals it saw.
+
+Proof: `tests/test_model_halt.py`, `tests/test_model_halt_page.py`.
+
 ## 1. AI execution boundary: `src/llm_client.py`
 
 **Guarantee.** No model is reached except through one function, and that
@@ -75,6 +151,57 @@ repair limits, and the fallbacks.
 - `tests/test_governance.py::test_a_refused_call_sends_nothing_and_is_recorded_as_costing_nothing`
 - `tests/test_model_telemetry.py`
 - `tests/test_redaction.py`
+- `tests/test_outbound_leak_check.py`
+
+**What keeps an identifier from reaching a model, in layers.** No single layer
+is a guarantee; the design is that a miss in one is not enough.
+1. **Choose the fields.** Each agent is shown a bounded projection built field
+   by field (the Watch Officer's `project_for_model`, the Critic's SQL column
+   list), not a record. A field that was never selected cannot leak.
+2. **Pseudonymize identities, drop measurements.** `pseudonymize_structured`
+   gives a flight a token (`AC-1`) that means nothing outside one prompt, so a
+   model can tell two flights apart without learning which; positions,
+   altitudes, codes and raw payloads are dropped. The Planner puts the tokens
+   back in its answer, locally (`Pseudonymizer.reveal`); nothing is sent.
+3. **Scrub by pattern.** `redact_text` runs on every prompt at the chokepoint,
+   with no opt-out. It is a guess about what an identifier looks like.
+4. **Look for the values.** Callers pass `protected_values`: what they read
+   from their own records under a sensitive key (`collect_sensitive_values`).
+   `count_leaks` searches the finished prompt for those values themselves, so
+   it finds a registration written `G-ABCD` that no pattern anticipated. A hit
+   is the `no-protected-values-in-prompts` rule: the call is blocked, recorded
+   with the rule that refused it, and the agent falls back to its rules. Only
+   the count is logged, never the values.
+5. **Watch it.** `ProtectedValueBlockedFromPrompt` (critical) fires on any
+   block; a test fails if a model call site stops passing `protected_values`,
+   and a corpus of identifier shapes must satisfy "whatever the scrub leaves
+   in, the value check finds".
+
+**Limits, stated plainly.**
+- The value check knows only the values callers extracted. An identifier that
+  appears only inside free text nobody parsed is not on its list.
+- A 4-digit code (a beacon code) cannot be told from a number in prose, so
+  values under 5 digits are not checked by value, counted in digits (so `100.0`
+  is as short as `100`); the keyed and pattern layers cover them. A longer
+  number is compared as written (`38.8951` is found as `-38.8951`, not in
+  `388951`), but a 5-digit altitude or track number can still equal a number
+  that is in the prompt for another reason; that call is refused and falls back
+  to rules, which is the safe direction.
+- Every value a caller read is looked for, however many there are: there is no
+  cap that would leave the shortest identifiers of a large snapshot unchecked.
+- `redacted` in the policy says the scrub is stable (it asks the same patterns
+  that ran it). It is not an independent check; layer 4 is.
+- Detection is still pattern- and value-based. Names, e-mail addresses and
+  free-text personal data outside the aviation identifiers are not covered.
+
+**Next hardening step for an enterprise deployment.** Add a second, independent
+detector over the finished prompt, for example Microsoft Presidio with
+recognizers for N-numbers, callsigns, beacon codes and coordinates, plus its
+general personal-data recognizers, or Azure AI Language PII detection at the
+gateway. Its errors would not be correlated with the patterns here. It is left
+out on purpose: it adds a dependency and needs customization and tuning per
+deployment, and its result could feed the same policy field
+(`protected_values_found`) so the rule does not change.
 
 ## 2. Telemetry boundary: OpenTelemetry
 
@@ -233,7 +360,7 @@ lower, suppress or stage an alert.
 - `src/swim_parse.py` and `src/swim_feed_tais.py`: FAA data handling,
   including `blockAtFAA` withholding and beacon-code release only for active
   flight plans.
-- The Overview verdict (GREEN/AMBER/RED) is computed from conformance, lag
+- The Dashboard verdict (GREEN/AMBER/RED) is computed from conformance, lag
   and open CRITICAL alerts, with no model consulted.
 - The investigation workflow's order never depends on model output.
 

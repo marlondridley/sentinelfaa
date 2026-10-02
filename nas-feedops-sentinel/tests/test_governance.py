@@ -55,6 +55,8 @@ def test_registered_advisory_roles_are_allowed_and_audited(role):
     ({"model": "gemini/gemini-3.8-flash"}, "gateway-aliases-only"),
     ({"model": "openai/some-other-alias"}, "gateway-aliases-only"),
     ({"redacted": False}, "prompts-must-be-redacted"),
+    ({"protected_values_found": 1}, "no-protected-values-in-prompts"),
+    ({"model_halt": True}, "model-halted"),
     ({"prompt": "x" * 120_001}, "prompt-size-ceiling"),
     ({"max_tokens": 4096}, "output-budget-ceiling"),
     ({"prompt": f"context ... api_key={_KEY}"}, "no-credentials-in-prompts"),
@@ -86,7 +88,8 @@ def test_sentinel_payload_shapes_are_not_mistaken_for_credentials():
 def test_every_context_field_is_present_and_never_none():
     """The toolkit treats a missing field as no match, so a deny rule on it would never fire."""
     context = governance.build_context(role=None, model=None, prompt="", max_tokens=0, redacted=False)
-    assert {"role", "model", "prompt_chars", "max_tokens", "redacted", "credentials_found"} <= set(context)
+    assert {"role", "model", "prompt_chars", "max_tokens", "redacted", "credentials_found",
+            "protected_values_found", "model_halt"} <= set(context)
     assert all(value is not None for value in context.values())
 
 
@@ -127,6 +130,31 @@ async def test_a_refused_call_sends_nothing_and_is_recorded_as_costing_nothing(m
     assert (row["role"], row["outcome"], row["attempts"], row["cost_usd"]) == (
         "unregistered", "policy_denied", 0, 0.0)
     assert row["policy_action"] == "deny"
+
+
+async def test_a_prompt_that_still_holds_a_protected_value_is_blocked_before_anything_is_sent(monkeypatch):
+    """
+    UAL12AB is a shape the pattern scrub does not know, so it goes through; the value check, told what the
+    caller read from its records, finds it and the call is refused, recorded, and costs nothing.
+    """
+    import src.llm_client as llm
+
+    async def must_not_be_called(**kwargs):
+        raise AssertionError("a call that leaked a protected value reached the model")
+
+    monkeypatch.setattr(llm.litellm, "acompletion", must_not_be_called)
+    client = llm.LiteLLMClient(model="openai/primary-model")
+
+    with pytest.raises(llm.LLMPolicyDenied, match="no-protected-values-in-prompts"):
+        await client.acall_with_tool(
+            "sys", {"name": "t", "input_schema": {}}, "the aircraft UAL12AB went around",
+            role="critic", protected_values={"UAL12AB"},
+        )
+
+    [row] = await storage.get_model_calls_since(_long_ago())
+    assert (row["role"], row["outcome"], row["attempts"], row["cost_usd"], row["policy_action"], row["policy_rule"]) == (
+        "critic", "policy_denied", 0, 0.0, "block", "no-protected-values-in-prompts")
+    assert "UAL12AB" not in json.dumps({k: str(v) for k, v in row.items()}), "the record must not carry the value"
 
 
 async def test_a_refusal_degrades_the_critic_to_its_rules_like_any_model_failure(monkeypatch, tmp_path):

@@ -95,6 +95,22 @@ LLM_CALLS = Counter(
     ["agent", "outcome"],  # outcome: success | error | disabled | guardrail_rejected
 )
 
+MODEL_HALTED = Gauge(
+    "sentinel_model_halted",
+    "1 while the AI layer is halted (every model call refused), 0 while it runs. Set from the halt state this "
+    "process last read.",
+)
+MODEL_HALT_CHECKED = Gauge(
+    "sentinel_model_halt_checked_timestamp_seconds",
+    "When this process last read the halt state. An alert on the halt ignores a process that has not read it "
+    "lately, so a process that sat idle through a resume cannot hold the alert open.",
+)
+MODEL_HALT_CHANGES = Counter(
+    "sentinel_model_halt_changes_total",
+    "Halts and resumes made by this process, by new state and by who: a supervisor or the automatic trip.",
+    ["to", "source"],
+)
+
 LLM_CIRCUIT_STATE = Gauge(
     "nas_llm_circuit_state",
     "Circuit breaker per model alias: 0 closed, 1 half-open (probing), 2 open (calls refused).",

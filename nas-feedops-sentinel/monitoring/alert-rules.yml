@@ -104,12 +104,37 @@ groups:
           summary: "An agent attempted a decide/write/stage tool call and was blocked"
           description: "Search the logs for tool_call_refused_by_policy (rule agents-never-decide-or-write). docs/runbooks.md."
 
+      - alert: ModelLayerHalted
+        # Every model call is being refused: a supervisor halted the AI layer, the optional automatic trip did, or
+        # the halt state cannot be read (src/model_halt.py). Alerts are still staged and the rules still run, so
+        # this is about advice, not about the mission. A process that has not read the state in ten minutes is
+        # ignored, so one that sat idle through a resume cannot hold the alert open.
+        expr: max((sentinel_model_halted == 1) and (time() - sentinel_model_halt_checked_timestamp_seconds < 600)) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "The AI layer is halted: every model call is refused"
+          description: "Find out who and why: the dashboard banner, or action_audit_log rows under model_halt:. docs/runbooks.md."
+
+      - alert: ProtectedValueBlockedFromPrompt
+        # The prompt still held a value the caller read from its own records and
+        # must not send (a callsign, a registration, a position), after the
+        # scrub had run. The call was refused and nothing was sent, but the
+        # scrub missed something: that is a gap in src/redaction.py, or a caller
+        # that put an identifier where no pattern looks.
+        expr: sum by (agt_agent_id) (increase(agent_policy_violations_total{agt_audit_action="model_call", agent_policy_name="no-protected-values-in-prompts"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "A model call by {{ $labels.agt_agent_id }} was blocked: a protected value was still in the prompt"
+          description: "The scrub missed a value. Search the logs for model_call_refused_by_policy (protected_values_found). docs/runbooks.md."
+
       - alert: ModelCallsRefusedByPolicy
         # A refused model call sends nothing and the agent falls back to its
         # rules. In normal operation there are none: a refusal means an
         # unregistered role, an alias outside the gateway, an oversized prompt,
-        # or a credential in a prompt (block).
-        expr: sum by (agt_agent_id, agent_policy_name) (increase(agent_policy_violations_total{agt_audit_action="model_call"}[15m])) > 0
+        # or a credential in a prompt (block). A protected value in a prompt has
+        # its own, louder alert above, so it is left out here, and so is a halt:
+        # it refuses every call, and ModelLayerHalted says so once.
+        expr: sum by (agt_agent_id, agent_policy_name) (increase(agent_policy_violations_total{agt_audit_action="model_call", agent_policy_name!="no-protected-values-in-prompts", agent_policy_name!="model-halted"}[15m])) > 0
         labels: {severity: warning}
         annotations:
           summary: "Model calls by {{ $labels.agt_agent_id }} refused by rule {{ $labels.agent_policy_name }}"

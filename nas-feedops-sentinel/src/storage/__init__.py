@@ -45,6 +45,7 @@ from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
 from src.storage.repositories.model_calls_repo import ModelCallsRepository
+from src.storage.repositories.model_halt_repo import ModelHaltRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
 from src.storage.repositories.surface_repo import SurfaceRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
@@ -74,6 +75,8 @@ __all__ = [
     "get_critic_verdicts_since",
     "record_model_call",
     "get_model_calls_since",
+    "get_model_halt",
+    "set_model_halt",
     "get_investigations_since",
     "get_investigation_for_action",
     "get_latest_investigation",
@@ -81,6 +84,7 @@ __all__ = [
     "get_staged_actions_by_ids",
     "get_audit_log_for_actions",
     "get_critic_verdicts_for_alerts",
+    "get_latest_critic_verdicts_for_actions",
     "save_planner_result",
     "get_recent_planner_results",
     "save_critic_result",
@@ -111,6 +115,7 @@ __all__ = [
     "get_draft_operational_tickets",
     "get_ticket_by_id",
     "get_ticket_by_action_id",
+    "get_tickets_by_action_ids",
     "mark_operational_ticket_monitoring",
     "decide_staged_action_with_ticket",
 ]
@@ -287,6 +292,14 @@ async def record_model_call(row: dict) -> None:
     await repo.insert(row)
 
 
+async def get_model_halt() -> dict | None:
+    return await ModelHaltRepository(await get_db_pool()).get()
+
+
+async def set_model_halt(*, halted: bool, reason: str, source: str, actor: str) -> dict:
+    return await ModelHaltRepository(await get_db_pool()).set(halted=halted, reason=reason, source=source, actor=actor)
+
+
 async def get_model_calls_since(since: datetime) -> list[dict]:
     repo = ModelCallsRepository(await get_db_pool())
     return await repo.get_since(since)
@@ -340,6 +353,11 @@ async def get_audit_log_for_actions(action_ids: list[str]) -> list[dict]:
 async def get_critic_verdicts_for_alerts(alert_ids: list[str]) -> list[dict]:
     repo = AnalysisRepository(await get_db_pool())
     return await repo.get_critic_verdicts_for_alerts(alert_ids)
+
+
+async def get_latest_critic_verdicts_for_actions(action_ids: list[str]) -> dict[str, dict]:
+    repo = AnalysisRepository(await get_db_pool())
+    return await repo.get_latest_verdicts_for_actions(action_ids)
 
 
 # ── Agent analysis (critic_results / planner_results) ─────────────────────────
@@ -472,6 +490,11 @@ async def get_ticket_by_id(ticket_id: str) -> OperationalTicket | None:
 async def get_ticket_by_action_id(action_id: str) -> OperationalTicket | None:
     repo = TicketsRepository(await get_db_pool())
     return await repo.get_by_action_id(action_id)
+
+
+async def get_tickets_by_action_ids(action_ids: list[str]) -> dict[str, OperationalTicket]:
+    repo = TicketsRepository(await get_db_pool())
+    return await repo.get_by_action_ids(action_ids)
 
 
 async def mark_operational_ticket_monitoring(

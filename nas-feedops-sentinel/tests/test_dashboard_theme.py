@@ -168,6 +168,110 @@ def test_unlinked_tile_is_a_div_with_no_drill_affordance():
     assert "kpi-drill" not in tile
 
 
+def _rule(css: str, selector: str) -> str:
+    """The declarations of the stylesheet's one rule with exactly this selector."""
+    [declarations] = re.findall(r"(?m)^\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    return declarations
+
+
+def _stylesheet(monkeypatch) -> str:
+    emitted: list[str] = []
+    monkeypatch.setattr(theme.st, "markdown", lambda body, **_: emitted.append(body))
+    theme.inject_theme()
+    [css] = emitted
+    return css
+
+
+# ── The KPI strip's layout ──────────────────────────────────────────────────────
+# What these pin is the mechanism, read from the stylesheet. That it does what it is for was measured in a
+# browser, at 1024, 1280, 1440 and 1920 px on every page: within a strip, every tile's number at one height,
+# every badge beside its label or every badge above it, no badge over a label, and no six-tile strip with a
+# word running into the next tile. A change here needs that look again; there is no browser in the suite.
+
+def test_the_drill_badge_sits_beside_the_label_never_over_it(monkeypatch):
+    """
+    The badge was position:absolute over the tile's top right corner, and the label kept 64px clear for it:
+    enough for "OPEN →", not for "BREAKDOWN →" or "BY SERVICE →", which printed over the label on a
+    laptop-width tile. The badge is now a cell of the tile's own grid: its own width, in the label's row.
+    """
+    css = _stylesheet(monkeypatch)
+
+    tile = _rule(css, ".kpi:has(> .kpi-value)")
+    assert "display: grid" in tile and "grid-template-columns: minmax(0, 1fr) auto" in tile
+    badge, label = _rule(css, ".kpi:has(> .kpi-value) > .kpi-drill"), _rule(css, ".kpi:has(> .kpi-value) > .kpi-label")
+    assert "grid-row: 2" in badge and "grid-column: 2" in badge and "white-space: nowrap" in badge
+    assert "grid-row: 2" in label and "grid-column: 1" in label, "the label wraps in what the badge leaves"
+    assert "grid-column: 1 / -1" in _rule(css, ".kpi:has(> .kpi-value) > .kpi-label:first-child"), \
+        "a tile with no badge gives its label the whole row"
+    assert not re.search(r"\.kpi-drill\s*\{[^}]*position:\s*absolute", css), "out of the row, it prints over the label"
+    assert not re.search(r"\.kpi-label\s*\{[^}]*padding-right", css), "a fixed reservation fits one badge text only"
+
+    html = theme.kpi("Schema conformance", "98.2", unit="%", href=theme.drill_href("health"), drill="BREAKDOWN →")
+    assert html.index("kpi-drill") < html.index("kpi-label"), "the badge is the tile's first child: a label that is first has none"
+    assert '<div class="kpi-label">Schema conformance</div><div class="kpi-value"' in html, \
+        "the page tests read a tile as its label, then its value"
+
+
+def test_the_numbers_of_a_strip_sit_on_one_line(monkeypatch):
+    """
+    Each tile laid itself out alone, so a one-line label put its number 20px above a two-line label's, and a
+    tile whose badge had wrapped above its label sat lower still. The tiles now share the strip's rows.
+    """
+    css = _stylesheet(monkeypatch)
+
+    strip, tile = _rule(css, ".kpis"), _rule(css, ".kpi:has(> .kpi-value)")
+    assert "display: grid" in strip and "row-gap: 0" in strip, "a gap between the shared rows would open up inside every tile"
+    assert "grid-template-rows: subgrid" in tile and "grid-row: span 4" in tile, "badge, label, number, footnote"
+    assert "grid-row: 3" in _rule(css, ".kpi > .kpi-value") and "grid-row: 4" in _rule(css, ".kpi > .kpi-foot")
+    assert "margin-bottom: 10px" in _rule(css, ".kpi"), "the space between two rows of tiles is the tile's own"
+    assert "container-type" not in tile and "container-type" not in _rule(css, ".kpi"), \
+        "a tile that is a size container cannot borrow the strip's rows"
+
+
+def test_every_tile_of_a_narrow_strip_puts_its_badge_above_its_label(monkeypatch):
+    """
+    Left to each tile, a strip mixed the two layouts: the tiles with a long word or a long badge stacked and
+    their neighbours did not. The strip measures itself and decides for all of them.
+    """
+    css = _stylesheet(monkeypatch)
+
+    assert "container-type: inline-size" in _rule(css, ".kpis")
+    for columns in range(1, 9):
+        width = columns * (theme.KPI_BESIDE_MIN_PX + 31) + (columns - 1) * 10
+        assert theme.kpi_stack_width(columns) == width, "tiles wider than KPI_BESIDE_MIN_PX, inside padding and border"
+        [rule] = re.findall(r"@container \(max-width: " + str(width) + r"px\) \{ (\.kpis-" + str(columns) + r" .*) \}", css)
+        assert f".kpis-{columns} > .kpi > .kpi-drill {{ grid-row: 1; grid-column: 1 / -1; justify-self: end; }}" in rule
+        assert f".kpis-{columns} > .kpi > .kpi-label {{ grid-column: 1 / -1; }}" in rule
+    # After the rules they override: the same specificity, so the later one wins.
+    assert css.index(".kpi:has(> .kpi-value) > .kpi-drill") < css.index("@container (max-width:")
+    assert theme.KPI_BESIDE_MIN_PX >= 197, "CONFORMANCE beside BREAKDOWN → needs 197px; narrower and that tile alone would not fit"
+
+
+def test_a_small_window_folds_six_tiles_into_two_rows_of_three(monkeypatch):
+    """Below about 1100px six tiles across are narrower than one word of their labels, and the words ran into the next tile."""
+    css = _stylesheet(monkeypatch)
+    emitted: list[str] = []
+    monkeypatch.setattr(theme.st, "markdown", lambda body, **_: emitted.append(body))
+
+    theme.kpi_row([theme.kpi("A", "1")] * 6, columns=6)
+    theme.kpi_row([theme.kpi("A", "1")] * 5)
+
+    assert '<div class="kpis kpis-6" style="grid-template-columns:repeat(6, minmax(0,1fr));">' in emitted[0]
+    assert '<div class="kpis kpis-5" ' in emitted[1], "the strip says how many columns it has"
+    [fold] = re.findall(r"@media \(max-width: (\d+)px\) \{\s*\.kpis\.kpis-6 \{ ([^}]*)\}", css)
+    assert fold == ("1100", "grid-template-columns: repeat(3, minmax(0, 1fr)) !important; ")
+    assert theme.KPI_FOLD_BELOW_PX == 1100
+    assert css.count("@media (max-width: 1100px)") == 1, "only the six-tile strip folds; at wider windows nothing changes"
+
+
+def test_a_facility_card_is_still_a_plain_block(monkeypatch):
+    """A card with no number (the Dashboard's airports) has no rows to share; only a tile with a number is a grid."""
+    css = _stylesheet(monkeypatch)
+    assert "display: block" in _rule(css, ".kpi")
+    assert "display: grid" in _rule(css, ".kpi:has(> .kpi-value)")
+    assert not re.search(r"(?m)^\s*\.kpi > \* \{", css), "the layout rules apply to tiles with a number only"
+
+
 def test_map_tooltips_escape_what_they_interpolate():
     """
     The deck.gl tooltip is HTML assigned to innerHTML, and aircraft_id is an

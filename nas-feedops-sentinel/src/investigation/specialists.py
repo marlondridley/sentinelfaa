@@ -48,7 +48,7 @@ from src.logging_config import get_logger
 from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.model_telemetry import prompt_fingerprint
 from src.prompts_loader import load_prompt, system_prompt, tool_schema
-from src.redaction import redact_structured
+from src.redaction import Pseudonymizer, collect_sensitive_values, pseudonymize_structured
 from src.untrusted import fence_fields
 
 _log = get_logger(__name__)
@@ -120,13 +120,18 @@ def _view_payload(view: Investigation) -> dict[str, Any]:
 
 
 async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tuple[dict[str, Any], Provenance]:
+    if agent == "watch_officer" and not settings.WATCH_OFFICER_ENABLED:
+        # The brief a reviewer reads is the Watch Officer's, so its switch stops it here too, not only the overview.
+        raise ModelUnavailable("the Watch Officer is switched off (WATCH_OFFICER_ENABLED)")
     client = build_llm_client(model=settings.INVESTIGATION_MODEL)
     if client is None:
         raise ModelUnavailable("no LLM client configured")
 
     system = system_prompt(prompt_name)
     tool = tool_schema(prompt_name)
-    user = json.dumps(fence_fields(redact_structured(payload)), default=str, sort_keys=True)
+    # Read before the scrub drops them: the call is refused if any of these values is still in what goes out.
+    protected = collect_sensitive_values(payload)
+    user = json.dumps(fence_fields(pseudonymize_structured(payload, Pseudonymizer())), default=str, sort_keys=True)
     provenance = Provenance(
         method="llm",
         model=settings.INVESTIGATION_MODEL,
@@ -140,6 +145,7 @@ async def ask_model(prompt_name: str, agent: str, payload: dict[str, Any]) -> tu
         raw = await client.acall_with_tool(
             system_prompt=system, tool=tool, user_message=user, max_tokens=1200, role=agent,
             prompt_version=str(load_prompt(prompt_name).get("version", "")),
+            protected_values=protected,
         )
         LLM_CALLS.labels(agent=agent, outcome="success").inc()
         return raw, provenance.model_copy(update={"latency_ms": round((time.perf_counter() - start) * 1000, 1)})

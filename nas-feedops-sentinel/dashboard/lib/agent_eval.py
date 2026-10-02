@@ -2,7 +2,7 @@
 Agent evaluation on the dashboard, in three layers of progressive disclosure:
 mission first, AI second, telemetry on demand.
 
-  Layer 1  Overview           one "AI investigation" card, five indicators,
+  Layer 1  Dashboard          one "AI investigation" card, five indicators,
                               for the most recent investigation
   Layer 2  Review page        the investigation's evaluation and its
                               governance gates, next to the record itself
@@ -45,6 +45,35 @@ def usd(value: float | None) -> str:
     return f"${value:.4f}" if value < 0.01 else f"${value:.2f}"
 
 
+# ── Who calculated a number, in words ────────────────────────────────────────
+# The evaluation tags every value with its kind (src/agt_metrics.py CATEGORIES). The tags are precise and mean
+# nothing to someone reading the page, so the page says what each one means instead.
+_CALCULATED_BY = (
+    ("AGT-native", "Agent Governance Toolkit"),
+    ("AGT-compatible", "Sentinel's calculation of a toolkit metric"),
+    ("Sentinel-specific", "Sentinel's own check"),
+)
+CALCULATED_BY_HELP = (
+    "Who computed the number, not the data it was computed from. "
+    "Agent Governance Toolkit: Microsoft's open-source toolkit for governing AI agents computes it. "
+    "Sentinel's calculation of a toolkit metric: the toolkit defines the metric, but the installed version "
+    "computes it wrongly (a test shows each defect), so Sentinel computes it until that is fixed. "
+    "Sentinel's own check: the toolkit has no such metric; it is specific to this mission."
+)
+
+
+def calculated_by(source: str) -> str:
+    """'AGT-native: agent-sre ResponseLatency' as 'Agent Governance Toolkit (agent-sre ResponseLatency)'."""
+    text = str(source or "").strip()
+    for tag, words in _CALCULATED_BY:
+        if text.startswith(tag):
+            rest = (text[len(tag):].lstrip(" :").replace("ECE", "expected calibration error")
+                    .replace("AGT bug", "the toolkit's own has a known defect: bug"))
+            rest = rest[1:-1] if rest.startswith("(") and rest.endswith(")") else rest
+            return f"{words} ({rest})" if rest else words
+    return text
+
+
 def overall(ev: Any) -> str:
     """The card's one status: red on any failed gate, amber on any warning, green otherwise."""
     statuses = set(ev.gate_summary.values())
@@ -73,7 +102,7 @@ def load_for_action(action_id: str):
         return None
 
 
-# ── Layer 1: the Overview card ───────────────────────────────────────────────
+# ── Layer 1: the Dashboard card ───────────────────────────────────────────────
 
 def render_card(ev: Any, *, sla_s: float | None, budget_usd: float | None) -> None:
     """Five indicators for the latest investigation, each one click from its detail."""
@@ -146,7 +175,7 @@ def render_evaluation(ev: Any) -> None:
                    "decision, the gateway's usage and cost, the sealed record's hash, the audit log.")
         st.dataframe(pd.DataFrame([
             {"": GATE_ICON.get(g.status, ""), "Gate": g.group, "Check": g.name, "Status": g.status,
-             "Detail": g.detail, "Decided by": g.source}
+             "Detail": g.detail, "Decided by": calculated_by(g.source)}
             for g in ev.gates
         ]), hide_index=True, width="stretch")
         stages = {**ev.stages_s, **({"handoffs": ev.handoff_s} if ev.handoff_s is not None else {})}
@@ -171,3 +200,56 @@ def render_evaluation(ev: Any) -> None:
                 {"measure": "served by", "value": ", ".join(ev.served_models) or NO_DATA},
                 {"measure": "outcomes", "value": ", ".join(f"{k} {v}" for k, v in ev.outcomes.items()) or "none"},
             ]), hide_index=True, width="stretch")
+
+
+# ── Layer 3: what is behind one Health number (Agent Evaluation page) ────────
+
+EVIDENCE_SHOWN = 25
+_REVIEW_WORD = {"PENDING": "open"}
+
+
+def render_evidence(items: list, unit: str) -> None:
+    """
+    The investigations, model calls and recommendations one dimension was computed from
+    (src/evaluation_evidence.py), what counts against it first. Each row names its agent and links to the
+    review it belongs to, so the number leads to the work.
+    """
+    samples, against = sum(i.samples for i in items), sum(i.against for i in items)
+    if not items:
+        st.caption(f"No {unit} in the window: nothing was measured.")
+        return
+    shown = items[:EVIDENCE_SHOWN]
+    cells = f"padding:7px 10px;border-bottom:1px solid {theme.DARK_GRAY2};vertical-align:top;font-size:14px;"
+    rows = []
+    for item in shown:
+        tone = theme.TONES["bad" if item.against else "ok"][0]
+        review = "—"
+        if item.action_id:
+            where = " · ".join(x for x in (item.airport, (item.alert_type or "").removeprefix("ALERT_")) if x)
+            status = _REVIEW_WORD.get(item.review_status or "", (item.review_status or "").lower())
+            review = (f'<a href="{theme._attr_href(theme.drill_href("critic", review=item.action_id))}" target="_self" '
+                      f'style="color:{theme.BLUE5};text-decoration:none;font-weight:600;">'
+                      f'{theme._esc(where or "review")} &rarr;</a>'
+                      + (f' <span style="color:{theme.GRAY1};">{theme._esc(status)}</span>' if status else ""))
+        when = f"{item.at:%b %d %H:%M}" if hasattr(item.at, "strftime") else "—"
+        rows.append(
+            f'<tr><td style="{cells}color:{tone};width:18px;">{"■" if item.against else "●"}</td>'
+            f'<td class="mono" style="{cells}color:{theme.GRAY3};white-space:nowrap;">{theme._esc(when)}</td>'
+            f'<td style="{cells}color:{theme.GRAY3};white-space:nowrap;">{theme._esc(item.kind)}</td>'
+            f'<td style="{cells}color:{theme.GRAY5};">{theme._esc(item.reading)}</td>'
+            f'<td style="{cells}color:{theme.GRAY5};white-space:nowrap;">'
+            f'{theme._esc(", ".join(a.replace("_", " ") for a in item.agents) or "—")}</td>'
+            f'<td style="{cells}white-space:nowrap;">{review}</td></tr>')
+    head = f"padding:6px 10px;text-align:left;font-size:13px;font-weight:700;letter-spacing:0.07em;" \
+           f"text-transform:uppercase;color:{theme.GRAY1};border-bottom:1px solid {theme.DARK_GRAY3};"
+    st.markdown(
+        f'<div style="font-size:14px;color:{theme.GRAY3};margin:2px 0 6px 0;">'
+        f'<b style="color:{theme.LIGHT_GRAY5};">{against:,} of {samples:,}</b> {theme._esc(unit)} count against it'
+        + (f" · the {len(shown)} rows that matter most of {len(items):,}" if len(items) > len(shown) else "")
+        + "</div>"
+        f'<table style="width:100%;border-collapse:collapse;">'
+        f'<thead><tr><th style="{head}"></th><th style="{head}">When (UTC)</th><th style="{head}">What</th>'
+        f'<th style="{head}">Its reading</th><th style="{head}">Agent</th><th style="{head}">Review</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>',
+        unsafe_allow_html=True,
+    )

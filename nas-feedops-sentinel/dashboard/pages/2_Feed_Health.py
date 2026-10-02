@@ -5,7 +5,7 @@ Answers mission questions 1, 5 and 6: is the feed alive, are tracks
 stale/missing/abnormal, and is a problem isolated to one facility or
 sector-wide.
 
-This is the landing page for four different drill-downs from the Overview
+This is the landing page for four different drill-downs from the Dashboard
 KPI strip, which is why it opens on a view chosen by the URL rather than
 always on the same one:
 
@@ -15,7 +15,7 @@ always on the same one:
     ?focus=rvr          runway visual range
     ?airport=KIAD       narrows every view to one facility
 
-Arriving from "schema conformance 100%" on the Overview and landing on a
+Arriving from "schema conformance 100%" on the Dashboard and landing on a
 page that opens on an airport table would make the operator hunt for the
 thing they just clicked. They land on the breakdown instead.
 """

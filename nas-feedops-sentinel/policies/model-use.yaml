@@ -21,6 +21,15 @@
 #   redacted          whether the prompt went through src/redaction.py
 #   credentials_found credential patterns in the outgoing prompt
 #                     (agent_os.CredentialRedactor)
+#   model_halt        true while the AI layer is halted (src/model_halt.py): a supervisor halted it, or the
+#                     optional automatic trip did, or the halt state could not be read. Every call is refused.
+#   protected_values_found
+#                     how many of the values the caller read from its own records
+#                     and must not send (a callsign, a registration, a position)
+#                     appear in the prompt anyway (src/redaction.count_leaks).
+#                     `redacted` only says the scrub is stable; this looks for
+#                     the values themselves, so it does not depend on a pattern
+#                     having anticipated their format.
 #
 # Changing what a model may receive is a change to this file, reviewed like
 # code; tests/test_governance.py pins the decisions below.
@@ -35,11 +44,27 @@ defaults:
   action: deny
 
 rules:
+  - name: model-halted
+    priority: 110
+    condition: {field: model_halt, operator: eq, value: true}
+    action: block
+    message: >
+      The AI layer is halted. No model call is sent; every agent falls back to its deterministic rules. A
+      supervisor resumes it (src/model_halt.py).
+
   - name: no-credentials-in-prompts
     priority: 100
     condition: {field: credentials_found, operator: gt, value: 0}
     action: block
     message: The prompt contains a credential pattern; it is never sent to a model.
+
+  - name: no-protected-values-in-prompts
+    priority: 98
+    condition: {field: protected_values_found, operator: gt, value: 0}
+    action: block
+    message: >
+      The prompt still holds a value the caller read from its records and must
+      not send. It is never sent to a model; the agent falls back to its rules.
 
   - name: prompts-must-be-redacted
     priority: 95

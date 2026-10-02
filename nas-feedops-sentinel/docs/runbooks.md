@@ -102,6 +102,46 @@ nothing happened, but it should never be tried at all.
 3. Do not work around it by granting the tool in `policies/tool-use.yaml`.
    The rule exists so that no agent can reach the human gate.
 
+### ModelLayerHalted (critical)
+
+Every model call is being refused. Either a supervisor halted the AI layer, the optional automatic trip did, or
+the halt state cannot be read. Alerts are still staged and the deterministic rules still run: the mission does
+not depend on a model, so what is lost is the model's advice.
+1. The dashboard shows a banner on every page with who halted it and why. Or read the record:
+   `SELECT actor, note, created_at FROM action_audit_log WHERE action_id LIKE 'model_halt:%' ORDER BY created_at DESC`.
+2. By who:
+   - **A supervisor.** Their reason says why. Resume from the Agent Evaluation page when it is resolved; a
+     reason is required, and it is recorded.
+   - **"system (automatic trip)".** Repeated refusals for a credential or a protected value in a prompt (see
+     `ProtectedValueBlockedFromPrompt` and the `model_halt_tripped_automatically` log line). Find where the
+     value came from, fix it, then resume. Do not just resume: the trip says something is leaking.
+   - **"unreadable".** The halt state could not be read, so calls are held halted. Check the database
+     (`model_halt_unreadable` in the logs). It clears by itself once the table can be read.
+3. A halt reaches every service within `MODEL_HALT_CACHE_SECONDS` (2 s); so does a resume. The alert clears
+   once the services have read it.
+4. The automatic trip is off unless `MODEL_AUTO_HALT_ENABLED` is set. If it halts when nothing is wrong,
+   treat it as someone provoking it, and look at what was being sent.
+
+### ProtectedValueBlockedFromPrompt (critical)
+
+A model call was refused because a value the caller had read from its own
+records, and must not send, was still in the finished prompt. Nothing was
+sent and the agent fell back to its rules, but the redaction missed it.
+1. The alert names the role (`agt_agent_id`). Search the logs for
+   `model_call_refused_by_policy` with `protected_values_found` above zero:
+   it says how many values, never which. Neither the prompt nor the values
+   are logged.
+2. Find where the identifier entered the prompt. The usual cause is a free-text
+   field (a description, a note, an error message) carrying an identifier in a
+   shape `src/redaction.py` has no pattern for, such as a registration written
+   `G-ABCD`. Reproduce it from the record the agent was reading.
+3. Fix at the source: stop passing that field, or project it away
+   (`pseudonymize_structured`), or add the shape to `src/redaction.py` with a
+   case in `tests/test_outbound_leak_check.py`. Do not loosen the rule in
+   `policies/model-use.yaml`: the check is the control that caught it.
+4. Expect more fallbacks to deterministic briefs until it is fixed; that is
+   the safe direction, and each one is recorded as a refused call.
+
 ### ModelCallsRefusedByPolicy (warning)
 
 The model-use policy refused model calls. Nothing was sent, and the agent
@@ -141,7 +181,7 @@ p95 model call time is over 30 s, the readiness objective.
 Over 20% of agent invocations fall back to rules. Investigations are mostly
 rules-only.
 1. Agent Evaluation → Reliability → Agents: which agent?
-2. Its fallback reason is in the investigation's step log (Review page →
+2. Its fallback reason is in the investigation's step log (Review Queue →
    investigation → steps), for example "model call failed", "model
    conclusion not one of …", or "model produced no claim grounded in the
    evidence".
