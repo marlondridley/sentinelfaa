@@ -104,12 +104,25 @@ groups:
           summary: "An agent attempted a decide/write/stage tool call and was blocked"
           description: "Search the logs for tool_call_refused_by_policy (rule agents-never-decide-or-write). docs/runbooks.md."
 
+      - alert: ProtectedValueBlockedFromPrompt
+        # The prompt still held a value the caller read from its own records and
+        # must not send (a callsign, a registration, a position), after the
+        # scrub had run. The call was refused and nothing was sent, but the
+        # scrub missed something: that is a gap in src/redaction.py, or a caller
+        # that put an identifier where no pattern looks.
+        expr: sum by (agt_agent_id) (increase(agent_policy_violations_total{agt_audit_action="model_call", agent_policy_name="no-protected-values-in-prompts"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "A model call by {{ $labels.agt_agent_id }} was blocked: a protected value was still in the prompt"
+          description: "The scrub missed a value. Search the logs for model_call_refused_by_policy (protected_values_found). docs/runbooks.md."
+
       - alert: ModelCallsRefusedByPolicy
         # A refused model call sends nothing and the agent falls back to its
         # rules. In normal operation there are none: a refusal means an
         # unregistered role, an alias outside the gateway, an oversized prompt,
-        # or a credential in a prompt (block).
-        expr: sum by (agt_agent_id, agent_policy_name) (increase(agent_policy_violations_total{agt_audit_action="model_call"}[15m])) > 0
+        # or a credential in a prompt (block). A protected value in a prompt has
+        # its own, louder alert above, so it is left out here.
+        expr: sum by (agt_agent_id, agent_policy_name) (increase(agent_policy_violations_total{agt_audit_action="model_call", agent_policy_name!="no-protected-values-in-prompts"}[15m])) > 0
         labels: {severity: warning}
         annotations:
           summary: "Model calls by {{ $labels.agt_agent_id }} refused by rule {{ $labels.agent_policy_name }}"

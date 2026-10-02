@@ -20,6 +20,7 @@ from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import AlertEvent, CriticResult
 from src.model_telemetry import forget_last_call, last_call_id
 from src.prompts_loader import prompt_version, system_prompt, tool_schema
+from src.redaction import collect_sensitive_values
 from src.untrusted import fence
 
 _router = ContextRouter()
@@ -186,4 +187,7 @@ class CriticAgent:
                 max_tokens=1000,
                 role="critic",
                 prompt_version=prompt_version("critic"),
+                # What the critic reads is chosen column by column in SQL (storage get_events_for_critic),
+                # so the evidence holds no identifiers by construction; the alert itself is checked as well.
+                protected_values=collect_sensitive_values(alert.model_dump(), context),
             )
