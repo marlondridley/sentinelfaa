@@ -93,8 +93,8 @@ jobs:
             nas-feedops-sentinel:test sh -c '
               python -m pytest -p no:cacheprovider -q \
                 --cov=src --cov=dashboard --cov-branch --cov-report=term-missing:skip-covered &&
-              echo "src/ coverage (floor 84%):" &&
-              coverage report --include="src/*" --fail-under=84 --format=total'
+              echo "src/ coverage (floor 95%):" &&
+              coverage report --include="src/*" --fail-under=95 --format=total'
 
       - name: Infrastructure tests (PKI ceremony, identity wiring, SPIRE drift engine)
         # instraclustr/tests, in the same image (pytest, cryptography, OpenSSL 3):

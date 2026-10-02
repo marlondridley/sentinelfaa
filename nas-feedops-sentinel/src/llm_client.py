@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Collection
 from typing import Any, Protocol
 
 # Before the import: otherwise litellm downloads its model-price map from
@@ -44,7 +45,7 @@ from src.llm_guard import breaker_for, current_budget
 from src.logging_config import get_correlation_id, get_logger
 from src.model_telemetry import ModelCall, classify_outcome, prompt_fingerprint, sha256_hex
 from src.model_telemetry import record as record_model_call
-from src.redaction import is_redacted, redact_text_counted
+from src.redaction import count_leaks, is_redacted, redact_text_counted
 
 _log = get_logger(__name__)
 
@@ -210,6 +211,7 @@ class LLMClient(Protocol):
         model: str | None = None,
         temperature: float = 0.0,
         role: str | None = None,
+        protected_values: Collection[str] = (),
     ) -> dict[str, Any]:
         ...
 
@@ -250,13 +252,15 @@ class LiteLLMClient:
         model: str | None = None,
         temperature: float = 0.0,
         role: str | None = None,
+        protected_values: Collection[str] = (),
     ) -> dict[str, Any]:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(
                 self.acall_with_tool(
-                    system_prompt, tool, user_message, max_tokens, model, temperature, role
+                    system_prompt, tool, user_message, max_tokens, model, temperature, role,
+                    protected_values=protected_values,
                 )
             )
         raise LLMPermanentError(
@@ -274,6 +278,7 @@ class LiteLLMClient:
         temperature: float = 0.0,
         role: str | None = None,
         prompt_version: str | None = None,
+        protected_values: Collection[str] = (),
     ) -> dict[str, Any]:
         """
         One governed, measured call.
@@ -285,7 +290,9 @@ class LiteLLMClient:
         the schema repair counted as part of it. `role` names the advisory role calling; a call
         without one is evaluated as unregistered, which the policy refuses. `prompt_version` is the
         prompt file's version label (prompts_loader.prompt_version), kept in the record beside the
-        prompt's hash.
+        prompt's hash. `protected_values` are the values the caller read from its own records and must not send
+        (src/redaction.collect_sensitive_values): the finished prompt is searched for them, and one found
+        refuses the call under the model-use policy. A caller that passes none gets the pattern scrub alone.
         """
         # A proxy alias only, normalized to "openai/<alias>" as the policy
         # expects it; a provider route is refused before anything else.
@@ -315,9 +322,13 @@ class LiteLLMClient:
                 prompt_hash=prompt_fingerprint(system_prompt, tool), prompt_version=prompt_version or None,
                 input_hash=sha256_hex(redacted_user_message), redaction_count=redaction_count,
             )
+            outgoing = f"{system_prompt}\n{redacted_user_message}"
             decision = evaluate_model_call(
-                role=role, model=target_model, prompt=f"{system_prompt}\n{redacted_user_message}",
+                role=role, model=target_model, prompt=outgoing,
                 max_tokens=max_tokens, redacted=is_redacted(redacted_user_message),
+                # The independent check: not "did the scrub finish" but "is any value I was told to
+                # withhold still in what goes out". Only the count leaves this line, never the values.
+                protected_values_found=count_leaks(outgoing, protected_values),
             )
             which = "model-use"
             if decision.allowed:

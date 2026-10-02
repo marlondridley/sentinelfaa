@@ -14,6 +14,7 @@ from src.llm_client import build_llm_client
 from src.logging_config import get_logger
 from src.models import PlannerResult
 from src.prompts_loader import prompt_version, system_prompt, tool_schema
+from src.redaction import Pseudonymizer, collect_sensitive_values, pseudonymize_structured
 from src.untrusted import fence, fence_fields
 
 _log = get_logger(__name__)
@@ -114,8 +115,9 @@ class PlannerAgent:
         if not self._llm:
             return self._query_deterministic(question, context_summary)
 
+        pseudonyms = Pseudonymizer()
         try:
-            parsed = await self._call_llm(question, context_summary)
+            parsed = await self._call_llm(question, context_summary, pseudonyms)
         except Exception as err:  # noqa: BLE001 -- any failure degrades, never raises to the operator
             return PlannerResult(
                 question=question,
@@ -146,20 +148,30 @@ class PlannerAgent:
 
         return PlannerResult(
             question=question,
-            answer=_with_records(str(parsed["answer"]), surface),
+            # The model wrote about AC-1 and AC-2; the operator reads this on this system, so the tokens go back
+            # to the flights they stood for. (Nothing here is sent anywhere.)
+            answer=_with_records(pseudonyms.reveal(str(parsed["answer"])), surface),
             confidence=float(parsed["confidence"]),
             citations=list(parsed.get("citations") or []),
-            recommended_actions=list(parsed["recommended_actions"]),
-            sub_queries=list(parsed["sub_queries"]),
+            recommended_actions=[pseudonyms.reveal(str(a)) for a in parsed["recommended_actions"]],
+            sub_queries=[pseudonyms.reveal(str(q)) for q in parsed["sub_queries"]],
         )
 
-    async def _call_llm(self, question: str, context: dict[str, Any]) -> dict[str, Any]:
-        """Return the model's structured output, unmodified. Raises on any LLM failure."""
+    async def _call_llm(
+        self, question: str, context: dict[str, Any], pseudonyms: Pseudonymizer | None = None,
+    ) -> dict[str, Any]:
+        """
+        Return the model's structured output, unmodified. Raises on any LLM failure.
+
+        A flight in the context goes to the model as a token (AC-1), so it can say which flight took longest
+        without being told which. `pseudonyms` is the caller's, so the same tokens can be put back in the answer.
+        """
+        pseudonyms = pseudonyms or Pseudonymizer()
         # The question is typed by a person and the critic reviews in the context were written by a model
         # reading feed text: both are data (src/untrusted.py).
         user_content = (
             f"Question: {fence(question, 'question')}\n\n"
-            f"Current System Context:\n{json.dumps(fence_fields(context), indent=2, default=str)}"
+            f"Current System Context:\n{json.dumps(fence_fields(pseudonymize_structured(context, pseudonyms)), indent=2, default=str)}"
         )
 
         # Route call through the LiteLLM client proxy, forced to structured
@@ -172,6 +184,7 @@ class PlannerAgent:
             temperature=0.1,
             role="planner",
             prompt_version=prompt_version("planner"),
+            protected_values=collect_sensitive_values(context),
         )
 
     @staticmethod

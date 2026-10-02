@@ -102,6 +102,26 @@ nothing happened, but it should never be tried at all.
 3. Do not work around it by granting the tool in `policies/tool-use.yaml`.
    The rule exists so that no agent can reach the human gate.
 
+### ProtectedValueBlockedFromPrompt (critical)
+
+A model call was refused because a value the caller had read from its own
+records, and must not send, was still in the finished prompt. Nothing was
+sent and the agent fell back to its rules, but the redaction missed it.
+1. The alert names the role (`agt_agent_id`). Search the logs for
+   `model_call_refused_by_policy` with `protected_values_found` above zero:
+   it says how many values, never which. Neither the prompt nor the values
+   are logged.
+2. Find where the identifier entered the prompt. The usual cause is a free-text
+   field (a description, a note, an error message) carrying an identifier in a
+   shape `src/redaction.py` has no pattern for, such as a registration written
+   `G-ABCD`. Reproduce it from the record the agent was reading.
+3. Fix at the source: stop passing that field, or project it away
+   (`pseudonymize_structured`), or add the shape to `src/redaction.py` with a
+   case in `tests/test_outbound_leak_check.py`. Do not loosen the rule in
+   `policies/model-use.yaml`: the check is the control that caught it.
+4. Expect more fallbacks to deterministic briefs until it is fixed; that is
+   the safe direction, and each one is recorded as a refused call.
+
 ### ModelCallsRefusedByPolicy (warning)
 
 The model-use policy refused model calls. Nothing was sent, and the agent
