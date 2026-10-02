@@ -63,6 +63,10 @@ It is held to the rest of the system by `tests/test_agent_register.py`:
 - no agent has any authority: `decide`, `stage`, `write` and `execute` are
   false, and the schema refuses a register that says otherwise.
 
+The controls in this guide are mapped to NIST AI RMF 1.0 and ISO/IEC 42001:2023 in
+[framework-mapping.md](framework-mapping.md), which says what is implemented, partial,
+not covered and organizational, with the evidence for each.
+
 **Limits, stated plainly.**
 - **Identity.** A service has its own SPIFFE identity; an agent runs inside a
   service and is a string in OpenTelemetry baggage. It is enforced by the two
