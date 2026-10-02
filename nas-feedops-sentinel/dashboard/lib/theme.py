@@ -161,7 +161,7 @@ def drill_href(page: str, **params: Any) -> str:
     """
     Build a same-tab link into another page, carrying filter state.
 
-    This is what makes a number on the Overview page a *drill-down*
+    This is what makes a number on the Dashboard a *drill-down*
     instead of a dead end: "205 open alerts" links to
     `Alert_Log?severity=CRITICAL`, and the Alert Log reads those params
     back out of st.query_params to arrive pre-filtered. Values that are
@@ -437,8 +437,8 @@ def page_header(title: str, question: str, *, detail: str | None = None) -> None
     one operational question it answers.
 
     Every page states its question because the dashboard's contract with
-    the operator is question-shaped -- the mission panel on the Overview
-    page lists seven of them, and a page that cannot name which one it
+    the operator is question-shaped -- the mission panel on the Dashboard
+    lists seven of them, and a page that cannot name which one it
     answers has no reason to exist.
     """
     st.markdown(
@@ -557,7 +557,7 @@ def posture_banner(
     meta: Sequence[str] = (),
 ) -> None:
     """
-    The single most important element on the Overview page: one word, at a
+    The single most important element on the Dashboard: one word, at a
     size nothing else on the page competes with, plus the sentence that
     justifies it. Everything below it is evidence for this verdict.
     """
@@ -633,7 +633,7 @@ def status_matrix(
     )
 
 
-def back_link(label: str = "Overview") -> None:
+def back_link(label: str = "Dashboard") -> None:
     """Consistent footer navigation on every sub-page."""
     st.markdown(
         f'<div style="margin-top:18px;padding-top:12px;border-top:1px solid {DARK_GRAY3};">'

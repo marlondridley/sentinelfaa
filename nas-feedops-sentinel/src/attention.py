@@ -1,5 +1,5 @@
 """
-What needs the watch officer now: the items of the Overview's attention strip.
+What needs the watch officer now: the items of the Dashboard's attention strip.
 
 Each item names its subject and says where it is: a dashboard page and the
 filters that open that page on the subject itself -- one review, one
@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from src import config, storage
+from src import config, review_queue, storage
 
 ACTION, ATTENTION, GOOD = "ACTION", "ATTENTION", "GOOD"
 _RANK = {ACTION: 0, ATTENTION: 1, GOOD: 2}
@@ -52,15 +52,20 @@ async def build_attention_items(
     """Most urgent first: {"text", "severity", "page", "params"}; one all-clear item when nothing needs anyone."""
     items: list[dict] = []
 
-    pending = await storage.get_pending_staged_actions()
-    if len(pending) == 1:
-        [review] = pending
+    # A review someone chose to keep monitoring is answered, not waiting: it is
+    # still open, so it stays on the strip, below what nobody has answered yet.
+    reviews = await review_queue.open_reviews()
+    waiting, watched = review_queue.awaiting(reviews), review_queue.monitored(reviews)
+    if len(waiting) == 1:
+        review = waiting[0].action
         items.append(_item(
             f"Review awaiting a decision: {(review.alert_type or '').removeprefix('ALERT_')} "
             f"at {review.airport_code or 'PCT'} ({review.occurrences:,} reading(s))",
             ACTION, "critic", review=review.action_id))
-    elif pending:
-        items.append(_item(f"{len(pending)} reviews awaiting a decision", ACTION, "critic"))
+    elif waiting:
+        items.append(_item(f"{len(waiting)} reviews awaiting a decision", ACTION, "critic"))
+    if watched:
+        items.append(_item(f"{len(watched)} review(s) being monitored", ATTENTION, "critic", show="monitoring"))
 
     threshold = config.RVR_LOW_THRESHOLD_FT
     for row in rvr_rows:
