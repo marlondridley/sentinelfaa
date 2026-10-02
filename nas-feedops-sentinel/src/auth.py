@@ -73,6 +73,8 @@ class Decision(str, Enum):
     REJECT = "reject"
     MONITOR = "monitor"
     OVERRIDE = "override"      # edit the recommendation/severity, then sign off
+    HALT_MODELS = "halt_models"          # stop every model call (src/model_halt.py)
+    RESUME_MODELS = "resume_models"      # let model calls run again
 
 
 # Override replaces the AI's recommendation or severity, so it takes the
@@ -83,6 +85,9 @@ DECISION_ROLES: dict[Decision, frozenset[str]] = {
     Decision.REJECT: frozenset({ROLE_WATCH_OFFICER, ROLE_SUPERVISOR}),
     Decision.MONITOR: frozenset({ROLE_WATCH_OFFICER, ROLE_SUPERVISOR}),
     Decision.OVERRIDE: frozenset({ROLE_SUPERVISOR}),
+    # Stopping or restarting the AI layer for everyone is a supervisor's call, not a watch officer's.
+    Decision.HALT_MODELS: frozenset({ROLE_SUPERVISOR}),
+    Decision.RESUME_MODELS: frozenset({ROLE_SUPERVISOR}),
 }
 
 

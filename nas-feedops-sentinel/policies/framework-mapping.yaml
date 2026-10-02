@@ -267,17 +267,26 @@ controls:
       - nas-feedops-sentinel/tests/test_critic_agent.py
 
   - id: disengage-an-agent
-    title: An agent can be switched off
+    title: The AI layer can be halted at runtime
     what: >
-      Each register entry records the setting that stops it and the services to restart. Settings are built once
-      at import, so the change applies on restart.
+      A supervisor halts every model call from the console, with a reason, and resumes it the same way. The
+      model-use policy refuses every call while it is halted, in every service within a couple of seconds and
+      without a restart; alerts are still staged and the rules still run. The database audits every change, a
+      state that cannot be read halts, a banner shows on every page, and a critical alert fires. An optional
+      automatic trip, off by default, halts after repeated refusals that signal a real fault and is just as
+      visible. Each register entry also records the setting that stops one agent on a restart.
     nist: [{ref: MANAGE 2.4, fit: direct}]
     iso: [{ref: A.6.2.6, fit: related}]
-    status: partial
-    note: There is no runtime halt. A supervisor-operated switch, with an optional and visible automatic trip, is queued.
+    status: implemented
+    note: >
+      One switch for the whole AI layer; there is no switch for a single agent at runtime. The automatic trip counts
+      refusals per process.
     evidence:
+      - nas-feedops-sentinel/src/model_halt.py
+      - nas-feedops-sentinel/tests/test_model_halt.py
+      - nas-feedops-sentinel/tests/test_model_halt_page.py
+      - nas-feedops-sentinel/policies/model-use.yaml
       - nas-feedops-sentinel/policies/agent-register.yaml
-      - nas-feedops-sentinel/tests/test_agent_register.py
 
   - id: third-party-model-governance
     title: One model provider, behind one gateway, held there by a test

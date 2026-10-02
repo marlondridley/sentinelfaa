@@ -42,6 +42,7 @@ from src.agent_tools import authorize as authorize_tool
 from src.config import proxy_model, settings
 from src.governance import UNREGISTERED_ROLE, evaluate_model_call
 from src.llm_guard import breaker_for, current_budget
+from src import model_halt
 from src.logging_config import get_correlation_id, get_logger
 from src.model_telemetry import ModelCall, classify_outcome, prompt_fingerprint, sha256_hex
 from src.model_telemetry import record as record_model_call
@@ -323,12 +324,16 @@ class LiteLLMClient:
                 input_hash=sha256_hex(redacted_user_message), redaction_count=redaction_count,
             )
             outgoing = f"{system_prompt}\n{redacted_user_message}"
+            # Read before the policy is asked: while the AI layer is halted the first rule refuses the call, and
+            # nothing below it is reached. (A halt state that cannot be read is a halt: src/model_halt.py.)
+            halt = await model_halt.get_state()
             decision = evaluate_model_call(
                 role=role, model=target_model, prompt=outgoing,
                 max_tokens=max_tokens, redacted=is_redacted(redacted_user_message),
                 # The independent check: not "did the scrub finish" but "is any value I was told to
                 # withhold still in what goes out". Only the count leaves this line, never the values.
                 protected_values_found=count_leaks(outgoing, protected_values),
+                model_halt=halt.halted,
             )
             which = "model-use"
             if decision.allowed:
@@ -342,8 +347,11 @@ class LiteLLMClient:
             if not decision.allowed:
                 refusal = LLMPolicyDenied(
                     f"Refused by the {which} policy (rule: {decision.rule or 'default'}): {decision.reason}"
+                    + (f" Halted: {halt.reason}" if decision.rule == model_halt.HALT_RULE and halt.reason else "")
                 )
                 await record_model_call(call, "policy_denied", refusal)
+                # A refusal that signals a fault counts toward the optional automatic trip (off by default).
+                await model_halt.note_violation(decision.rule)
                 raise refusal
 
             # Two limits on spending (src/llm_guard.py), checked after the policy and before anything is sent.

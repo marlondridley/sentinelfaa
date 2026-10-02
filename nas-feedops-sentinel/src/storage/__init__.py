@@ -45,6 +45,7 @@ from src.storage.repositories.briefs_repo import BriefsRepository
 from src.storage.repositories.events_repo import EventsRepository
 from src.storage.repositories.ingest_log_repo import IngestLogRepository
 from src.storage.repositories.model_calls_repo import ModelCallsRepository
+from src.storage.repositories.model_halt_repo import ModelHaltRepository
 from src.storage.repositories.staged_actions_repo import StagedActionsRepository
 from src.storage.repositories.surface_repo import SurfaceRepository
 from src.storage.repositories.tickets_repo import TicketsRepository
@@ -74,6 +75,8 @@ __all__ = [
     "get_critic_verdicts_since",
     "record_model_call",
     "get_model_calls_since",
+    "get_model_halt",
+    "set_model_halt",
     "get_investigations_since",
     "get_investigation_for_action",
     "get_latest_investigation",
@@ -287,6 +290,14 @@ async def get_ingest_failure_reasons(limit: int = 10) -> list[dict]:
 async def record_model_call(row: dict) -> None:
     repo = ModelCallsRepository(await get_db_pool())
     await repo.insert(row)
+
+
+async def get_model_halt() -> dict | None:
+    return await ModelHaltRepository(await get_db_pool()).get()
+
+
+async def set_model_halt(*, halted: bool, reason: str, source: str, actor: str) -> dict:
+    return await ModelHaltRepository(await get_db_pool()).set(halted=halted, reason=reason, source=source, actor=actor)
 
 
 async def get_model_calls_since(since: datetime) -> list[dict]:
