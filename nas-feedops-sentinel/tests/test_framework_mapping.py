@@ -27,10 +27,22 @@ def _raw() -> dict:
 
 # ── The data is held to the repository ───────────────────────────────────────────────────────────────
 
+# What the test image carries of this folder (docker/Dockerfile's COPY lines). A file at the top of the folder, such
+# as cve-allowlist.md, is in a checkout and not in the image, so the image cannot be asked whether it exists.
+IMAGE_DIRS = ("src", "tests", "docs", "policies", "monitoring", "dashboard", "prompts", "scripts")
+FULL_CHECKOUT = (APP / "docker" / "Dockerfile").exists()
+
+
 def _resolve(path: str) -> Path | None:
-    """A path from the repository root, or None when this checkout is only the application folder (the test image)."""
+    """
+    A path from the repository root, or None when this run cannot see it: the test image holds only some of the
+    application folder and none of the rest of the repository. A developer's checkout sees all of it.
+    """
     if path.startswith("nas-feedops-sentinel/"):
-        return APP / path.removeprefix("nas-feedops-sentinel/")
+        inside = path.removeprefix("nas-feedops-sentinel/")
+        if not FULL_CHECKOUT and inside.split("/")[0] not in IMAGE_DIRS:
+            return None
+        return APP / inside
     return REPO / path if (REPO / "nas-feedops-sentinel").is_dir() else None
 
 
