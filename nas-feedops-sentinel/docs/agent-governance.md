@@ -75,6 +75,51 @@ repair limits, and the fallbacks.
 - `tests/test_governance.py::test_a_refused_call_sends_nothing_and_is_recorded_as_costing_nothing`
 - `tests/test_model_telemetry.py`
 - `tests/test_redaction.py`
+- `tests/test_outbound_leak_check.py`
+
+**What keeps an identifier from reaching a model, in layers.** No single layer
+is a guarantee; the design is that a miss in one is not enough.
+1. **Choose the fields.** Each agent is shown a bounded projection built field
+   by field (the Watch Officer's `project_for_model`, the Critic's SQL column
+   list), not a record. A field that was never selected cannot leak.
+2. **Pseudonymize identities, drop measurements.** `pseudonymize_structured`
+   gives a flight a token (`AC-1`) that means nothing outside one prompt, so a
+   model can tell two flights apart without learning which; positions,
+   altitudes, codes and raw payloads are dropped. The Planner puts the tokens
+   back in its answer, locally (`Pseudonymizer.reveal`); nothing is sent.
+3. **Scrub by pattern.** `redact_text` runs on every prompt at the chokepoint,
+   with no opt-out. It is a guess about what an identifier looks like.
+4. **Look for the values.** Callers pass `protected_values`: what they read
+   from their own records under a sensitive key (`collect_sensitive_values`).
+   `count_leaks` searches the finished prompt for those values themselves, so
+   it finds a registration written `G-ABCD` that no pattern anticipated. A hit
+   is the `no-protected-values-in-prompts` rule: the call is blocked, recorded
+   with the rule that refused it, and the agent falls back to its rules. Only
+   the count is logged, never the values.
+5. **Watch it.** `ProtectedValueBlockedFromPrompt` (critical) fires on any
+   block; a test fails if a model call site stops passing `protected_values`,
+   and a corpus of identifier shapes must satisfy "whatever the scrub leaves
+   in, the value check finds".
+
+**Limits, stated plainly.**
+- The value check knows only the values callers extracted. An identifier that
+  appears only inside free text nobody parsed is not on its list.
+- A 4-digit code (a beacon code) cannot be told from a number in prose, so
+  values under 5 digits are not checked by value; the keyed and pattern layers
+  cover them.
+- `redacted` in the policy says the scrub is stable (it asks the same patterns
+  that ran it). It is not an independent check; layer 4 is.
+- Detection is still pattern- and value-based. Names, e-mail addresses and
+  free-text personal data outside the aviation identifiers are not covered.
+
+**Next hardening step for an enterprise deployment.** Add a second, independent
+detector over the finished prompt, for example Microsoft Presidio with
+recognizers for N-numbers, callsigns, beacon codes and coordinates, plus its
+general personal-data recognizers, or Azure AI Language PII detection at the
+gateway. Its errors would not be correlated with the patterns here. It is left
+out on purpose: it adds a dependency and needs customization and tuning per
+deployment, and its result could feed the same policy field
+(`protected_values_found`) so the rule does not change.
 
 ## 2. Telemetry boundary: OpenTelemetry
 

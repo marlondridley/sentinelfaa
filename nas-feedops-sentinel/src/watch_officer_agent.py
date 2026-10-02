@@ -21,7 +21,7 @@ from src.metrics import LLM_CALL_LATENCY, LLM_CALLS
 from src.models import BriefAssessment, NASEvent, WatchOfficerBrief
 from src.model_telemetry import forget_last_call, last_call_id
 from src.prompts_loader import prompt_version, system_prompt, tool_schema
-from src.redaction import redact_structured
+from src.redaction import Pseudonymizer, collect_sensitive_values, pseudonymize_structured
 from src.untrusted import fence_fields
 from src.watch_officer_projection import project_for_model
 
@@ -446,7 +446,10 @@ async def _llm_narrative(
 
     # A projection built for the four questions the brief answers, bounded by
     # construction (src/watch_officer_projection.py), not the raw snapshot.
-    payload = fence_fields(redact_structured(project_for_model(context, signals, assessment)))
+    # The values the snapshot holds under a sensitive key are read BEFORE the projection drops them, so the
+    # call can be refused if one still turns up in what is sent (src/redaction.count_leaks).
+    protected = collect_sensitive_values(context)
+    payload = fence_fields(pseudonymize_structured(project_for_model(context, signals, assessment), Pseudonymizer()))
     raw = await client.acall_with_tool(
         system_prompt=system_prompt("watch_officer"),
         tool=tool_schema("watch_officer"),
@@ -459,6 +462,7 @@ async def _llm_narrative(
         max_tokens=1800,
         role="watch_officer",
         prompt_version=prompt_version("watch_officer"),
+        protected_values=protected,
     )
     return RawLLMNarrative.model_validate(raw)
 
