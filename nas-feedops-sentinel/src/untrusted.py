@@ -28,10 +28,13 @@ NOTICE = (
 DEFAULT_LIMIT = 500
 
 # Object keys whose string values are prose from outside: the alert wording (which embeds a free-text runway),
-# the status a feed reported about itself, an operator's question, and what an earlier model wrote.
+# the status a feed reported about itself, an operator's question, and what an earlier model wrote. `statement` is
+# a specialist's claim or the Red-Team Critic's challenge; `target` is the claim or finding a challenge names,
+# which a model chooses and only some kinds of challenge check. tests/test_model_authored_fields_fenced.py fails
+# when a field a model writes reaches the next model under a key that is not here.
 FREE_TEXT_KEYS = frozenset({
     "description", "example", "feed_status", "reported_feed_status", "reasoning", "rationale", "bluf", "summary",
-    "why_staged", "question", "note", "message",
+    "why_staged", "question", "note", "message", "statement", "target",
 })
 
 _FENCE_TAG = re.compile(r"<\s*/?\s*untrusted_data\b[^>]*>?", re.IGNORECASE)
