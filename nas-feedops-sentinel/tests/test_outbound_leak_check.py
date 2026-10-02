@@ -18,7 +18,6 @@ import pytest
 import yaml
 
 from src.redaction import (
-    MAX_PROTECTED_VALUES,
     REDACTED,
     Pseudonymizer,
     collect_sensitive_values,
@@ -52,6 +51,31 @@ def test_a_raw_payload_carried_as_a_json_string_is_read_for_what_it_holds():
 def test_values_too_short_to_mean_anything_are_not_collected():
     # A 4-digit code cannot be told from a threshold in prose; the keyed and pattern layers cover it.
     assert collect_sensitive_values({"beacon_code": "1200", "squawk": 7700, "callsign": "AB"}) == set()
+
+
+def test_a_float_is_judged_by_its_digits_like_an_integer_not_by_its_length_as_text():
+    # "100.0" is five characters but three digits: as common in prose as 100. It used to be collected, and then
+    # compared as the run of digits 1000.
+    assert collect_sensitive_values({"altitude": 100.0}) == set()
+    assert collect_sensitive_values({"altitude": 3000.0}) == set()                  # four digits, like a 4-digit code
+    assert collect_sensitive_values({"altitude": 12000.0}) == {"12000.0"}           # five: kept, as written
+
+
+def test_a_value_nested_too_deep_to_parse_cannot_break_the_collection():
+    # A feed value under a sensitive key that is a JSON bomb: json.loads raises RecursionError, which is not a
+    # ValueError, and used to escape from here into every model call that collects its protected values.
+    bomb = "[" * 100_000
+    assert collect_sensitive_values({"raw_payload": bomb, "callsign": "AAL1234"}) == {"AAL1234"}
+
+
+def test_a_structure_nested_deeper_than_the_recursion_limit_cannot_break_the_collection():
+    deep: dict = {}
+    cursor = deep
+    for _ in range(5000):
+        cursor["a"] = {}
+        cursor = cursor["a"]
+    cursor["callsign"] = "UAL5678"
+    assert collect_sensitive_values({"aircraft_id": deep, "registration": "G-ABCD"}) == {"G-ABCD"}
 
 
 def test_pseudonyms_and_the_placeholder_are_not_values_to_withhold():
@@ -103,9 +127,52 @@ def test_the_answer_is_a_count_and_never_the_values():
     assert isinstance(found, int) and found == 1
 
 
-def test_the_check_is_bounded_for_a_caller_that_hands_it_a_table():
-    many = {f"ID{n:06d}" for n in range(MAX_PROTECTED_VALUES * 3)}
-    assert count_leaks("nothing relevant here", many) == 0
+def test_a_number_is_found_as_the_same_number_not_as_a_shorter_or_longer_run_of_digits():
+    # The decimal point and the sign are not digits to match across: 38.8951 is not the run 388951, and 12000.0 is
+    # not the run 120000. Each used to be found in a number it was only a digit-run of.
+    assert count_leaks("id 388951 raised", {"38.8951"}) == 0
+    assert count_leaks("at 38.8951 north", {"38.8951"}) == 1
+    assert count_leaks("altitude 120000", {"12000.0"}) == 0
+    assert count_leaks("altitude 12000", {"12000.0"}) == 1                              # the same number, written plain
+    assert count_leaks("level 12000.0 ft", {"12000"}) == 1
+    assert count_leaks("level 12000.50 ft", {"12000"}) == 0                              # a different number
+
+
+def test_a_value_under_five_digits_is_not_looked_for_however_it_is_written():
+    # A threshold in prose, not an identifier. 100.0 used to be normalised to 1000 and found in "RVR below 1000 ft".
+    assert count_leaks("RVR below 1000 ft", {"100.0"}) == 0
+    assert count_leaks("RVR below 3000 ft", {"3000.0", "3000"}) == 0
+    assert count_leaks("a 100.0 knot wind", {"100.0"}) == 0
+
+
+def test_digits_split_by_separators_are_an_identifier_found_by_their_run_of_digits():
+    # Not one number (a phone-like reference, a track number written 12-3456), so no decimal point to respect:
+    # compared as the run of digits, and only when that run is long enough to mean something.
+    assert count_leaks("ref 123456789 raised", {"123-456-789"}) == 1
+    assert count_leaks("ref 123-456-789 raised", {"123-456-789"}) == 1
+    assert count_leaks("ref 1234 raised", {"12-34"}) == 0
+
+
+def test_a_number_inside_an_identifier_or_a_word_is_not_a_standalone_number():
+    assert count_leaks("event evt-12345 raised", {"12345"}) == 0
+    assert count_leaks("order abc12345def", {"12345"}) == 0
+    assert count_leaks("altitude 12345.", {"12345"}) == 1
+    assert count_leaks("(12345)", {"12345"}) == 1
+
+
+def test_a_table_of_values_does_not_hide_a_short_identifier():
+    # The check used to keep the 2000 longest values and drop the rest: the callsigns and tail numbers first,
+    # exactly the ones it is for, with nothing to say it had looked at only some of them.
+    table = {f"ID{n:06d}" for n in range(6000)}
+    for identifier in ("AAL1234", "N12X"):
+        assert count_leaks(f"the {identifier} departure was late", table | {identifier}) == 1
+    assert count_leaks("nothing relevant here", table) == 0
+
+
+def test_every_value_in_a_large_table_is_checked_not_only_some():
+    table = {f"ID{n:06d}" for n in range(6000)}
+    text = " ".join(sorted(table)[::7])                                               # every 7th value appears
+    assert count_leaks(text, table) == len(sorted(table)[::7])
 
 
 # ── The reason it exists: what the patterns miss ─────────────────────────────────────────────────────

@@ -44,11 +44,15 @@ class Authority(_Strict):
 
 
 class Disable(_Strict):
-    """How to stop the agent today: a setting, its value, and the services to restart for it to apply."""
+    """
+    How to stop the agent today: a setting, the value that stops it, and the services to restart for it to apply.
+    `note` says what else the same switch stops, or what else stops this agent, so a reader is not surprised.
+    """
 
     setting: str
     value: str
     restart: list[str] = Field(min_length=1)
+    note: str | None = None
 
 
 class Agent(_Strict):
@@ -56,7 +60,7 @@ class Agent(_Strict):
     name: str
     purpose: str
     calls_model: bool
-    model_setting: str | None = None
+    model_settings: list[str] = Field(default_factory=list)   # every setting that chooses a model it calls
     prompts: list[PromptRef] = Field(default_factory=list)
     risk_tier: RiskTier
     risk_rationale: str
@@ -124,6 +128,8 @@ def render_text(register: Register) -> str:
     lines += ["", "No agent can decide, stage, write or execute. To stop one today (restart required):"]
     for a in register.agents:
         lines.append(f"  {a.id:<22}{a.disable.setting}={a.disable.value!r}  restart {', '.join(a.disable.restart)}")
+        if a.disable.note:
+            lines.append(f"  {'':<22}{a.disable.note}")
     return "\n".join(lines)
 
 

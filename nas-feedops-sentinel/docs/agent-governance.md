@@ -74,9 +74,17 @@ not covered and organizational, with the evidence for each.
   code in the same service could claim another agent's name. A per-agent
   workload identity would close that, and is not built.
 - **One runtime switch, for the whole layer.** A supervisor's halt (below) stops
-  every model call at runtime. There is no switch for a single agent: settings are
-  built once at import (`src/config.py`), so every entry's `disable` takes effect when
-  the service restarts.
+  every model call at runtime. There is no runtime switch for a single agent:
+  settings are built once at import (`src/config.py`), so every entry's `disable`
+  takes effect when the service restarts.
+- **Switches overlap.** Each model-calling agent has its own (`CRITIC_ENABLED`,
+  `PLANNER_ENABLED`, `WATCH_OFFICER_ENABLED`, `INVESTIGATIONS_ENABLED`), and
+  three are shared: `CRITIC_ENABLED=0` also stops the Planner and the Watch
+  Officer's overview narrative, and `INVESTIGATIONS_ENABLED=0` stops the
+  orchestrator and every investigation agent together, the Watch Officer's
+  brief included. Each entry's `note` says so. A test holds every switch to
+  the settings, to what compose forwards to the services, and to the code that
+  honours it, so the register cannot name a switch that stops nothing.
 - **Owners and tiers are judgements.** Each owner is the role "Sentinel
   maintainer" until a named person takes it, and the tiers are the author's
   reading of the rubric at the top of the file.
@@ -173,8 +181,14 @@ is a guarantee; the design is that a miss in one is not enough.
 - The value check knows only the values callers extracted. An identifier that
   appears only inside free text nobody parsed is not on its list.
 - A 4-digit code (a beacon code) cannot be told from a number in prose, so
-  values under 5 digits are not checked by value; the keyed and pattern layers
-  cover them.
+  values under 5 digits are not checked by value, counted in digits (so `100.0`
+  is as short as `100`); the keyed and pattern layers cover them. A longer
+  number is compared as written (`38.8951` is found as `-38.8951`, not in
+  `388951`), but a 5-digit altitude or track number can still equal a number
+  that is in the prompt for another reason; that call is refused and falls back
+  to rules, which is the safe direction.
+- Every value a caller read is looked for, however many there are: there is no
+  cap that would leave the shortest identifiers of a large snapshot unchecked.
 - `redacted` in the policy says the scrub is stable (it asks the same patterns
   that ran it). It is not an independent check; layer 4 is.
 - Detection is still pattern- and value-based. Names, e-mail addresses and
