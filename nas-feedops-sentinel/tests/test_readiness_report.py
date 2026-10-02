@@ -233,7 +233,10 @@ def test_an_unbounded_budget_is_reported_as_null_in_json():
 
 def test_percentages_and_numbers_say_when_there_is_nothing_to_show():
     assert (r._pct(None), r._pct(math.inf), r._pct(0.5)) == ("n/a", "inf", "50.0%")
-    assert (r._num(None), r._num(0.123456)) == ("n/a", "0.1235")
+    # A lower-is-better value is shown in its own unit (it was one format for all, r._num, before the page did this).
+    assert r._in_unit("any_rate", None) == "n/a"
+    assert (r._in_unit("latency_p95_seconds", 12.34), r._in_unit("cost_per_investigation_usd", 0.123456),
+            r._in_unit("override_rate", 0.123456)) == ("12.3 s", "$0.1235", "12.3%")
 
 
 def test_the_text_report_lists_each_objective_and_the_window_counts():
