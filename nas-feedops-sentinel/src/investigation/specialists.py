@@ -101,7 +101,13 @@ def ground(raw_claims: Any, allowed: set[str], prefix: str) -> tuple[list[Claim]
 
 
 def _view_payload(view: Investigation) -> dict[str, Any]:
-    """What a model sees: evidence, and whatever findings/critique the view carries."""
+    """
+    What a model sees: evidence, and whatever findings/critique the view carries.
+
+    The critique's rejected claims are left out. They are the audit record of what the grounding gate refused
+    (the model's own words, the ids it cited, and a reason that quotes both), and no prompt asks for them: the
+    brief is written from the challenges and the strongest alternative. Not sending them is the whole control.
+    """
     return {
         "evidence": [e.model_dump(mode="json") for e in view.evidence],
         "findings": [
@@ -109,7 +115,7 @@ def _view_payload(view: Investigation) -> dict[str, Any]:
              "claims": [c.model_dump() for c in f.claims]}
             for f in view.findings
         ],
-        "critique": view.critique.model_dump(mode="json", exclude={"provenance"}) if view.critique else None,
+        "critique": view.critique.model_dump(mode="json", exclude={"provenance", "rejected_claims"}) if view.critique else None,
     }
 
 
