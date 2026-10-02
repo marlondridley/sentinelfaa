@@ -42,7 +42,7 @@ identity:
   runtime_switch: >
     One, for the whole AI layer: a supervisor's halt (src/model_halt.py), which makes the
     model-use policy refuse every model call in every service within a couple of seconds,
-    without a restart, and is audited by the database. There is no switch for a single
+    without a restart, and is audited by the database. There is no runtime switch for a single
     agent: each entry's `disable` is a setting that takes effect when its services restart,
     because settings are built once, at import (src/config.py: settings = Settings()).
 
