@@ -285,3 +285,32 @@ def test_a_blocked_leak_raises_its_own_alert_and_is_not_double_counted_as_a_warn
     assert "no-protected-values-in-prompts" in rules["ModelCallsRefusedByPolicy"]["expr"], \
         "the generic warning must exclude it, or one block pages twice"
     assert "ProtectedValueBlockedFromPrompt" in (APP / "docs" / "runbooks.md").read_text(encoding="utf-8")
+
+
+# ── Corners of the helpers ───────────────────────────────────────────────────────────────────────────
+
+def test_a_bare_value_in_a_validation_error_ends_at_the_next_space():
+    out = redact_text("1 validation error for NASEvent\n  Input should be valid [input_value=AAL1234 extra words, input_type=str]")
+    assert "AAL1234" not in out and "extra words" in out
+
+
+def test_the_second_pass_leaves_an_xml_pseudonym_alone_and_blanks_a_real_one():
+    out = redact_text("<aircraftId>AC-1</aircraftId><callsign>AAL1234</callsign>")
+    assert "<aircraftId>AC-1</aircraftId>" in out and "AAL1234" not in out
+
+
+def test_a_sensitive_key_holding_a_list_or_an_object_is_read_value_by_value():
+    record = {"callsign": ["AAL1234", {"inner": "UAL5678"}], "registration": ("G-ABCD",)}
+    assert collect_sensitive_values(record) == {"AAL1234", "UAL5678", "G-ABCD"}
+
+
+def test_a_document_too_deep_to_be_a_record_is_not_followed_forever():
+    deep: dict = {"callsign": "AAL1234"}
+    for _ in range(30):
+        deep = {"wrap": deep}
+    assert collect_sensitive_values(deep) == set()
+
+
+def test_values_too_short_to_compare_are_ignored_and_a_check_with_only_those_finds_nothing():
+    assert count_leaks("AB went around and A1 too", {"AB", "A1", "x"}) == 0
+    assert count_leaks("AAL1234 went around", {"AB", "AAL1234"}) == 1
