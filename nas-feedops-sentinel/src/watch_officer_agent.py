@@ -480,7 +480,8 @@ async def agenerate_watch_officer_brief(
     signals = _detect_signals(context)
     assessment = rules.assess(context, signals)
 
-    if use_llm and settings.CRITIC_ENABLED and assessment.data_health.state in ("DOWN", "UNKNOWN"):
+    may_ask = use_llm and settings.CRITIC_ENABLED and settings.WATCH_OFFICER_ENABLED
+    if may_ask and assessment.data_health.state in ("DOWN", "UNKNOWN"):
         # Rule 2: our own pipeline is checked first. While it is down every alert is suspect, so the brief is
         # rule-written and no model is asked (it would cost a call to produce prose we would not use).
         LLM_CALLS.labels(agent="watch_officer", outcome="skipped_pipeline_down").inc()
@@ -488,7 +489,7 @@ async def agenerate_watch_officer_brief(
             context, signals, assessment=assessment,
             note="No model was asked: while the pipeline is down or empty the brief is rule-written.")
 
-    if use_llm and settings.CRITIC_ENABLED:
+    if may_ask:
         start = time.perf_counter()
         try:
             forget_last_call()

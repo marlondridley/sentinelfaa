@@ -70,8 +70,9 @@ ISO_ANNEX_A: dict[str, str] = {
 ISO_CLAUSES: dict[int, str] = {4: "Context of the organization", 5: "Leadership", 6: "Planning", 7: "Support",
                                8: "Operation", 9: "Performance evaluation", 10: "Improvement"}
 
-_NIST_REF = re.compile(r"^(GOVERN|MAP|MEASURE|MANAGE) (\d)\.(\d{1,2})$")
-_CLAUSE_REF = re.compile(r"^clause (\d{1,2})$")
+# Matched with fullmatch: `$` also accepts a reference followed by a newline, which a YAML block scalar produces.
+_NIST_REF = re.compile(r"(GOVERN|MAP|MEASURE|MANAGE) (\d)\.(\d{1,2})")
+_CLAUSE_REF = re.compile(r"clause (\d{1,2})")
 
 
 class _Strict(BaseModel):
@@ -85,7 +86,7 @@ class NistRef(_Strict):
     @field_validator("ref")
     @classmethod
     def _exists(cls, ref: str) -> str:
-        match = _NIST_REF.match(ref)
+        match = _NIST_REF.fullmatch(ref)
         if not match:
             raise ValueError(f"{ref!r} is not a NIST AI RMF subcategory like 'GOVERN 1.6'")
         function, category, number = match.group(1), int(match.group(2)), int(match.group(3))
@@ -101,7 +102,7 @@ class IsoRef(_Strict):
     @field_validator("ref")
     @classmethod
     def _exists(cls, ref: str) -> str:
-        clause = _CLAUSE_REF.match(ref)
+        clause = _CLAUSE_REF.fullmatch(ref)
         if clause:
             if int(clause.group(1)) not in ISO_CLAUSES:
                 raise ValueError(f"{ref!r} is not a management-system clause (4 to 10)")
@@ -204,7 +205,7 @@ def iso_unmapped(mapping: Mapping) -> list[str]:
 
 # ── The document ─────────────────────────────────────────────────────────────────────────────────────
 
-def _refs(refs: list, titles: dict[str, str] | None = None) -> str:
+def _refs(refs: list) -> str:
     """Direct references plain, related ones in italics."""
     shown = [r.ref if r.fit == "direct" else f"*{r.ref}*" for r in refs]
     return ", ".join(shown) if shown else "none"
