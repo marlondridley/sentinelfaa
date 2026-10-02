@@ -1,0 +1,190 @@
+# Agent register for NAS FeedOps Sentinel: every agent that runs, who owns it,
+# what it may touch, what it may never do, and how to stop it.
+#
+# One entry per principal the policies know. An agent is a role string:
+# src/agent_tools.py acting_as() puts it in OpenTelemetry baggage, and
+# policies/model-use.yaml and policies/tool-use.yaml decide on it. The register
+# is the inventory behind those policies, and tests/test_agent_register.py holds
+# the two together: a role in a policy but not here fails CI, so does a role
+# here that no policy grants, a tool grant that differs from the register's,
+# a prompt whose version changed since it was last reviewed, and a role the
+# code acts as that nobody registered.
+#
+# Risk tier is a judgement, written down so it can be argued with:
+#   high      its output is part of what a person reads before deciding on a
+#             staged action (the Critic's verdict, the investigation findings
+#             and the brief a reviewer approves from)
+#   moderate  advisory text an operator reads, with no decision record behind it
+#   low       deterministic; no model
+#
+# Changing an entry is a review: bump last_reviewed with the change. The
+# prompt_version recorded here is the version somebody last read the prompt at.
+
+version: "1.0"
+name: sentinel-agent-register
+description: >
+  The agents behind Sentinel's advisory layer. Every one is advisory: none can
+  decide, stage, write or execute, whatever its prompt or output says.
+
+# What identifies an agent today, stated plainly, because it is weaker than
+# what identifies a service.
+identity:
+  service: >
+    Each application service has its own short-lived X.509-SVID (SPIFFE, PR 13)
+    and logs in to Vault over mutual TLS with it. An agent runs INSIDE a service
+    and uses that service's identity.
+  agent: >
+    An agent is the string acting_as() sets in OpenTelemetry baggage. It is
+    enforced by the two policies, recorded on every model call and tool call, and
+    carries no credential of its own: code inside the same service could claim
+    another agent's name. A per-agent workload identity would close that.
+  runtime_switch: >
+    None. Settings are built once, at import (src/config.py: settings =
+    Settings()), so each entry's `disable` takes effect when the service restarts.
+    A runtime halt is a separate, queued control.
+
+agents:
+  - id: critic
+    name: Critic
+    purpose: Challenges one deterministic alert and says whether it looks like a genuine operational issue.
+    calls_model: true
+    model_setting: CRITIC_MODEL
+    prompts: [{name: critic, version: "2.1"}]
+    risk_tier: high
+    risk_rationale: Its verdict is stored with the staged action a person approves.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [sentinel, temporal-worker, dashboard]
+    reads: [read_alert_context]
+    responds: [submit_critique]
+    data_sent: >
+      Per-service event counts, latency, feed status and sample event ids around the alert, prior alert
+      types, and the alert's own description (fenced as data). The evidence is chosen column by column in
+      SQL, so it holds no flight identifiers.
+    fallback: The alert is still staged by the rules; the verdict is recorded as unavailable.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: CRITIC_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+
+  - id: planner
+    name: Planner
+    purpose: Answers an operator's question about current feed state, alerts and taxi times.
+    calls_model: true
+    model_setting: PLANNER_MODEL
+    prompts: [{name: planner, version: "2.0"}]
+    risk_tier: moderate
+    risk_rationale: Advisory text an operator reads; nothing is staged or decided from it.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [dashboard]
+    reads: [read_recent_activity, read_taxi_out_stats, read_taxi_in_stats, read_departure_queue, read_gate_returns, read_flight_timeline]
+    responds: [submit_operational_brief]
+    data_sent: >
+      The operator's question (fenced), alert summaries, the Critic's reviews and taxi-time figures, with
+      each flight as a per-prompt token; the answer has the flights put back locally.
+    fallback: A deterministic summary of the stored records.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: CRITIC_ENABLED, value: "0", restart: [dashboard]}
+
+  - id: watch_officer
+    name: Watch Officer
+    purpose: Writes the narrative of the overview brief, and the brief a reviewer reads before approving.
+    calls_model: true
+    model_setting: WATCH_OFFICER_MODEL
+    prompts: [{name: watch_officer, version: "2.1"}, {name: investigation_brief, version: "1.0"}]
+    risk_tier: high
+    risk_rationale: The investigation brief is what a reviewer reads before approving, rejecting or overriding.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [dashboard, sentinel, temporal-worker]
+    reads: [read_operating_picture]
+    responds: [submit_watch_officer_brief, submit_investigation_brief]
+    data_sent: >
+      A bounded, decision-shaped projection: alerts rolled up by condition, open reviews with the Critic's
+      verdict, data gaps and counts. Posture, trust and counts are computed by rules, never written by the model.
+    fallback: A deterministic brief computed from the same assessment.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: LITELLM_PROXY_URL, value: "", restart: [dashboard, sentinel, temporal-worker]}
+
+  - id: investigation
+    name: Investigation orchestrator
+    purpose: Collects the evidence snapshot an investigation is built on, and runs the specialists in order.
+    calls_model: false
+    risk_tier: low
+    risk_rationale: Deterministic evidence collection and sealing; no model is involved in this step.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [sentinel, temporal-worker, dashboard]
+    reads: [collect_evidence]
+    responds: []
+    data_sent: "Nothing; it calls no model."
+    fallback: Not applicable; a failed collection is recorded and the staged action stays for a person.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+
+  - id: feed_diagnostician
+    name: Feed Diagnostician
+    purpose: Says whether the feed or infrastructure itself is behaving abnormally.
+    calls_model: true
+    model_setting: INVESTIGATION_MODEL
+    prompts: [{name: feed_diagnostician, version: "1.0"}]
+    risk_tier: high
+    risk_rationale: Its finding is part of the sealed investigation record a person reads.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [sentinel, temporal-worker, dashboard]
+    reads: []
+    responds: [submit_feed_finding]
+    data_sent: >
+      Evidence items from the investigation snapshot (heartbeats, last-message times, latency, quarantined
+      files, service health); every claim must cite an evidence id the record holds.
+    fallback: A deterministic finding, marked as the fallback with its reason.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+
+  - id: correlation_analyst
+    name: Correlation Analyst
+    purpose: Says whether an event is isolated or part of a broader operational pattern.
+    calls_model: true
+    model_setting: INVESTIGATION_MODEL
+    prompts: [{name: correlation_analyst, version: "1.0"}]
+    risk_tier: high
+    risk_rationale: Its finding is part of the sealed investigation record a person reads.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [sentinel, temporal-worker, dashboard]
+    reads: []
+    responds: [submit_correlation_finding]
+    data_sent: >
+      Evidence items from the investigation snapshot (alert counts and rates, related alerts, latest RVR);
+      every claim must cite an evidence id the record holds.
+    fallback: A deterministic finding, marked as the fallback with its reason.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+
+  - id: red_team_critic
+    name: Red-Team Critic
+    purpose: Argues the strongest case against the other specialists' findings.
+    calls_model: true
+    model_setting: INVESTIGATION_MODEL
+    prompts: [{name: red_team_critic, version: "1.0"}]
+    risk_tier: high
+    risk_rationale: Its challenges are part of the sealed investigation record a person reads.
+    owner: Sentinel maintainer
+    last_reviewed: "2026-10-01"
+    runs_in: [sentinel, temporal-worker, dashboard]
+    reads: []
+    responds: [submit_critique]
+    data_sent: >
+      All collected evidence and the other specialists' findings with their claim ids; it produces no
+      confidence score and endorses nothing.
+    fallback: A deterministic critique, marked as the fallback with its reason.
+    authority: {decide: false, stage: false, write: false, execute: false}
+    disable: {setting: INVESTIGATIONS_ENABLED, value: "0", restart: [sentinel, temporal-worker, dashboard]}
+
+# Evidence a reviewer can run. Each file must exist.
+evidence:
+  - tests/test_tool_boundary.py      # the tool boundary: what each agent may call
+  - tests/test_governance.py         # the model-use policy's decisions
+  - tests/test_outbound_leak_check.py  # protected values never reach a model
+  - tests/test_untrusted.py          # feed and model text reaches a model as data
+  - tests/test_agent_register.py     # this file agrees with the policies and the code
