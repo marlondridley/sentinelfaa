@@ -73,12 +73,43 @@ not covered and organizational, with the evidence for each.
   policies and recorded on every call, but carries no credential of its own, so
   code in the same service could claim another agent's name. A per-agent
   workload identity would close that, and is not built.
-- **No runtime switch.** Settings are built once at import
-  (`src/config.py`), so every entry's `disable` takes effect when the service
-  restarts. A runtime halt is a separate, queued control.
+- **One runtime switch, for the whole layer.** A supervisor's halt (below) stops
+  every model call at runtime. There is no switch for a single agent: settings are
+  built once at import (`src/config.py`), so every entry's `disable` takes effect when
+  the service restarts.
 - **Owners and tiers are judgements.** Each owner is the role "Sentinel
   maintainer" until a named person takes it, and the tiers are the author's
   reading of the rubric at the top of the file.
+
+## The halt: `src/model_halt.py`
+
+One switch makes every model call refuse, in every service, without a restart. A
+supervisor halts it, or resumes it, on the Agent Evaluation page; both need a reason.
+While it is halted the first rule of `model-use.yaml` (`model-halted`) refuses every
+call, nothing is sent, and each agent falls back to its deterministic rules exactly as
+it does when a model fails. Alerts are still staged and the human gate is untouched,
+because the mission never depended on a model. That is why halting is cheap here.
+
+- **The state is one row in the database,** read before every model call and kept for
+  `MODEL_HALT_CACHE_SECONDS` (2 s), so a halt reaches the other services within that long.
+- **The audit is the database's.** A trigger writes every change to the append-only
+  `action_audit_log` (`model_halt:<id>`, with the actor and the reason), a second trigger
+  refuses DELETE, and the application role may only read and update the row. No code
+  path, and nobody holding that role, can change the state unrecorded.
+- **A state that cannot be read halts.** An unknown state is not "running". A database
+  the migrate job has not reached has no table at all, which is not a halt, so a rolling
+  deploy keeps working.
+- **It is visible.** A banner on every page says who halted it, when and why;
+  `ModelLayerHalted` is a critical alert; the runbook says what to do.
+- **An optional automatic trip** (`MODEL_AUTO_HALT_ENABLED`, off by default) halts after
+  `MODEL_AUTO_HALT_THRESHOLD` refusals within `MODEL_AUTO_HALT_WINDOW_SECONDS` for a
+  credential or a protected value found in a prompt. It counts only those: a
+  misconfigured role or an oversized prompt is a bug to fix, not an attack to halt for.
+  A trip is as visible as a human's halt, and only a supervisor resumes it. It is
+  optional because it can be provoked on purpose to switch the AI layer off. The count
+  is per process: each service counts the refusals it saw.
+
+Proof: `tests/test_model_halt.py`, `tests/test_model_halt_page.py`.
 
 ## 1. AI execution boundary: `src/llm_client.py`
 

@@ -39,6 +39,7 @@ from src.config import settings
 from src.logging_config import get_logger
 from src.metrics import start_metrics_server
 
+from lib import halt_view
 from lib import login as _login
 from lib import theme
 
@@ -220,6 +221,7 @@ def bootstrap_page(page_title: str, page_icon: str = "✈") -> Principal:
 
     require_oidc_auth()
     _provenance_banner()
+    halt_view.render_banner()
     return render_operator_identity_sidebar()
 
 

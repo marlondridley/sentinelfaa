@@ -21,8 +21,8 @@ Reviewed 2026-10-02. Version 1.0.
 
 | Status | Controls |
 |---|---|
-| Implemented | 15 |
-| Partial | 8 |
+| Implemented | 16 |
+| Partial | 7 |
 | Not covered | 4 |
 | Organizational | 3 |
 | Not applicable | 1 |
@@ -57,7 +57,7 @@ NIST AI RMF: 45 of 72 subcategories are referenced by at least one control. ISO/
 | [Behaviour in production is monitored and alerts reach a person](#production-monitoring) | MEASURE 2.4, MANAGE 4.1, *MEASURE 3.1* | A.6.2.6 | Implemented |
 | [Targeted tests for injection and unsafe output](#adversarial-testing) | MEASURE 2.7, *MAP 5.1* | *A.6.2.4* | Partial |
 | [The mission never depends on a model](#fail-safe-degradation) | MANAGE 2.1, *MANAGE 2.2* | *A.6.2.6* | Implemented |
-| [An agent can be switched off](#disengage-an-agent) | MANAGE 2.4 | *A.6.2.6* | Partial |
+| [The AI layer can be halted at runtime](#disengage-an-agent) | MANAGE 2.4 | *A.6.2.6* | Implemented |
 | [One model provider, behind one gateway, held there by a test](#third-party-model-governance) | MANAGE 3.1, *MANAGE 3.2*, *GOVERN 6.1*, *GOVERN 6.2*, *MAP 4.1* | *A.10.3*, *A.10.2* | Partial |
 | [Prompts, policies and dependencies change through review and CI](#change-control) | *MANAGE 4.2*, *MAP 4.2* | *A.6.2.3*, *A.4.4*, *A.10.3* | Implemented |
 | [Alerts reach people, each with a runbook](#alerts-reach-people) | *MANAGE 4.3*, *MANAGE 2.3*, *GOVERN 4.3* | *A.6.2.6* | Implemented |
@@ -363,22 +363,25 @@ Alerts are staged and the deterministic rules run whether the model answers, fai
 - `nas-feedops-sentinel/tests/test_critic_agent.py`
 
 <a id="disengage-an-agent"></a>
-### An agent can be switched off
+### The AI layer can be halted at runtime
 
-**Status:** Partial
+**Status:** Implemented
 
-Each register entry records the setting that stops it and the services to restart. Settings are built once at import, so the change applies on restart.
+A supervisor halts every model call from the console, with a reason, and resumes it the same way. The model-use policy refuses every call while it is halted, in every service within a couple of seconds and without a restart; alerts are still staged and the rules still run. The database audits every change, a state that cannot be read halts, a banner shows on every page, and a critical alert fires. An optional automatic trip, off by default, halts after repeated refusals that signal a real fault and is just as visible. Each register entry also records the setting that stops one agent on a restart.
 
 **NIST AI RMF:** MANAGE 2.4
 
 **ISO/IEC 42001:** *A.6.2.6 AI system operation and monitoring*
 
-**Note:** There is no runtime halt. A supervisor-operated switch, with an optional and visible automatic trip, is queued.
+**Note:** One switch for the whole AI layer; there is no switch for a single agent at runtime. The automatic trip counts refusals per process.
 
 **Evidence:**
 
+- `nas-feedops-sentinel/src/model_halt.py`
+- `nas-feedops-sentinel/tests/test_model_halt.py`
+- `nas-feedops-sentinel/tests/test_model_halt_page.py`
+- `nas-feedops-sentinel/policies/model-use.yaml`
 - `nas-feedops-sentinel/policies/agent-register.yaml`
-- `nas-feedops-sentinel/tests/test_agent_register.py`
 
 <a id="third-party-model-governance"></a>
 ### One model provider, behind one gateway, held there by a test

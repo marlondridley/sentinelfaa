@@ -125,9 +125,12 @@ async def reset_db() -> None:
             TRUNCATE TABLE nas_events, alert_events, critic_results, planner_results,
                            staged_actions, action_audit_log, watch_officer_briefs,
                            operational_tickets, ingest_log, investigations,
-                           model_calls
+                           model_calls, model_halt
                            RESTART IDENTITY CASCADE;
         """)
+        # model_halt always has its one row (a trigger refuses DELETE, and no row reads as halted), so a wipe
+        # puts it back, running. TRUNCATE does not fire the audit trigger, so this leaves no audit row.
+        await conn.execute("INSERT INTO model_halt (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
 
 
 def override_db_path(path: str = ":memory:") -> None:
