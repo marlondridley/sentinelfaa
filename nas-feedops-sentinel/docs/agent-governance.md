@@ -43,6 +43,47 @@ The short version: **agents advise, rules escalate, people decide.**
                dashboard layers 1-3, readiness verdict, deployment gate
 ```
 
+## The agent register: `policies/agent-register.yaml`
+
+Seven principals act in the advisory layer: the Critic, the Planner, the Watch
+Officer, the investigation orchestrator (no model) and the three investigation
+specialists. The register is one file that says, for each, what it is for, who
+owns it, its risk tier and why, which services it runs in, the tools it is
+granted, what data it is sent, what it falls back to, and how to stop it.
+`python -m src.agent_register` prints it.
+
+It is held to the rest of the system by `tests/test_agent_register.py`:
+- the agents that call a model are exactly the roles `model-use.yaml` allows,
+  and the register's tool lists are exactly `tool-use.yaml`'s grants, so a role
+  or a grant cannot change in one place;
+- every prompt belongs to an agent, and a prompt whose version moved since it was
+  reviewed fails until the register is updated with it;
+- every setting, service and test the register names exists, and every
+  `acting_as()` role in the code is registered;
+- no agent has any authority: `decide`, `stage`, `write` and `execute` are
+  false, and the schema refuses a register that says otherwise.
+
+**Limits, stated plainly.**
+- **Identity.** A service has its own SPIFFE identity; an agent runs inside a
+  service and is a string in OpenTelemetry baggage. It is enforced by the two
+  policies and recorded on every call, but carries no credential of its own, so
+  code in the same service could claim another agent's name. A per-agent
+  workload identity would close that, and is not built.
+- **No runtime switch.** Settings are built once at import
+  (`src/config.py`), so every entry's `disable` takes effect when the service
+  restarts. A runtime halt is a separate, queued control.
+- **Switches overlap.** Each model-calling agent has its own (`CRITIC_ENABLED`,
+  `PLANNER_ENABLED`, `WATCH_OFFICER_ENABLED`, `INVESTIGATIONS_ENABLED`), and
+  three are shared: `CRITIC_ENABLED=0` also stops the Planner and the Watch
+  Officer's overview narrative, and `INVESTIGATIONS_ENABLED=0` stops the
+  orchestrator and every investigation agent together, the Watch Officer's
+  brief included. Each entry's `note` says so. A test holds every switch to
+  the settings, to what compose forwards to the services, and to the code that
+  honours it, so the register cannot name a switch that stops nothing.
+- **Owners and tiers are judgements.** Each owner is the role "Sentinel
+  maintainer" until a named person takes it, and the tiers are the author's
+  reading of the rubric at the top of the file.
+
 ## 1. AI execution boundary: `src/llm_client.py`
 
 **Guarantee.** No model is reached except through one function, and that
