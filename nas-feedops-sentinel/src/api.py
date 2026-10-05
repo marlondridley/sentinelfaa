@@ -541,6 +541,9 @@ async def ingest(
 
 app.include_router(router)
 
-# Prometheus scrape endpoint for the API process. Served on the internal
-# network only: the edge proxy (docker/edge/nginx.conf) does not route it.
+# Prometheus scrape endpoint for the API process. It takes no credential, and that is acceptable only while nothing
+# outside the compose network can reach it: no application service publishes a host port, and the edge proxy
+# (docker/edge/nginx.conf) routes only /health and /v1/. instraclustr/tests/test_metrics_exposure.py holds both.
+# On today's flat network any container can still read it; segmentation is what narrows that. Before either
+# condition changes, put a credential on this first.
 app.mount("/metrics", make_asgi_app())
