@@ -48,9 +48,9 @@ curl -X POST https://localhost:8444/v1/ingest \
 
 **An empty body** (`{}`) starts a scan of the server's own SWIM folder (`data/raw/swim_live`). The folder is server configuration: `source_dir` is no longer a request field, and sending it is refused with 422.
 
-**Idempotency.** With an `Idempotency-Key` header, a retry after a timeout attaches to the existing workflow instead of processing the batch again. Without one, inline events derive the key from a hash of the payload; folder scans do not, since each scan is a distinct run.
+**Idempotency.** With an `Idempotency-Key` header, a retry after a timeout attaches to the existing workflow instead of processing the batch again. Without one, inline events derive the key from a hash of the payload; folder scans do not, since each scan is a distinct run. The key names the workflow, so it is 1 to 128 characters from letters, digits, `.`, `_`, `:` and `-`; anything else is refused with 422 `invalid_idempotency_key`, and nothing starts.
 
-**Correlation.** Send `x-correlation-id` to thread a trace through the logs; it is echoed on every response. When an idempotency key names the workflow, the `ingest_workflow_key_resolved` log line joins the two.
+**Correlation.** Send `x-correlation-id` to thread a trace through the logs; it is echoed on every response. When an idempotency key names the workflow, the `ingest_workflow_key_resolved` log line joins the two. A folder scan with no idempotency key is named after it, so it is 1 to 64 characters from the same set (a UUID or a W3C trace id fits). A malformed one is not refused: it is replaced with a new id, which is the one echoed back, and the replacement is logged by length.
 
 ## Errors
 
