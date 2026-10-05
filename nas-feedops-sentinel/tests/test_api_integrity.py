@@ -5,6 +5,8 @@ no placeholder key, a bounded label, a body-size cap and a per-principal rate li
 """
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -254,3 +256,91 @@ def test_the_token_bucket_refills_evenly():
     assert bucket.try_acquire("p", 60) == 0.0 and bucket.try_acquire("p", 60) > 0
     assert bucket.try_acquire("other", 60) == 0.0
     assert bucket.try_acquire("p", 0) == 0.0, "0 turns the limit off"
+
+
+# ── the correlation id a caller sends ───────────────────────────────────────────
+#
+# X-Correlation-Id is the caller's text, and a folder-scan ingest with no Idempotency-Key is named after it
+# (sentinel-ingest-<id>). It is also logged and forwarded to the model gateway. So it is checked where it enters.
+
+_CID = "X-Correlation-Id"
+_MINTED = re.compile(r"[0-9a-f]{12}")        # what new_correlation_id() makes
+
+
+@pytest.mark.parametrize("sent", [
+    "abc123",
+    "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6b",                       # a UUID
+    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",    # a W3C traceparent
+    "a" * 64,                                                     # the longest allowed
+])
+def test_a_well_formed_correlation_id_is_kept_and_names_the_workflow(api, sent):
+    client, started = api
+    response = _post(client, [], headers={_CID: sent})
+
+    assert response.status_code == 200
+    assert response.headers[_CID] == sent
+    assert response.json()["correlation_id"] == sent
+    assert started[0]["correlation_id"] == sent, "a folder scan is keyed by the request's own id"
+
+
+@pytest.mark.parametrize("sent, seen_length", [
+    ("a" * 65, 65),            # one past the longest allowed
+    ("has space", 9),
+    ("a/b", 3),
+    ("a;b", 3),
+    ("café", 5),          # not ASCII. The test client re-encodes the raw byte as UTF-8, so the server sees 5
+    ("line\nbreak", 10),       # the server's own parser refuses this first; the rule must not depend on that
+])
+def test_a_malformed_correlation_id_is_replaced_and_never_reaches_the_workflow(api, sent, seen_length, caplog):
+    client, started = api
+    with caplog.at_level(logging.WARNING, logger="src.api"):
+        # Raw bytes: the test client itself refuses a non-ASCII str header, a real client need not.
+        response = _post(client, [], headers={_CID: sent.encode("latin-1")})
+
+    assert response.status_code == 200, "a bad trace header is not worth refusing the call"
+    minted = response.headers[_CID]
+    assert _MINTED.fullmatch(minted)
+    assert response.json()["correlation_id"] == minted
+    assert started[0]["correlation_id"] == minted, "so nothing the caller typed becomes part of a workflow id"
+    replaced = [r for r in caplog.records if r.getMessage() == "correlation_id_replaced"]
+    assert [r.supplied_length for r in replaced] == [seen_length], "the replacement is logged, by length"
+    assert not any(sent in str(vars(r)) for r in caplog.records), "the caller's value is not"
+
+
+def test_no_correlation_id_still_gets_a_minted_one_without_a_warning(api, caplog):
+    client, started = api
+    with caplog.at_level(logging.WARNING, logger="src.api"):
+        response = _post(client, [])
+
+    assert _MINTED.fullmatch(response.headers[_CID]) and started[0]["correlation_id"] == response.headers[_CID]
+    assert not [r for r in caplog.records if r.getMessage() == "correlation_id_replaced"]
+
+
+def test_the_ids_this_service_mints_pass_the_inbound_rule():
+    from src.logging_config import inbound_correlation_id, new_correlation_id
+
+    minted = new_correlation_id()
+    assert inbound_correlation_id(minted) == minted, "a proxy that echoes our id back must not have it replaced"
+
+
+@pytest.mark.parametrize("raw, accepted", [
+    (None, None), ("", None), ("   ", None),
+    ("  abc-1  ", "abc-1"),                 # surrounding whitespace is not part of an id
+    ("abc\n", "abc"),
+    ("a" * 64, "a" * 64), ("a" * 65, None),
+    ("a b", None), ("a/b", None), ("a\x00b", None), ("café", None),
+    ("a.b_c:d-e", "a.b_c:d-e"),
+])
+def test_the_inbound_correlation_id_rule(raw, accepted):
+    from src.logging_config import inbound_correlation_id
+
+    assert inbound_correlation_id(raw) == accepted
+
+
+def test_a_workflow_key_the_service_derived_is_not_held_to_the_inbound_rule():
+    """The pipeline and the activities bind the workflow key: an Idempotency-Key joined to the caller's name, or a
+    payload hash. It is ours, and longer than a caller's id may be; rewriting it would cut the log's tie to the run."""
+    from src.logging_config import bind_correlation_id
+
+    derived = "caller-a-" + "k" * 120
+    assert bind_correlation_id(derived) == derived

@@ -25,6 +25,7 @@ from src.logging_config import (
     configure_logging,
     get_correlation_id,
     get_logger,
+    inbound_correlation_id,
 )
 from src.models import NASEvent, stable_id
 from src.rate_limit import TokenBucket
@@ -294,7 +295,13 @@ def _idempotency_key(supplied: str | None, events: list[dict[str, Any]]) -> str 
 
 @app.middleware("http")
 async def correlation_middleware(request: Request, call_next):
-    cid = bind_correlation_id(request.headers.get(CORRELATION_HEADER))
+    supplied = request.headers.get(CORRELATION_HEADER)
+    accepted = inbound_correlation_id(supplied)
+    # A malformed id is replaced, not refused: a caller's trace header is not worth a 400. The value is not
+    # logged (it is the caller's, and may be long); its length is.
+    cid = bind_correlation_id(accepted)
+    if supplied and accepted is None:
+        _log.warning("correlation_id_replaced", extra={"supplied_length": len(supplied)})
     _log.info(
         "http_request",
         extra={"path": request.url.path, "method": request.method},
