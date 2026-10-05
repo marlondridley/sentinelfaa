@@ -71,7 +71,7 @@
     "/v1/ingest": {
       "post": {
         "summary": "Start an ingestion workflow",
-        "description": "Starts a Temporal workflow to process NAS events. If `events` is provided, a pipeline workflow runs directly on those events; otherwise an ingest workflow scans the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header to make retries attach to the existing workflow. Requires authentication via `X-API-Key` or a Bearer token; the resolved caller identity is recorded against this call in the application logs.",
+        "description": "Starts a Temporal workflow to process NAS events. If `events` is provided, a pipeline workflow runs directly on those events; otherwise an ingest workflow scans the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header (1 to 128 characters: letters, digits, `.`, `_`, `:` and `-`; otherwise 422) to make retries attach to the existing workflow. Requires authentication via `X-API-Key` or a Bearer token; the resolved caller identity is recorded against this call in the application logs.",
         "operationId": "ingest_v1_ingest_post",
         "security": [
           {

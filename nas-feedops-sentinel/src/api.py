@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -25,6 +26,7 @@ from src.logging_config import (
     configure_logging,
     get_correlation_id,
     get_logger,
+    inbound_correlation_id,
 )
 from src.models import NASEvent, stable_id
 from src.rate_limit import TokenBucket
@@ -59,6 +61,11 @@ app = FastAPI(
 router = APIRouter(prefix="/v1")
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+# The key names the workflow (sentinel-pipeline-<caller>-<key>), so it is bounded like a correlation id
+# (src/logging_config.py), a little longer because it is the caller's own handle for a batch. A key the Temporal
+# server refused would come back as an RPCError, which the handler below reports as 503 temporal_unavailable: the
+# wrong answer for the caller's own mistake.
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 
@@ -294,7 +301,13 @@ def _idempotency_key(supplied: str | None, events: list[dict[str, Any]]) -> str 
 
 @app.middleware("http")
 async def correlation_middleware(request: Request, call_next):
-    cid = bind_correlation_id(request.headers.get(CORRELATION_HEADER))
+    supplied = request.headers.get(CORRELATION_HEADER)
+    accepted = inbound_correlation_id(supplied)
+    # A malformed id is replaced, not refused: a caller's trace header is not worth a 400. The value is not
+    # logged (it is the caller's, and may be long); its length is.
+    cid = bind_correlation_id(accepted)
+    if supplied and accepted is None:
+        _log.warning("correlation_id_replaced", extra={"supplied_length": len(supplied)})
     _log.info(
         "http_request",
         extra={"path": request.url.path, "method": request.method},
@@ -406,6 +419,7 @@ async def ready() -> JSONResponse:
         "pipeline workflow runs directly on those events; otherwise an ingest workflow scans "
         "the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before "
         "the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header "
+        "(1 to 128 characters: letters, digits, `.`, `_`, `:` and `-`; otherwise 422) "
         "to make retries attach to the existing workflow. Requires authentication via "
         "`X-API-Key` or a Bearer token; the resolved caller identity is recorded against "
         "this call in the application logs."
@@ -432,6 +446,15 @@ async def ingest(
     workflow instead of double-processing the batch.
     """
     cid = get_correlation_id()
+
+    if idempotency_key and not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "invalid_idempotency_key",
+                "rule": "1 to 128 characters: letters, digits, '.', '_', ':' and '-'",
+            },
+        )
 
     _log.info(
         "ingest_request_authenticated",
@@ -518,6 +541,9 @@ async def ingest(
 
 app.include_router(router)
 
-# Prometheus scrape endpoint for the API process. Served on the internal
-# network only: the edge proxy (docker/edge/nginx.conf) does not route it.
+# Prometheus scrape endpoint for the API process. It takes no credential, and that is acceptable only while nothing
+# outside the compose network can reach it: no application service publishes a host port, and the edge proxy
+# (docker/edge/nginx.conf) routes only /health and /v1/. instraclustr/tests/test_metrics_exposure.py holds both.
+# On today's flat network any container can still read it; segmentation is what narrows that. Before either
+# condition changes, put a credential on this first.
 app.mount("/metrics", make_asgi_app())
