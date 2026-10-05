@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -60,6 +61,11 @@ app = FastAPI(
 router = APIRouter(prefix="/v1")
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+# The key names the workflow (sentinel-pipeline-<caller>-<key>), so it is bounded like a correlation id
+# (src/logging_config.py), a little longer because it is the caller's own handle for a batch. A key the Temporal
+# server refused would come back as an RPCError, which the handler below reports as 503 temporal_unavailable: the
+# wrong answer for the caller's own mistake.
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 
@@ -413,6 +419,7 @@ async def ready() -> JSONResponse:
         "pipeline workflow runs directly on those events; otherwise an ingest workflow scans "
         "the server's SWIM folder (data/raw/swim_live). Inline events are validated against the NASEvent schema before "
         "the workflow starts; invalid payloads return 422. Supply an `Idempotency-Key` header "
+        "(1 to 128 characters: letters, digits, `.`, `_`, `:` and `-`; otherwise 422) "
         "to make retries attach to the existing workflow. Requires authentication via "
         "`X-API-Key` or a Bearer token; the resolved caller identity is recorded against "
         "this call in the application logs."
@@ -439,6 +446,15 @@ async def ingest(
     workflow instead of double-processing the batch.
     """
     cid = get_correlation_id()
+
+    if idempotency_key and not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "invalid_idempotency_key",
+                "rule": "1 to 128 characters: letters, digits, '.', '_', ':' and '-'",
+            },
+        )
 
     _log.info(
         "ingest_request_authenticated",

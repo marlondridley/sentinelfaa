@@ -337,6 +337,34 @@ def test_the_inbound_correlation_id_rule(raw, accepted):
     assert inbound_correlation_id(raw) == accepted
 
 
+# ── the Idempotency-Key a caller sends ──────────────────────────────────────────
+#
+# It names the workflow too (sentinel-pipeline-<caller>-<key>), so it is bounded the same way. A bad key is refused,
+# not replaced: the key is the caller's own handle for the batch, and a different one would break its retry.
+
+@pytest.mark.parametrize("key", ["batch-1", "batch-2026-09-16-0001", "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6b",
+                                 "a.b_c:d-e", "k" * 128])
+def test_a_well_formed_idempotency_key_is_accepted(api, key):
+    client, started = api
+    assert _post(client, headers={"Idempotency-Key": key}).status_code == 200
+    assert started, "and the workflow started"
+
+
+@pytest.mark.parametrize("key", ["k" * 129, "has space", "a/b", "a;b", "line\nbreak"])
+def test_a_malformed_idempotency_key_is_refused_before_anything_starts(api, key):
+    client, started = api
+    response = _post(client, headers={"Idempotency-Key": key})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "invalid_idempotency_key"
+    assert started == [], "nothing was started under a key the caller must correct"
+
+
+def test_no_idempotency_key_is_still_fine(api):
+    client, started = api
+    assert _post(client).status_code == 200 and started
+
+
 def test_a_workflow_key_the_service_derived_is_not_held_to_the_inbound_rule():
     """The pipeline and the activities bind the workflow key: an Idempotency-Key joined to the caller's name, or a
     payload hash. It is ours, and longer than a caller's id may be; rewriting it would cut the log's tie to the run."""
