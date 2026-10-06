@@ -62,7 +62,7 @@ reconciler, every 60 s: stage any CRITICAL alert that slipped through, or
 record it EXPIRED if it is older than the staging window
 ```
 
-The live watcher, a Temporal workflow started through the API, the dashboard's sample and replay buttons, and the CLI all run the same `src/pipeline.py`. Events and alerts carry identities derived from the SWIM message itself, so a re-dropped file or a retried workflow updates rows instead of duplicating them.
+The live watcher, a Temporal workflow started through the API, the dashboard's replay button, and the CLI all run the same `src/pipeline.py`. Events and alerts carry identities derived from the SWIM message itself, so a re-dropped file or a retried workflow updates rows instead of duplicating them.
 
 **What the live subscription carries:** TAIS (terminal automation flight plans and tracks from STARS), TDES (tower departure events, including TDLS departure clearances), APDS (runway visual range) and SMES (ASDE-X surface movement and safety-logic hold bars). All ten messages of a real 2026-08-27 capture, committed under `nas-feedops-sentinel/tests/fixtures/swim_kit/`, ingest with none quarantined.
 
