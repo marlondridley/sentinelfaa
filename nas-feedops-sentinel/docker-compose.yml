@@ -100,6 +100,9 @@ x-app-env: &app-env
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
   TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-nas-feedops-queue}
+  # The most the Temporal worker runs at once (src/temporal_worker.py). Only the temporal-worker service reads them.
+  TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES: ${TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES:-20}
+  TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS: ${TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS:-100}
   # OpenTelemetry (src/telemetry.py): traces, metrics and AGT's audit log
   # records. The metrics are always on each service's /metrics; set
   # OTEL_EXPORTER_OTLP_ENDPOINT in .env to also send everything to an OTLP

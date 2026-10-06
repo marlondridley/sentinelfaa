@@ -116,6 +116,19 @@ def _start_watchdog(check_seconds: float = 10.0) -> None:
     threading.Thread(target=_watch, daemon=True, name="loop-watchdog").start()
 
 
+def worker_limits() -> dict[str, int]:
+    """
+    How much the worker runs at once: TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES and
+    TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS. The keys are the temporalio Worker's own keyword arguments, so the
+    result is passed straight to it. These settings used to sit in config.py unread, so the SDK's built-in limits
+    applied whatever they said.
+    """
+    return {
+        "max_concurrent_activities": settings.TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES,
+        "max_concurrent_workflow_tasks": settings.TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS,
+    }
+
+
 async def run_worker(interrupt_event: asyncio.Event) -> None:
     configure_logging()
     # The worker runs the API-started pipelines, so the Critic, investigation
@@ -131,6 +144,7 @@ async def run_worker(interrupt_event: asyncio.Event) -> None:
         task_queue=settings.TEMPORAL_TASK_QUEUE,
         workflows=[SentinelPipelineWorkflow, IngestFolderWorkflow],
         activities=[process_events_activity, ingest_folder_activity],
+        **worker_limits(),
         # On shutdown, give in-flight activities (e.g. a file scan or pipeline
         # run already underway) this long to finish naturally before Temporal
         # sends them a cancellation. Keep this comfortably inside whatever
@@ -140,7 +154,7 @@ async def run_worker(interrupt_event: asyncio.Event) -> None:
     )
     _log.info(
         "temporal_worker_started",
-        extra={"task_queue": settings.TEMPORAL_TASK_QUEUE, "host": settings.TEMPORAL_HOST},
+        extra={"task_queue": settings.TEMPORAL_TASK_QUEUE, "host": settings.TEMPORAL_HOST, **worker_limits()},
     )
     # `async with worker:` starts polling on enter and, on exit, calls
     # worker.shutdown() -- which is what actually drains in-flight activities
