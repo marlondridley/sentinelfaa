@@ -14,6 +14,22 @@
 global:
   resolve_timeout: 5m
 
+# The two windows the briefs are let through in (alert-rules.yml, nas-sentinel-briefs). Eastern time, so the
+# brief arrives at 07:00 and 19:00 in New York whatever the host's clock or the time of year.
+time_intervals:
+  - name: morning-brief-window
+    time_intervals:
+      - times:
+          - start_time: "07:00"
+            end_time: "07:10"
+        location: America/New_York
+  - name: evening-brief-window
+    time_intervals:
+      - times:
+          - start_time: "19:00"
+            end_time: "19:10"
+        location: America/New_York
+
 route:
   receiver: slack
   # One message per alert name, and per airport for the per-airport rule.
@@ -27,6 +43,21 @@ route:
     # Routes match in order, so this must stay above the catch-alls below.
     - matchers: [alertname="Watchdog"]
       receiver: "null"
+    # The briefs fire all the time; each is sent only inside its window. The alert is already known to the
+    # group, so the first message goes out within group_interval of the window opening, and repeat_interval
+    # (shorter than the 12 hours between windows, longer than a window) keeps it to one message per window.
+    - matchers: [alertname="MorningBrief"]
+      receiver: slack-brief
+      active_time_intervals: [morning-brief-window]
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 11h
+    - matchers: [alertname="EveningBrief"]
+      receiver: slack-brief
+      active_time_intervals: [evening-brief-window]
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 11h
     # Critical: a shorter wait before the first message, and a reminder every hour.
     - matchers: [severity="critical"]
       group_wait: 10s
@@ -44,3 +75,13 @@ receivers:
           {{ range .Alerts }}{{ .Annotations.summary }}
           {{ with .Annotations.description }}{{ . }}
           {{ end }}{{ end }}Runbook: nas-feedops-sentinel/docs/runbooks.md, "{{ .GroupLabels.alertname }}"
+  # The briefs: same webhook, a neutral colour, and no "resolved" message, since a brief never resolves.
+  - name: slack-brief
+    slack_configs:
+      - api_url_file: /tmp/slack_api_url
+        send_resolved: false
+        color: '#439FE0'
+        title: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        text: |-
+          {{ range .Alerts }}{{ .Annotations.description }}{{ end }}
+          Anything that needs a person arrives as its own alert.

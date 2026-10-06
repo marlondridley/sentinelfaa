@@ -212,3 +212,98 @@ groups:
         annotations:
           summary: "Prometheus cannot send alerts to Alertmanager"
           description: "Is nas-alertmanager running? `docker ps`, `docker logs nas-prometheus`. docs/runbooks.md."
+
+  # Scheduled briefs: a morning and an evening message to Slack about the trend of the last 12 hours against the
+  # 12 before. They are two rules that fire all the time, like Watchdog; alertmanager.yml lets each one through
+  # only in a ten-minute window (07:00 and 19:00 Eastern), so the schedule is the router's, not an app job's.
+  # The delivery path, and the webhook, are the ones the alerts already use: nothing new holds a secret.
+  #
+  # Everything in a brief is an aggregate read from /metrics (counts, queue depth, airport codes). A flight
+  # identifier is never a metric label, so none can reach Slack through this.
+  #
+  # "was N" is the previous 12 hours. A counter that has no series in that window reads 0 only when Prometheus was
+  # scraping the sentinel then (so the zero is a measurement); otherwise it reads "no data" rather than a
+  # zero nobody measured.
+  - name: nas-sentinel-briefs
+    interval: 1m
+    rules:
+      - record: sentinel_brief:alerts_raised:12h
+        expr: 'round(sum(increase(nas_alerts_triggered_total[12h]))) or vector(0)'
+      - record: sentinel_brief:alerts_raised:12h_previous
+        expr: 'round(sum(increase(nas_alerts_triggered_total[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+
+      - record: sentinel_brief:critical_alerts_raised:12h
+        expr: 'round(sum(increase(nas_alerts_triggered_total{severity="CRITICAL"}[12h]))) or vector(0)'
+      - record: sentinel_brief:critical_alerts_raised:12h_previous
+        expr: 'round(sum(increase(nas_alerts_triggered_total{severity="CRITICAL"}[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+
+      - record: sentinel_brief:events_ingested:12h
+        expr: 'round(sum(increase(nas_events_ingested_total[12h]))) or vector(0)'
+      - record: sentinel_brief:events_ingested:12h_previous
+        expr: 'round(sum(increase(nas_events_ingested_total[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+
+      - record: sentinel_brief:events_failed_validation:12h
+        expr: 'round(sum(increase(nas_events_validated_total{status="FAILED"}[12h]))) or vector(0)'
+      - record: sentinel_brief:events_failed_validation:12h_previous
+        expr: 'round(sum(increase(nas_events_validated_total{status="FAILED"}[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+
+      - record: sentinel_brief:files_dropped_unprocessed:12h
+        expr: 'round(sum(increase(nas_swim_files_dropped_unprocessed_total[12h]))) or vector(0)'
+      - record: sentinel_brief:files_dropped_unprocessed:12h_previous
+        expr: 'round(sum(increase(nas_swim_files_dropped_unprocessed_total[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+
+      # Airports whose feed was DEGRADED or worse at any point in the window (nas_airport_overall_status >= 2).
+      - record: sentinel_brief:airports_degraded:12h
+        expr: 'count(max by (airport) (max_over_time(nas_airport_overall_status[12h])) >= 2) or vector(0)'
+      - record: sentinel_brief:airports_degraded:12h_previous
+        expr: 'count(max by (airport) (max_over_time(nas_airport_overall_status[12h] offset 12h)) >= 2) or (vector(0) and on() (max(count_over_time(nas_airport_overall_status[12h] offset 12h)) > 0))'
+      - record: sentinel_brief:airports_not_ok:now
+        expr: 'count(max by (airport) (nas_airport_overall_status) > 0) or vector(0)'
+
+      - record: sentinel_brief:review_queue_waiting:now
+        expr: 'max(nas_hitl_queue_depth) or vector(0)'
+      - record: sentinel_brief:review_queue_waiting:12h_ago
+        expr: 'max(nas_hitl_queue_depth offset 12h)'
+      - record: sentinel_brief:review_oldest_pending_seconds:now
+        expr: 'max(nas_hitl_oldest_pending_age_seconds) or vector(0)'
+
+      - record: sentinel_brief:model_calls:12h
+        expr: 'round(sum(increase(nas_llm_calls_total[12h]))) or vector(0)'
+      - record: sentinel_brief:model_calls:12h_previous
+        expr: 'round(sum(increase(nas_llm_calls_total[12h] offset 12h))) or (vector(0) and on() (max(count_over_time(up{job="nas-sentinel"}[12h] offset 12h)) > 0))'
+      # Calls that ended in an error or were rejected by the output guardrail, as a share of all calls.
+      - record: sentinel_brief:model_calls_failing_ratio:12h
+        expr: '(sum(increase(nas_llm_calls_total{outcome=~"error|guardrail_rejected"}[12h])) or vector(0)) / clamp_min(sum(increase(nas_llm_calls_total[12h])), 1) and on() (sum(increase(nas_llm_calls_total[12h])) > 0)'
+      - record: sentinel_brief:model_calls_failing_ratio:12h_previous
+        expr: '(sum(increase(nas_llm_calls_total{outcome=~"error|guardrail_rejected"}[12h] offset 12h)) or vector(0)) / clamp_min(sum(increase(nas_llm_calls_total[12h] offset 12h)), 1) and on() (sum(increase(nas_llm_calls_total[12h] offset 12h)) > 0)'
+      # Same condition as ModelLayerHalted: a process that has not read the halt state in ten minutes is ignored.
+      - record: sentinel_brief:model_halted:now
+        expr: 'max((sentinel_model_halted == 1) and (time() - sentinel_model_halt_checked_timestamp_seconds < 600)) or vector(0)'
+
+      - record: sentinel_brief:scrape_targets_down:now
+        expr: 'count(up == 0) or vector(0)'
+
+      - alert: MorningBrief
+        expr: vector(1)
+        labels: {severity: brief}
+        annotations:
+          summary: "Morning brief: the last 12 hours"
+          description: &brief |-
+            {{- define "n" }}{{ with query . }}{{ . | first | value | printf "%.0f" }}{{ else }}no data{{ end }}{{ end -}}
+            {{- define "pct" }}{{ with query . }}{{ . | first | value | humanizePercentage }}{{ else }}no data{{ end }}{{ end -}}
+            {{- define "dur" }}{{ with query . }}{{ . | first | value | humanizeDuration }}{{ else }}no data{{ end }}{{ end -}}
+            Last 12 hours (was = the 12 hours before)
+            Alerts raised: {{ template "n" "sentinel_brief:alerts_raised:12h" }} (was {{ template "n" "sentinel_brief:alerts_raised:12h_previous" }}), CRITICAL {{ template "n" "sentinel_brief:critical_alerts_raised:12h" }} (was {{ template "n" "sentinel_brief:critical_alerts_raised:12h_previous" }})
+            Events ingested: {{ template "n" "sentinel_brief:events_ingested:12h" }} (was {{ template "n" "sentinel_brief:events_ingested:12h_previous" }}), failed validation {{ template "n" "sentinel_brief:events_failed_validation:12h" }} (was {{ template "n" "sentinel_brief:events_failed_validation:12h_previous" }})
+            SWIM messages dropped unprocessed: {{ template "n" "sentinel_brief:files_dropped_unprocessed:12h" }} (was {{ template "n" "sentinel_brief:files_dropped_unprocessed:12h_previous" }})
+            Airports degraded at some point: {{ template "n" "sentinel_brief:airports_degraded:12h" }} (was {{ template "n" "sentinel_brief:airports_degraded:12h_previous" }}), not OK right now: {{ template "n" "sentinel_brief:airports_not_ok:now" }}
+            Review queue: {{ template "n" "sentinel_brief:review_queue_waiting:now" }} waiting, oldest {{ template "dur" "sentinel_brief:review_oldest_pending_seconds:now" }} (12 hours ago: {{ template "n" "sentinel_brief:review_queue_waiting:12h_ago" }} waiting)
+            AI layer: halted: {{ with query "sentinel_brief:model_halted:now" }}{{ if gt (. | first | value) 0.0 }}YES{{ else }}no{{ end }}{{ else }}unknown{{ end }}; model calls {{ template "n" "sentinel_brief:model_calls:12h" }} (was {{ template "n" "sentinel_brief:model_calls:12h_previous" }}), failing {{ template "pct" "sentinel_brief:model_calls_failing_ratio:12h" }} (was {{ template "pct" "sentinel_brief:model_calls_failing_ratio:12h_previous" }})
+            Monitoring: {{ template "n" "sentinel_brief:scrape_targets_down:now" }} scrape target(s) down
+
+      - alert: EveningBrief
+        expr: vector(1)
+        labels: {severity: brief}
+        annotations:
+          summary: "Evening brief: the last 12 hours"
+          description: *brief

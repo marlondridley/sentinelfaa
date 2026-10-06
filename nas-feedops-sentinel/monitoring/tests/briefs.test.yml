@@ -1,0 +1,134 @@
+# Unit tests for the brief rules in ../alert-rules.yml (group nas-sentinel-briefs), run by promtool:
+#
+#   promtool test rules monitoring/tests/briefs.test.yml
+#
+# .github/scripts/check_alerting.py runs it with the Prometheus image compose pins. Each series is one sample a
+# minute for 25 hours; the evaluation is at hour 24, so "the last 12 hours" is minutes 721-1440 and "the 12
+# before" is minutes 1-720. A counter's value steps at minute 100 (inside the earlier window) and at minute 1000
+# (inside the later one), so the later window's increase is the second step and the earlier's is the first.
+rule_files:
+  - ../alert-rules.yml
+evaluation_interval: 1m
+
+tests:
+  # A normal day: every figure has data in both windows.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="nas-sentinel"}'
+        values: '1x1500'
+      - series: 'up{job="nas-api"}'
+        values: '0x1500'
+      # WARNING + CRITICAL: 8 then 11, and 1 then 3, so 9 then 14 in all.
+      - series: 'nas_alerts_triggered_total{alert_type="a",severity="WARNING",airport="KIAD"}'
+        values: '0x99 8x899 19x500'
+      - series: 'nas_alerts_triggered_total{alert_type="b",severity="CRITICAL",airport="KIAD"}'
+        values: '0x99 1x899 4x500'
+      - series: 'nas_events_ingested_total{source="swim",airport="KIAD",service="tais"}'
+        values: '0x99 120x899 360x500'
+      - series: 'nas_events_validated_total{status="FAILED"}'
+        values: '0x99 4x899 16x500'
+      - series: 'nas_swim_files_dropped_unprocessed_total'
+        values: '0x1500'
+      # KIAD was DEGRADED (2) between minutes 800 and 900; KDCA is STALE (1) right now.
+      - series: 'nas_airport_overall_status{airport="KIAD"}'
+        values: '0x799 2x100 0x600'
+      - series: 'nas_airport_overall_status{airport="KDCA"}'
+        values: '0x1399 1x100'
+      - series: 'nas_hitl_queue_depth'
+        values: '0x1000 2x500'
+      - series: 'nas_hitl_oldest_pending_age_seconds'
+        values: '0x1000 840x500'
+      - series: 'nas_llm_calls_total{agent="critic",outcome="success"}'
+        values: '0x99 38x899 78x500'
+      - series: 'nas_llm_calls_total{agent="critic",outcome="error"}'
+        values: '0x99 4x899 18x500'
+      - series: 'sentinel_model_halted{instance="s:9108"}'
+        values: '0x1500'
+      - series: 'sentinel_model_halt_checked_timestamp_seconds{instance="s:9108"}'
+        values: '86395x1500'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: MorningBrief
+        exp_alerts:
+          - exp_labels: {severity: brief}
+            exp_annotations:
+              summary: "Morning brief: the last 12 hours"
+              description: |-
+                Last 12 hours (was = the 12 hours before)
+                Alerts raised: 14 (was 9), CRITICAL 3 (was 1)
+                Events ingested: 240 (was 120), failed validation 12 (was 4)
+                SWIM messages dropped unprocessed: 0 (was 0)
+                Airports degraded at some point: 1 (was 0), not OK right now: 1
+                Review queue: 2 waiting, oldest 14m 0s (12 hours ago: 0 waiting)
+                AI layer: halted: no; model calls 54 (was 42), failing 25.93% (was 9.524%)
+                Monitoring: 1 scrape target(s) down
+      # The evening brief is the same text under its own name.
+      - eval_time: 24h
+        alertname: EveningBrief
+        exp_alerts:
+          - exp_labels: {severity: brief}
+            exp_annotations:
+              summary: "Evening brief: the last 12 hours"
+              description: |-
+                Last 12 hours (was = the 12 hours before)
+                Alerts raised: 14 (was 9), CRITICAL 3 (was 1)
+                Events ingested: 240 (was 120), failed validation 12 (was 4)
+                SWIM messages dropped unprocessed: 0 (was 0)
+                Airports degraded at some point: 1 (was 0), not OK right now: 1
+                Review queue: 2 waiting, oldest 14m 0s (12 hours ago: 0 waiting)
+                AI layer: halted: no; model calls 54 (was 42), failing 25.93% (was 9.524%)
+                Monitoring: 1 scrape target(s) down
+
+  # Prometheus has only been scraping for the last 12 hours, and nothing has happened: the current figures are
+  # real zeros, the earlier ones are "no data" and not a zero nobody measured.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="nas-sentinel"}'
+        values: '_x800 1x700'
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: MorningBrief
+        exp_alerts:
+          - exp_labels: {severity: brief}
+            exp_annotations:
+              summary: "Morning brief: the last 12 hours"
+              description: |-
+                Last 12 hours (was = the 12 hours before)
+                Alerts raised: 0 (was no data), CRITICAL 0 (was no data)
+                Events ingested: 0 (was no data), failed validation 0 (was no data)
+                SWIM messages dropped unprocessed: 0 (was no data)
+                Airports degraded at some point: 0 (was no data), not OK right now: 0
+                Review queue: 0 waiting, oldest 0s (12 hours ago: no data waiting)
+                AI layer: halted: no; model calls 0 (was no data), failing no data (was no data)
+                Monitoring: 0 scrape target(s) down
+
+  # The halt figure follows ModelLayerHalted: a halt a process reported is YES; a halt state that process has
+  # not read in ten minutes is ignored, so a stale one cannot hold the brief wrong.
+  - interval: 1m
+    input_series:
+      - series: 'sentinel_model_halted{instance="fresh:9108"}'
+        values: '1x1500'
+      - series: 'sentinel_model_halt_checked_timestamp_seconds{instance="fresh:9108"}'
+        values: '86395x1500'
+      - series: 'sentinel_model_halted{instance="stale:9108"}'
+        values: '1x1500'
+      - series: 'sentinel_model_halt_checked_timestamp_seconds{instance="stale:9108"}'
+        values: '1000x1500'
+    promql_expr_test:
+      - expr: sentinel_brief:model_halted:now
+        eval_time: 24h
+        exp_samples:
+          - labels: 'sentinel_brief:model_halted:now'
+            value: 1
+  - interval: 1m
+    input_series:
+      - series: 'sentinel_model_halted{instance="stale:9108"}'
+        values: '1x1500'
+      - series: 'sentinel_model_halt_checked_timestamp_seconds{instance="stale:9108"}'
+        values: '1000x1500'
+    promql_expr_test:
+      - expr: sentinel_brief:model_halted:now
+        eval_time: 24h
+        exp_samples:
+          - labels: 'sentinel_brief:model_halted:now'
+            value: 0

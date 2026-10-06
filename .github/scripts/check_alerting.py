@@ -10,6 +10,10 @@ Proves the alerting path works, with the real tools and the shipped settings.
      it the Watchdog heartbeat under the service name prometheus.yml points at. Given a critical alert, a
      stand-in for Slack must receive it with the right title and colour, and must NOT receive the heartbeat.
   4. Started without SLACK_WEBHOOK_URL it still comes up healthy and says so, instead of crash-looping.
+  5. The morning and evening briefs: promtool unit-tests the rules that write them (monitoring/tests), and a real
+     Alertmanager sends one through the shipped route and receiver when its window is open and nothing when it
+     is closed. The windows are rewritten to "all day" and "six hours from now" for the test, since the shipped
+     ones are ten minutes a day; amtool check-config has already loaded the shipped ones and their time zone.
 
 The image references and the start-up script are read from nas-feedops-sentinel/docker-compose.yml, so this
 cannot pass against something other than what ships. Needs Docker and PyYAML.
@@ -21,8 +25,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -83,12 +89,23 @@ def check_prometheus(image: str) -> None:
     ok("promtool: prometheus.yml and alert-rules.yml are valid, and the rule file is loaded")
 
 
+def check_brief_rules(image: str) -> None:
+    """promtool runs monitoring/tests/briefs.test.yml: the figures and the text of both briefs, from known series."""
+    proc = docker("run", "--rm", "--entrypoint", "promtool", "-v", f"{MONITORING}:/etc/prometheus:ro", image,
+                  "test", "rules", "/etc/prometheus/tests/briefs.test.yml", check=False)
+    if proc.returncode != 0 or "SUCCESS" not in proc.stdout + proc.stderr:
+        fail(f"the brief rules do not produce the expected brief:\n{proc.stdout}\n{proc.stderr}")
+    ok("promtool: the brief rules produce the expected text from known series (data, no data, halted)")
+
+
 ROUTES = (  # (labels, receiver it must reach)
     ("alertname=ScrapeTargetDown severity=critical job=nas-sentinel", "slack"),
     ("alertname=CriticalAlertsUnstaged severity=critical", "slack"),
     ("alertname=AirportFeedDegraded severity=warning airport=KIAD", "slack"),
     ("alertname=LLMErrorRateHigh severity=warning", "slack"),
     ("alertname=Watchdog severity=none", "null"),
+    ("alertname=MorningBrief severity=brief", "slack-brief"),
+    ("alertname=EveningBrief severity=brief", "slack-brief"),
 )
 
 
@@ -104,14 +121,18 @@ def check_routing(image: str) -> None:
     ok(f"amtool: alertmanager.yml is valid; {len(ROUTES)} sample alerts route to the expected receiver")
 
 
-def start_alertmanager(ship: dict, network: str, name: str, webhook: str, alias: str | None = None) -> None:
-    """Start it as compose does: its entrypoint and command, a read-only root, nothing added."""
+def start_alertmanager(ship: dict, network: str, name: str, webhook: str, alias: str | None = None,
+                       config: Path | None = None) -> None:
+    """Start it as compose does: its entrypoint and command, a read-only root, nothing added.
+
+    `config` replaces the shipped alertmanager.yml, for a test that must change one thing in it.
+    """
     docker("run", "-d", "--name", name, "--network", network,
            *(["--network-alias", alias] if alias else []),
            "--read-only", "--tmpfs", "/tmp:size=64m", "--cap-drop", "ALL",
            "--security-opt", "no-new-privileges:true",
            "-e", f"SLACK_WEBHOOK_URL={webhook}",
-           "-v", f"{MONITORING / 'alertmanager.yml'}:/etc/alertmanager/alertmanager.yml:ro",
+           "-v", f"{config or MONITORING / 'alertmanager.yml'}:/etc/alertmanager/alertmanager.yml:ro",
            "-v", "/alertmanager",
            "--entrypoint", ship["entrypoint"][0], ship["alertmanager_image"],
            *ship["entrypoint"][1:], *ship["command"])
@@ -205,6 +226,71 @@ def check_delivery(ship: dict, network: str, suffix: str) -> None:
     ok("delivery: the critical alert reached the webhook (title, red, summary, runbook); the heartbeat did not")
 
 
+def brief_config(directory: Path, start: str, end: str) -> Path:
+    """The shipped alertmanager.yml with both brief windows set to start-end UTC, and nothing else changed."""
+    cfg = yaml.safe_load((MONITORING / "alertmanager.yml").read_text(encoding="utf-8"))
+    names = {"morning-brief-window", "evening-brief-window"}
+    windows = [i for i in cfg["time_intervals"] if i["name"] in names]
+    if len(windows) != 2:
+        fail(f"expected the morning and evening brief windows in alertmanager.yml, found {len(windows)}")
+    for window in windows:
+        window["time_intervals"] = [{"times": [{"start_time": start, "end_time": end}], "location": "UTC"}]
+    path = directory / f"alertmanager-{start.replace(':', '')}.yml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return path
+
+
+BRIEF_TEXT = "Alerts raised: 14 (was 9), CRITICAL 3 (was 1)\nMonitoring: 0 scrape target(s) down"
+
+
+def check_briefs(ship: dict, network: str, suffix: str) -> None:
+    """A brief goes out in its window as a neutral message with its text; outside the window, nothing."""
+    later = datetime.now(timezone.utc) + timedelta(hours=6)           # a ten-minute window six hours from now
+    if later.date() != datetime.now(timezone.utc).date():            # never across midnight: HH:MM has no date
+        later -= timedelta(hours=12)
+    closed = (later.strftime("%H:%M"), (later + timedelta(minutes=10)).strftime("%H:%M"))
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = {}
+        for label, (start, end) in (("open", ("00:00", "24:00")), ("closed", closed)):
+            cfg = brief_config(Path(tmp), start, end)
+            catcher, am = f"alerting-brief-{label}-catcher-{suffix}", f"alerting-brief-{label}-am-{suffix}"
+            docker("run", "-d", "--name", catcher, "--network", network, CATCHER_IMAGE, "python", "-c", CATCHER)
+            start_alertmanager(ship, network, am, f"http://{catcher}:8080/hook", config=cfg)
+            runs[label] = (catcher, am)
+        for _, am in runs.values():
+            wait_healthy(am)
+        for _, am in runs.values():
+            fire(am, "alertname=MorningBrief", "severity=brief",
+                 summary="Morning brief: the last 12 hours", description=BRIEF_TEXT)
+
+        deadline = time.time() + 40                 # the brief route waits 10 s before the first message
+        got: list[dict] = []
+        while time.time() < deadline and not got:
+            time.sleep(1)
+            got = posts(runs["open"][0])
+        if not got:
+            fail(f"a brief did not reach the webhook inside its window:\n"
+                 f"{docker('logs', runs['open'][1], check=False).stderr}")
+        attachment = got[0]["attachments"][0]
+        if attachment.get("title") != "Morning brief: the last 12 hours":
+            fail(f"the brief has the wrong title: {attachment.get('title')!r}")
+        if attachment.get("color") != "#439FE0":
+            fail(f"the brief is not the neutral colour: {attachment.get('color')!r}")
+        for line in BRIEF_TEXT.splitlines():
+            if line not in attachment.get("text", ""):
+                fail(f"the brief's text is missing {line!r}: {attachment.get('text')!r}")
+        if "Runbook:" in attachment.get("text", ""):
+            fail("a brief went out through the alert receiver, with a runbook line")
+        ok("briefs: inside its window a brief reaches the webhook with its title, its text and the neutral colour")
+
+        # Same alert, same config but for the window: well past the route's 10 s group_wait, still nothing.
+        time.sleep(25)
+        closed_posts = posts(runs["closed"][0])
+        if closed_posts:
+            fail(f"a brief was sent outside its window: {closed_posts}")
+        ok(f"briefs: outside its window ({closed[0]}-{closed[1]} UTC) nothing is sent")
+
+
 def check_unconfigured(ship: dict, network: str, suffix: str) -> None:
     name = f"alerting-unset-{suffix}"
     start_alertmanager(ship, network, name, "")
@@ -218,6 +304,7 @@ def check_unconfigured(ship: dict, network: str, suffix: str) -> None:
 def main() -> None:
     ship = shipped()
     check_prometheus(ship["prometheus_image"])
+    check_brief_rules(ship["prometheus_image"])
     check_routing(ship["alertmanager_image"])
 
     suffix = uuid.uuid4().hex[:8]
@@ -225,6 +312,7 @@ def main() -> None:
     docker("network", "create", network)
     try:
         check_delivery(ship, network, suffix)
+        check_briefs(ship, network, suffix)
         check_unconfigured(ship, network, suffix)
     finally:
         names = docker("ps", "-aq", "--filter", f"name=alerting-.*-{suffix}").stdout.split()
