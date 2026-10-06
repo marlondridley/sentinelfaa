@@ -55,7 +55,6 @@ x-hardened: &hardened
 # Settings every application process shares.
 x-app-env: &app-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  DATA_DIR: /app/data
   SWIM_RAW_FOLDER: ${SWIM_RAW_FOLDER:-/app/data/raw}
   # The kit writes on the host; file events do not cross the bind mount.
   SWIM_WATCH_POLLING: ${SWIM_WATCH_POLLING:-true}
