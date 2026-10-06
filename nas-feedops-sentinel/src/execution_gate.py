@@ -75,7 +75,7 @@ from src.agent_tools import guard_human_gate
 from src.auth import Decision, Principal, authorize, format_actor
 from src.config import settings
 from src.logging_config import get_logger
-from src.metrics import HITL_QUEUE_DEPTH
+from src.metrics import GATE_DECISIONS, HITL_QUEUE_DEPTH
 from src.models import (
     AlertEvent,
     CriticResult,
@@ -250,6 +250,24 @@ async def _refresh_hitl_queue_metric() -> None:
         return
 
 
+_RISK_TIERS = ("INFO", "WARNING", "CRITICAL")
+
+
+def _count_gate_decision(alert: AlertEvent) -> bool:
+    """
+    Count one decision of the gate (nas_gate_decisions_total) and say whether the alert needs a person's review.
+
+    risk_tier is the alert's severity, folded to OTHER when it is not one of the three the alert rules produce, so a
+    malformed alert cannot add series. hitl_required is "true" exactly when the gate stages the alert for review
+    (CRITICAL). Every caller passes CRITICAL alerts today, so a "false" here would mean something upstream stopped
+    filtering, which is worth seeing on the dashboard.
+    """
+    needs_review = alert.severity == "CRITICAL"
+    tier = alert.severity if alert.severity in _RISK_TIERS else "OTHER"
+    GATE_DECISIONS.labels(risk_tier=tier, hitl_required=str(needs_review).lower()).inc()
+    return needs_review
+
+
 async def stage_critical_alert(
     alert: AlertEvent,
     critic_result: CriticResult | None = None,
@@ -285,7 +303,7 @@ async def stage_critical_alert(
     guard_human_gate("stage_for_human_review")
 
     # This is the primary execution-control boundary.
-    if alert.severity != "CRITICAL":
+    if not _count_gate_decision(alert):
         return None
 
     idempotency_key = _idempotency_key(alert)

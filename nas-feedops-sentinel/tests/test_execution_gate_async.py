@@ -76,6 +76,74 @@ async def test_stage_non_critical_alert_returns_none_without_storage_call():
         mock_create.assert_not_called()
 
 
+# ── nas_gate_decisions_total: one count per alert the gate evaluates ─────────────────────────────────
+
+def _gate_decisions(risk_tier: str, hitl_required: str) -> float:
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(
+        "nas_gate_decisions_total", {"risk_tier": risk_tier, "hitl_required": hitl_required}) or 0.0
+
+
+def _alert_with(severity: str, alert_id: str) -> AlertEvent:
+    return AlertEvent(
+        alert_id=alert_id, alert_type="ALERT_LOW_RVR", severity=severity,
+        airport_code="KDCA", service_name="APDS_RVR", description="gate metric",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_gate_counts_a_critical_alert_as_a_decision_that_needs_a_person():
+    before = _gate_decisions("CRITICAL", "true")
+
+    with patch("src.storage.create_staged_action", new_callable=AsyncMock) as mock_create, \
+         patch("src.storage.get_pending_staged_actions", new_callable=AsyncMock, return_value=[]), \
+         patch("src.execution_gate._build_escalation_package", new_callable=AsyncMock):
+        mock_create.side_effect = lambda action, **kw: action
+        await stage_critical_alert(_alert_with("CRITICAL", "ALT-GATE-1"))
+
+    assert _gate_decisions("CRITICAL", "true") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_an_alert_that_joins_an_open_review_is_still_one_gate_decision():
+    before = _gate_decisions("CRITICAL", "true")
+    open_review = StagedAction(
+        action_id="act-already-open", alert_id="ALT-EARLIER", severity="CRITICAL", status="PENDING",
+        idempotency_key="key-earlier",
+    )
+
+    with patch("src.storage.create_staged_action", new_callable=AsyncMock, return_value=open_review):
+        result = await stage_critical_alert(_alert_with("CRITICAL", "ALT-GATE-2"))
+
+    assert result is None, "it joined a review that was already open, so it opened nothing"
+    assert _gate_decisions("CRITICAL", "true") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_non_critical_alert_is_counted_as_a_decision_that_needs_no_review():
+    before_no_review = _gate_decisions("WARNING", "false")
+    before_review = _gate_decisions("WARNING", "true")
+
+    with patch("src.storage.create_staged_action", new_callable=AsyncMock) as mock_create:
+        assert await stage_critical_alert(_alert_with("WARNING", "ALT-GATE-3")) is None
+
+    mock_create.assert_not_called()
+    assert _gate_decisions("WARNING", "false") == before_no_review + 1
+    assert _gate_decisions("WARNING", "true") == before_review, "only CRITICAL ever needs a review"
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_severity_cannot_add_a_metric_series():
+    before = _gate_decisions("OTHER", "false")
+
+    with patch("src.storage.create_staged_action", new_callable=AsyncMock):
+        assert await stage_critical_alert(_alert_with("made-up-severity", "ALT-GATE-4")) is None
+
+    assert _gate_decisions("OTHER", "false") == before + 1
+    assert _gate_decisions("made-up-severity", "false") == 0.0
+
+
 @pytest.mark.asyncio
 async def test_build_escalation_package_awaits_storage():
     # patch("src.watch_officer_agent....") below resolves the target by
