@@ -137,9 +137,11 @@ LLM_BUDGET_REFUSALS = Counter(
 
 # ── Gate metrics ──────────────────────────────────────────────────────────────
 
+# Counted in src/execution_gate.py, once per alert the gate evaluates. risk_tier is the alert's severity
+# (INFO, WARNING, CRITICAL, or OTHER); hitl_required is "true" when the alert needs a person's review (CRITICAL).
 GATE_DECISIONS = Counter(
     "nas_gate_decisions_total",
-    "Execution gate decisions by risk tier.",
+    "Execution gate decisions, one per alert evaluated, by risk tier and whether a person must review.",
     ["risk_tier", "hitl_required"],
 )
 

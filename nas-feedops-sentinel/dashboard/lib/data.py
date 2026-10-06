@@ -27,16 +27,6 @@ _log = get_logger(__name__)
 # Kit log folder path (resolved via the data/raw/swim_live junction).
 KIT_LOG_PATH = config.SWIM_RAW_FOLDER
 
-STATUS_EMOJI = {
-    "OK": "🟢",
-    "STALE": "🟡",
-    "DEGRADED": "🟠",
-    "UNAVAILABLE": "🔴",
-    "DISCONNECTED": "🔴",
-    "NO DATA": "⚫",
-}
-SEVERITY_EMOJI = {"CRITICAL": "🔴", "WARNING": "🟡", "INFO": "🔵"}
-
 def _in_scope_airports() -> dict[str, dict]:
     """
     The airports this deployment supports (config.SUPPORTED_AIRPORTS), registry airports first in the
@@ -50,10 +40,6 @@ def _in_scope_airports() -> dict[str, dict]:
 
 
 AIRPORTS = _in_scope_airports()
-
-
-def status_label(status: str) -> str:
-    return f"{STATUS_EMOJI.get(status, '⚪')} {status}"
 
 
 def format_ts(value: Any, length: int = 19) -> str:
@@ -133,21 +119,6 @@ def bucket_counts(
         index = int((ts - window_start) / width)
         counts[min(index, buckets - 1)] += 1
     return counts
-
-
-def readiness_label(value, good_if, warn_if, bad_if, lower_is_better=False):
-    """Return (emoji, status_text) based on thresholds."""
-    if value is None:
-        return ("⚪", "no data")
-    if lower_is_better:
-        if value <= good_if: return ("🟢", "healthy")
-        if value <= warn_if: return ("🟡", "watch")
-        if value <= bad_if:  return ("🟠", "degraded")
-        return ("🔴", "critical")
-    if value >= good_if: return ("🟢", "healthy")
-    if value >= warn_if: return ("🟡", "watch")
-    if value >= bad_if:  return ("🟠", "degraded")
-    return ("🔴", "critical")
 
 
 def parse_json_str_list(raw: Any, field_name: str = "json_field") -> list[str]:

@@ -215,6 +215,30 @@ async def test_the_worker_polls_until_interrupted_and_then_drains(monkeypatch):
     assert worker.kwargs["task_queue"] == tw.settings.TEMPORAL_TASK_QUEUE
     assert worker.kwargs["graceful_shutdown_timeout"].total_seconds() == 20
     assert len(worker.kwargs["workflows"]) == 2 and len(worker.kwargs["activities"]) == 2
+    assert {key: worker.kwargs[key] for key in tw.worker_limits()} == tw.worker_limits(), "the limits reach the Worker"
+
+
+def test_the_worker_limits_come_from_the_settings(monkeypatch):
+    monkeypatch.setattr(tw.settings, "TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES", 7)
+    monkeypatch.setattr(tw.settings, "TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS", 11)
+
+    assert tw.worker_limits() == {"max_concurrent_activities": 7, "max_concurrent_workflow_tasks": 11}
+
+
+def test_the_limits_are_arguments_the_temporal_worker_really_takes():
+    # A renamed or misspelt key would only fail when the worker starts. Check it against the SDK's own signature.
+    import inspect
+
+    from temporalio.worker import Worker as SdkWorker
+
+    assert set(tw.worker_limits()) <= set(inspect.signature(SdkWorker.__init__).parameters)
+
+
+def test_the_settings_defaults_are_the_documented_ones():
+    from src.config import Settings
+
+    assert Settings.model_fields["TEMPORAL_WORKER_MAX_CONCURRENT_ACTIVITIES"].default == 20
+    assert Settings.model_fields["TEMPORAL_WORKER_MAX_CONCURRENT_WORKFLOWS"].default == 100
 
 
 def test_main_runs_the_worker_on_its_own_loop_and_closes_it(monkeypatch):

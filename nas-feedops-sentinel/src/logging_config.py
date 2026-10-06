@@ -4,7 +4,7 @@ import logging
 import re
 import sys
 import uuid
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 
 from pythonjsonlogger.json import JsonFormatter
 
@@ -58,16 +58,6 @@ def new_correlation_id() -> str:
     cid = uuid.uuid4().hex[:12]
     _correlation_id.set(cid)
     return cid
-
-
-def set_correlation_id(cid: str) -> Token[str]:
-    """Set correlation ID and return the token for cleanup/reset."""
-    return _correlation_id.set(cid)
-
-
-def reset_correlation_id(token: Token[str]) -> None:
-    """Reset the context variable to its previous state using a token."""
-    _correlation_id.reset(token)
 
 
 def get_correlation_id() -> str:

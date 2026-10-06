@@ -9,7 +9,6 @@ models and failover are managed by LiteLLM, not by the NAS application.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -137,12 +136,8 @@ class Settings(BaseSettings):
     # the job's environment holds no password at all.
     APP_DB_USER: str = "sentinel_app"
     APP_DB_PASSWORD: str | None = None
-    DB_USER: str | None = None
-    DB_PASSWORD: str | None = None
-    DB_NAME: str | None = None
 
     # ── Paths ────────────────────────────────────────────────────────────────
-    INGEST_DIR: Path = RAW_DIR / "ingest"
     SWIM_RAW_FOLDER: Path = RAW_DIR / "swim_live"
     # Poll the SWIM folder instead of relying on native file events, which do
     # not reach a container through a Windows/macOS host bind mount.
@@ -304,7 +299,6 @@ class Settings(BaseSettings):
     # Watch Officer's overview narrative together (policies/agent-register.yaml says which stops what).
     PLANNER_ENABLED: bool = True
     WATCH_OFFICER_ENABLED: bool = True
-    AGENT_VERBOSE: bool = os.getenv("AGENT_VERBOSE", "0") == "1"
     # This is an APPLICATION-FACING LiteLLM alias.
     LLM_MODEL: str = "openai/primary-model"
 
@@ -407,13 +401,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     METRICS_PORT: int = 9108
 
-    # Disabled by default: no OTel collector is wired into docker-compose.yml
-    # yet (Grafana only has a Prometheus datasource provisioned, no Tempo/Jaeger),
-    # so leaving this True with nothing listening on OTEL_EXPORTER_OTLP_ENDPOINT
-    # just means every span export batch times out against a dead
-    # address on every run. Flip to True once a real trace backend is added.
-    OTEL_TRACING_ENABLED: bool = False
-    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+    # There is no setting for tracing. src/telemetry.py exports traces, metrics and logs only when the standard
+    # OpenTelemetry environment variable OTEL_EXPORTER_OTLP_ENDPOINT (or a per-signal
+    # OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT) is set, and nothing leaves the process without it. No collector is wired
+    # into docker-compose.yml yet.
 
     # ── Security & API ───────────────────────────────────────────────────────
     # API_KEY is the legacy single shared secret, kept for backwards compatibility:

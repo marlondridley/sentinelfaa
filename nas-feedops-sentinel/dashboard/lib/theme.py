@@ -82,10 +82,7 @@ TONES: dict[str, tuple[str, str, str]] = {
     "neutral": (GRAY5,   DARK_GRAY4, "rgba(255,255,255,0.02)"),
 }
 
-# One status vocabulary for the whole app. lib/data.py's STATUS_EMOJI is
-# the text-only equivalent used inside st.dataframe cells (where HTML
-# cannot render); this is the rendered-chip equivalent. They deliberately
-# agree on which states exist.
+# One status vocabulary for the whole app: the tone each state is drawn in.
 STATUS_TONE: dict[str, str] = {
     "OK": "ok",
     "GOOD": "ok",
