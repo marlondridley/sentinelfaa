@@ -7,6 +7,8 @@ Procedures for working on this repository, written as [Agent Skills](https://age
 |---|---|
 | `stack-bring-up` | Start or redeploy the local Docker stack, and recover it after a Docker Desktop restart. |
 | `ci-like-test-run` | Run lint, types and the test suite the way GitHub CI does, without touching the live stack. |
+| `dashboard-rules` | Change the dashboard without breaking what the watch officer relies on: one job per page, counts equal their rows, tables that say who acts. |
+| `real-data-only` | Keep synthetic and demo data out of the live stack; show the system working with replayed captures or the live feed. |
 
 ## Where each tool reads them
 
