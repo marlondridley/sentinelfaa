@@ -10,7 +10,7 @@ Timestamps must be ISO-8601 strings; latency_ms is recalculated on load.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 from pathlib import Path
 
@@ -112,32 +112,3 @@ def replay_from_directory(
         },
     )
     return events, errors
-
-
-def write_sample_replay_file(
-    events: list[NASEvent],
-    output_path: Path | None = None,
-) -> Path:
-    """
-    Serialize a list of NASEvents to a JSON file in data/raw/.
-    The output file can be loaded by replay_from_directory() in a later run.
-    """
-    config.RAW_DIR.mkdir(parents=True, exist_ok=True)
-    if output_path is None:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-        output_path = config.RAW_DIR / f"sample_{timestamp}.json"
-
-    payload = []
-    for event in events:
-        d = event.model_dump()
-        d["event_time_utc"] = d["event_time_utc"].isoformat()
-        d["received_time_utc"] = d["received_time_utc"].isoformat()
-        payload.append(d)
-
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    _log.info(
-        "sample_replay_file_written",
-        extra={"event_count": len(events), "output_path": str(output_path)},
-    )
-    return output_path

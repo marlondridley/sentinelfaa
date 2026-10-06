@@ -1,6 +1,6 @@
 ---
 name: real-data-only
-description: Keep synthetic, demo and sample data out of the live Sentinel stack and its operational database. Use when the dashboard is empty and you want to populate it, when asked to demo, show, seed or prove the system works, when loading, replaying or generating events, or when touching src/demo_scenario.py, src/sample_data.py, scripts/e2e_proof.py or anything that writes data_origin. Only real FAA SWIM data goes in, either replayed captures or the live feed.
+description: Keep synthetic, demo and sample data out of the live Sentinel stack and its operational database. Use when the dashboard is empty and you want to populate it, when asked to demo, show, seed or prove the system works, when loading, replaying or generating events, or when touching src/demo_scenario.py, scripts/e2e_proof.py or anything that writes data_origin. This codebase has no sample-data generators and none are to be added. Only real FAA SWIM data goes in, either replayed captures or the live feed.
 compatibility: Applies to the live stack run by launch_nas_sentinel.ps1 and to nas-feedops-sentinel/src. Replay uses Docker Compose.
 metadata:
   area: data
@@ -15,7 +15,8 @@ A quiet dashboard is not a bug. Live PCT data is usually quiet. Do not fix an em
 ## What exists in the code
 
 - `python -m src.main` has `--mode replay` and `--mode eval` only. The generators that used to be run modes wrote synthetic events into the operational database; they were removed and now exist as test fixtures. Do not add a mode, flag, button or script that writes synthetic events to the operational database.
-- `src/demo_scenario.py` (a cascade failure at KDCA) and `src/sample_data.py` produce events tagged `data_origin="synthetic"`. Tests and the end-to-end proof use them.
+- **There are no sample-data generators.** The owner has ruled them out, and the module and its replay-file writer were deleted. Do not add one back, in any form (a module, a script, a dashboard button, a test helper that writes to the operational database).
+- The one scripted source of synthetic events is `src/demo_scenario.py` (a cascade failure at KDCA), tagged `data_origin="synthetic"`. Only tests, the agent evaluation (`--mode eval`) and the end-to-end proof use it, and none of them writes to the operational database.
 - `--mode eval` scores the agents on built-in scenarios and prints a report. `src/agent_evaluator.py` makes no storage calls. It does call the model, so it spends model budget.
 - Every event and alert carries `data_origin`: `live` (the Jumpstart Kit's folder), `replay`, `synthetic`, `api` (posted to `/v1/ingest`), or `unknown` for rows from before the tag. Alerts inherit it, and are `mixed` when they span origins. A database constraint enforces the set, and a file or API client cannot label itself live.
 - Non-live data is never silent. Every page warns while it is present, the Dashboard verdict counts live data only, the review queue labels non-live actions, and the Red-Team Critic challenges any alert not from the live feed.

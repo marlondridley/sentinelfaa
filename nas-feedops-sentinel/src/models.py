@@ -330,7 +330,7 @@ class NASEvent(BaseModel):
     status_code: str | None = None
 
     # Provenance: live (the Jumpstart kit's folder), replay (recorded files),
-    # synthetic (sample generator, demo scenario), api (posted to /v1/ingest).
+    # synthetic (src/demo_scenario.py: tests, the evaluator and the end-to-end proof only), api (posted to /v1/ingest).
     data_origin: DataOrigin = "unknown"
 
     # Validation bookkeeping (populated by validators.py)

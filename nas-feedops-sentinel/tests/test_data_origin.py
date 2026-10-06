@@ -28,9 +28,7 @@ def test_every_producer_tags_its_events(tmp_path: Path, monkeypatch):
     from src import swim_file_ingest
     from src.demo_scenario import generate_cascade_failure_scenario
     from src.replay import replay_from_directory
-    from src.sample_data import generate_sample_batch
 
-    assert {e.data_origin for e in generate_sample_batch(20)} == {"synthetic"}
     assert {e.data_origin for e in generate_cascade_failure_scenario()} == {"synthetic"}
 
     monkeypatch.setattr(swim_file_ingest, "_get_already_processed", lambda names: set())
