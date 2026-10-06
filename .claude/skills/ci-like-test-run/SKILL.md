@@ -20,13 +20,14 @@ Mounting your working tree over `/app` is quick but hides any file the test imag
 2. Build the test image **from that copy**.
 3. Run ruff, mypy and pytest **inside the unmounted image**, as the workflow does.
 
-`scripts/run-ci-like.sh` does all three:
+`scripts/run-ci-like.sh`, in this skill's own directory, does all three. Paths below are relative to the directory that holds this `SKILL.md`, so they work wherever your tool installs the skill (`.agents/skills/ci-like-test-run/` in this repo):
 
 ```bash
+SKILL_DIR=<the directory holding this SKILL.md>
 export CI_WORK_DIR=/c/path/to/a/scratch/dir      # outside the repo
 git -c core.autocrlf=false -c core.eol=lf worktree add -b <branch> "$CI_WORK_DIR/<name>" <branch-or-main>
-WT_NAME=<name> bash .claude/skills/ci-like-test-run/scripts/run-ci-like.sh all     # or: build | lint | test | infra
-WT_NAME=<name> bash .claude/skills/ci-like-test-run/scripts/run-ci-like.sh down    # remove its database and network
+WT_NAME=<name> bash "$SKILL_DIR/scripts/run-ci-like.sh" all     # or: build | lint | test | infra
+WT_NAME=<name> bash "$SKILL_DIR/scripts/run-ci-like.sh" down    # remove its database and network
 ```
 
 That worktree form checks files out as stored (LF), contains tracked files only so no `.env` or keys can come along, and leaves the user's dirty checkout untouched. Edits, `git add` and `git commit` inside it are fine (git only warns about CRLF).
@@ -48,13 +49,13 @@ The script mirrors CI's steps: `ruff check src tests scripts dashboard`, `mypy`,
 - **Docker Desktop may be off, and starting it can restart the live stack** (`restart: unless-stopped` brings back the public tunnel and the SPIRE agent). Ask the user to start it. Do not start it yourself.
 - **The `:test` image goes stale.** An old one predated `defusedxml` and 11 modules failed to collect with `ModuleNotFoundError`. The script builds its own tagged image from the copy, so this only bites when you reuse `nas-feedops-sentinel:test`. If you rebuild that tag by hand, use `docker build --target test -t nas-feedops-sentinel:test -f docker/Dockerfile .` from the sanitized copy. It retags only `:test`, never the live `:latest`.
 - **Secrets in the copy.** `.env`, `.streamlit/secrets.toml`, keys, certs and `.venv` must stay out. With secrets present, Streamlit page tests see a configured sign-in and fail, and real credentials sit next to test code.
-- **CRLF.** The copy comes out CRLF when `core.autocrlf` is on. `sed -i 's/\r$//'` through `xargs` did not strip it; `find <dir> -type f -exec dos2unix -q {} +` does. Count CRs with `tr -cd '\015' | wc -c`. A `$'\r'` inside `$(...)` is mangled by the Bash tool and `grep` then reports nonsense.
+- **CRLF.** The copy comes out CRLF when `core.autocrlf` is on. `sed -i 's/\r$//'` through `xargs` did not strip it; `find <dir> -type f -exec dos2unix -q {} +` does. Count CRs with `tr -cd '\015' | wc -c`. A `$'\r'` inside `$(...)` can be mangled by an agent's shell tool, and `grep` then reports nonsense.
 - **WSL bash.** `subprocess.run(["bash", ...])` from Windows Python resolves to WSL's bash and silently does nothing, so a mutation-check loop reports every mutant caught. Call `C:\Program Files\Git\bin\bash.exe`. To mutation-check, edit a file, run, and restore a saved copy.
 - **Do not mount the tree `:ro` over `/app`:** tests write under `/app/data`. (The CI-like script mounts only for the read-only lint and infra steps, as CI does.)
 - **Two pytest processes on one database.** Each truncates. Never.
 - **Paths for `docker -v`.** In Git Bash set `MSYS_NO_PATHCONV=1` and pass Windows paths from `cygpath -w`. Export `MSYS_NO_PATHCONV=1` only on the `docker` line if a script also calls Windows `python.exe`, which needs `/c/...` left alone.
-- **Heredocs through the Bash tool mangle backslashes** (`\b` became a backspace). Write scripts with the Write tool.
-- **Recursive `grep -r` from the repo root hangs** (huge `.venv`, `reference/`). Use `git grep` or the Grep tool.
+- **Heredocs through an agent's shell tool can mangle backslashes** (`\b` became a backspace). Create script files with your file-write or edit tool instead.
+- **Recursive `grep -r` from the repo root hangs** (huge `.venv`, `reference/`). Use `git grep` or your tool's own search.
 - **Throwaway Postgres readiness.** `pg_isready` over the unix socket succeeds against initdb's temporary server, which then restarts. Use `pg_isready -h 127.0.0.1`; the temporary server does not listen on TCP.
 
 ## Hunting a flaky test

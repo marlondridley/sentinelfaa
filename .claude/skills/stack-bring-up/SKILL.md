@@ -74,7 +74,7 @@ If the spire-agent is running but Vault rejects it, the launcher points at "the 
 
 ## Verify, and show the evidence
 
-Do not call it done until these pass. Use `curl -sk`, because the built-in browser refuses the edge's self-signed certificate.
+Do not call it done until these pass. Use `curl -sk`, because the edge serves a self-signed certificate and browsers (including an agent's built-in one) refuse it.
 
 ```bash
 docker ps --format '{{.Names}}\t{{.Status}}'          # app containers healthy
