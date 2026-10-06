@@ -1,7 +1,9 @@
 """
-Ingest & Replay page: sample-data generation, replay-from-directory,
-Kit-log maintenance, replay test results, and the live SWIM folder status
-panel.
+Ingest & Replay page: replay-from-directory, Kit-log maintenance, the list of
+replayable files, and the live SWIM folder status panel (scan, failure
+reasons, ingest audit log).
+
+Real FAA data only. Replayed events are tagged data_origin="replay".
 
 This is the operational/admin tooling that used to live in the single-file
 dashboard's global sidebar plus its "Replay Test Results Panel" and "Live

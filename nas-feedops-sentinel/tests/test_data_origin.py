@@ -2,9 +2,9 @@
 Data provenance: every event says where it came from, and nothing derived
 from test or replayed data can pass for the live FAA feed.
 
-The dashboard's "Generate sample data" button, replays and API posts all
-write to the same tables as the live feed. Before data_origin, a synthetic
-CRITICAL alert and a real one were indistinguishable in the review queue.
+Replays and API posts write to the same tables as the live feed. Before
+data_origin, a synthetic CRITICAL alert and a real one were indistinguishable
+in the review queue.
 """
 from __future__ import annotations
 
