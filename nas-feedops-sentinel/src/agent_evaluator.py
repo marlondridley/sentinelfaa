@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from src import config
 from src.alert_engine import check_alerts
 from src.demo_scenario import generate_cascade_failure_scenario
-from src.guardrails import InputGuardrail, OutputGuardrail
+from src.guardrails import InputGuardrail
 from src.models import EvalReport, EvalResult, NASEvent
 from src.validators import validate_batch
 
@@ -81,7 +81,6 @@ class AgentEvaluator:
     def __init__(self, run_llm: bool = False) -> None:
         self.run_llm = run_llm
         self.input_guard = InputGuardrail()
-        self.output_guard = OutputGuardrail()
 
     def _check_guardrails(self) -> list[EvalResult]:
         results: list[EvalResult] = []

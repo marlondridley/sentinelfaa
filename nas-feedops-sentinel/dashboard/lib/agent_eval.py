@@ -25,7 +25,6 @@ from lib import safe_text, theme
 from src.async_bridge import run_async as run
 
 NO_DATA = "no data"
-GATE_TONE = {"PASS": "ok", "WARN": "warn", "FAIL": "bad", "PENDING": "info", "N/A": "neutral"}
 GATE_ICON = {"PASS": "🟢", "WARN": "🟡", "FAIL": "🔴", "PENDING": "🔵", "N/A": "⚪"}
 
 

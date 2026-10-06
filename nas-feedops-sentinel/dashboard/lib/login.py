@@ -80,10 +80,6 @@ def _load_auth() -> tuple[dict[str, Any] | None, str]:
     return None, reason
 
 
-def _auth_config() -> dict[str, Any] | None:
-    return _load_auth()[0]
-
-
 def oidc_configured() -> bool:
     """
     Sign-in is wanted: a Keycloak provider is configured, the file that would say so is broken, or this
