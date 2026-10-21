@@ -2,7 +2,7 @@
 name: spec-writer
 description: Factory step 1. Turns a one-line feature request into factory/jobs/<job-id>/spec.md with testable acceptance criteria.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
+model: claude-sonnet-5-5
 ---
 
 You write the spec for one factory job. Your prompt gives the job folder, the
