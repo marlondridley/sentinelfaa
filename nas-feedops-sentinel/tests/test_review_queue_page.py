@@ -177,6 +177,47 @@ async def test_each_tile_counts_reviews_and_opens_the_rows_it_counts(db):
                                              "monitoring": "Monitoring"}[show]][0])
 
 
+async def test_the_address_opens_its_list_whatever_pill_the_session_held(db):
+    """The Monitoring tile's link once showed an empty Awaiting list: the session's held pill beat ?show=."""
+    await _three_reviews(db)
+
+    for first, held, then, tile, facilities in (
+            ({}, "awaiting", "monitoring", "Monitoring", ["KDCA"]),
+            ({"show": "monitoring"}, "monitoring", "awaiting", "Awaiting decision", ["KBWI", "KIAD"])):
+        at = _run(**first)
+        assert at.segmented_control(key="q_show").value == held
+        at.query_params["show"] = then
+        at.run()
+
+        assert at.segmented_control(key="q_show").value == then, f"held {held}, then ?show={then}"
+        assert sorted(_queue(at)["Facility"]) == facilities, f"held {held}, then ?show={then}"
+        assert int(_tiles(at)[tile][0]) == len(_queue(at))
+
+
+def _click_the_highlighted_pill(at: AppTest) -> AppTest:
+    """A browser sends an empty selection when the highlighted pill is clicked. AppTest's unselect() cannot (for
+    this widget it reads None as "no change"), so run with the pill's selection emptied in the widget states."""
+    states = at._tree.get_widget_states()
+    [pill] = [w for w in states.widgets if w.id == at.segmented_control(key="q_show").id]
+    pill.string_array_value.data[:] = []
+    return at._run(states)
+
+
+async def test_a_pill_writes_its_list_into_the_address(db):
+    await _three_reviews(db)
+    at = _run()
+
+    at.segmented_control(key="q_show").set_value("monitoring").run()
+    assert at.query_params["show"] == ["monitoring"] and list(_queue(at)["Facility"]) == ["KDCA"]
+
+    at.segmented_control(key="q_show").set_value("awaiting").run()
+    assert at.query_params["show"] == ["awaiting"] and sorted(_queue(at)["Facility"]) == ["KBWI", "KIAD"]
+
+    _click_the_highlighted_pill(at)
+    assert at.segmented_control(key="q_show").value == "awaiting", "the highlighted pill stays highlighted"
+    assert at.query_params["show"] == ["awaiting"] and sorted(_queue(at)["Facility"]) == ["KBWI", "KIAD"]
+
+
 async def test_with_nothing_awaiting_the_page_opens_on_what_is_being_monitored(db):
     alert = _rvr("KDCA")
     await db.save_alerts([alert])
