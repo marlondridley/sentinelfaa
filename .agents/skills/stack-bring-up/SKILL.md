@@ -19,12 +19,13 @@ The stack is two Docker Compose projects joined by the `nas-network` network and
 
 1. **The checked-out branch is what runs.** The launcher builds from the working tree. Run `git branch --show-current` and tell the user which branch you are about to deploy. Deploying a feature branch by accident replaces the live build.
 2. **Identity-plane work needs a yes first.** Recovering SPIRE (below) re-attests the agent and rewrites registrations. Say what you will run and wait for the user to approve it. A request to "run the deployment" does not by itself approve SPIRE recovery.
-3. **Tag a rollback image before a redeploy** so there is something to return to:
+3. **Check the certificates under the offline root before the launcher does.** Run `.\instraclustr\scripts\pki.ps1 check` (it reads files and starts nothing). Exit 0 is fine and 1 means one is due soon. **Exit 2 means the launcher will stop at its step 1b**, and only the user can fix it: the ceremony needs their root USB and passphrase, which you never type. If it lists `BROKEN web/web-ca`, the one-time move in `nas-feedops-sentinel/docs/runbooks.md` ("Move the edge and Keycloak certificates to the offline root (once)") has not been done. Stop, tell the user, and do not start a launch.
+4. **Tag a rollback image before a redeploy** so there is something to return to:
    ```powershell
    docker tag nas-feedops-sentinel:latest nas-feedops-sentinel:rollback-<yyyy-mm-dd>
    ```
-4. **Leave other containers alone.** Containers named like `*-pg`, `harness-*` or `covwork-*` belong to test runs, not to the stack.
-5. **Never type credentials for the user.** Never put a join token, key or password in a file, a log or your reply.
+5. **Leave other containers alone.** Containers named like `*-pg`, `harness-*` or `covwork-*` belong to test runs, not to the stack.
+6. **Never type credentials for the user.** Never put a join token, key or password in a file, a log or your reply.
 
 ## Normal launch
 
@@ -74,7 +75,7 @@ If the spire-agent is running but Vault rejects it, the launcher points at "the 
 
 ## Verify, and show the evidence
 
-Do not call it done until these pass. Use `curl -sk`, because the edge serves a self-signed certificate and browsers (including an agent's built-in one) refuse it.
+Do not call it done until these pass. Use `curl -sk`: it skips certificate verification, which is enough to show the services answer. The edge's certificate comes from the web TLS branch of the offline root, so a browser or `curl` verifies it only where `instraclustr\certs\trust\root-ca.crt` is trusted (an agent's built-in browser is not). To check the certificate itself, run `curl --cacert instraclustr/certs/trust/root-ca.crt https://localhost:8443`.
 
 ```bash
 docker ps --format '{{.Names}}\t{{.Status}}'          # app containers healthy
