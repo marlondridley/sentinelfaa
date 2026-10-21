@@ -22,10 +22,11 @@ APP = INFRA.parent / "nas-feedops-sentinel"
 needs_app = pytest.mark.skipif(not (APP / "docker-compose.yml").is_file(),
                                reason="needs the application stack beside instraclustr/")
 
-# Built from the application image and hardened. edge-certs runs once as root to write the edge CA into ./tls
-# and exits; it is not a long-running service and is named here so a new service has to be a deliberate choice.
+# Built from the application image and hardened. edge-certs runs once as root to write the edge and Keycloak
+# certificates into ./tls and exits; it is not a long-running service and is named here so a new service has to be
+# a deliberate choice.
 HARDENED = ("migrate", "temporal-worker", "api", "sentinel", "dashboard")
-NOT_HARDENED = {"edge-certs": "one-shot: writes the edge CA into ./tls as root, then exits"}
+NOT_HARDENED = {"edge-certs": "one-shot: writes the edge and Keycloak certificates into ./tls as root, then exits"}
 # Not built from the application image, but they take the same hardened settings.
 HARDENED_OTHER_IMAGES = ("alertmanager",)
 

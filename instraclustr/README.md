@@ -26,7 +26,7 @@ No application container holds a credential, a Vault token, or a route to Vault.
 
 | What | Source of truth | Applied by | Drift check |
 |---|---|---|---|
-| Trust anchor, Vault TLS, SPIRE upstream CA | [`certs/policy/`](certs/policy) | the root ceremony ([`certs/README.md`](certs/README.md)) | `scripts/pki.ps1 check` (every launch) |
+| Trust anchor, Vault TLS, SPIRE upstream CA, web TLS CA | [`certs/policy/`](certs/policy) | the root ceremony ([`certs/README.md`](certs/README.md)) | `scripts/pki.ps1 check` (every launch) |
 | Which container is which service | [`spire-entries.yaml`](spire-entries.yaml) | [`scripts/spire-entries-apply.py`](scripts/spire-entries-apply.py) | `spire-entries-apply.py --check` |
 | What each service may read, and how it logs in | [`terraform/`](terraform/main.tf), [`vault-policies/`](vault-policies) | `vault-ceremony apply` | `vault-ceremony plan` (exit 2 = drift) |
 | How sidecars fetch and render | [`vault-agent/`](vault-agent) | compose | CI |

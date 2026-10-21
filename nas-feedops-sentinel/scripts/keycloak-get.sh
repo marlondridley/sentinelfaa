@@ -13,14 +13,15 @@ case "$KC_PATH" in
     *) echo "ERROR: KC_PATH $KC_PATH is not one of the read-only queries this helper serves" >&2; exit 2 ;;
 esac
 KC_SERVER="${KC_SERVER:-https://localhost:8443}"
-KC_CA_FILE="${KC_CA_FILE:-/opt/keycloak/conf/tls/edge-ca.crt}"
+# kcadm trusts the offline root (instraclustr/certs/trust, mounted read-only).
+KC_CA_FILE="${KC_CA_FILE:-/opt/keycloak/conf/trust/root-ca.crt}"
 REALM=nas-sentinel
 CFG=/tmp/kcadm-get.config
 TRUST=/tmp/kcadm-get-trust.p12
 trap 'rm -f "$CFG" "$TRUST"' EXIT
 kc() { /opt/keycloak/bin/kcadm.sh "$@" --config "$CFG"; }
 TRUSTPASS=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-keytool -importcert -noprompt -alias sentinel-local-ca -file "$KC_CA_FILE" \
+keytool -importcert -noprompt -alias sentinelfaa-root -file "$KC_CA_FILE" \
     -keystore "$TRUST" -storetype PKCS12 -storepass "$TRUSTPASS" >/dev/null 2>&1
 kc config truststore --trustpass "$TRUSTPASS" "$TRUST" >/dev/null
 kc config credentials --server "$KC_SERVER" --realm master --user admin --password "$KC_ADMIN_PW" >/dev/null 2>&1

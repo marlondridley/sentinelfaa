@@ -1,9 +1,10 @@
-# sentinelfaa workload-identity root CA: the policy for its one self-signed
+# sentinelfaa offline root CA: the policy for its one self-signed
 # certificate. Used OFFLINE, once, by `pki.sh root-init` -- see
 # instraclustr/certs/README.md for the ceremony and who holds what.
 #
 # path length 2: root -> SPIRE upstream CA -> SPIRE's own rotating CA -> SVID.
-# The root signs exactly two things (signing.cnf), once a year.
+# The web TLS branch is shorter: root -> web TLS CA -> leaf (edge, Keycloak).
+# The root signs exactly three things (signing.cnf), once a year.
 
 [ req ]
 prompt             = no

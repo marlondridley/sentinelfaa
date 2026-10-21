@@ -129,7 +129,7 @@ Requires Windows with Docker Desktop and PowerShell. The live feed also needs Ja
    ```powershell
    .\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1
    ```
-4. Trust `nas-feedops-sentinel\tls\edge-ca.crt` once in the Windows certificate store, then sign in:
+4. Trust the offline root, `instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate store, then sign in:
 
 | URL | What |
 |---|---|
@@ -241,7 +241,7 @@ Production agentic systems are judged less by model quality than by how they hol
 - **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
 - **Decisions.** One approver per action; there is no four-eyes workflow.
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
-- **Sign-in.** Operators sign in on Keycloak's own page (OIDC, authorization code with PKCE), so a second factor or a federated identity provider is a realm setting, not a code change. The certificates come from a local authority; a shared deployment needs an internal PKI.
+- **Sign-in.** Operators sign in on Keycloak's own page (OIDC, authorization code with PKCE), so a second factor or a federated identity provider is a realm setting, not a code change. The edge's and Keycloak's certificates come from a name-limited branch of the offline root, valid only for `localhost`, `keycloak` and `127.0.0.1`; its limits, such as no revocation, are in [instraclustr/certs/README.md](instraclustr/certs/README.md).
 - **Evaluation.** Model behaviour is measured from real runs, but the readiness targets are starting points, not baselines, and a quiet feed produces too little evidence to judge ("insufficient data" is the honest answer). Alert precision and detection latency are not yet measured against labelled replays.
 - **AGT.** Thirteen bugs in agent-sre and agent-os-kernel 3.7.0 are worked around, each with a failing test ([docs/agent-metrics.md](nas-feedops-sentinel/docs/agent-metrics.md)); a draft upstream issue is in `docs/upstream/`. The metrics they affect are AGT-compatible: Sentinel computes them, including the error-budget verdict, until the installed AGT is fixed.
 - **Telemetry.** OpenTelemetry export to a collector is configured, not bundled: no collector ships in the stack.

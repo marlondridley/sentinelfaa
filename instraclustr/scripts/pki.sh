@@ -1,12 +1,15 @@
 #!/bin/sh
-# Workload-identity PKI: an offline root, keys generated where they are used,
-# requests carried to the root and certificates carried back.
+# Workload-identity and web TLS PKI: an offline root, keys generated where
+# they are used, requests carried to the root and certificates carried back.
 #
 #   root CA (10 y, P-384, passphrase-encrypted)   OFFLINE: USB + backup USB
 #     +-- SPIRE upstream CA (1 y, P-384)            certs/spire  (spire-server)
 #     |     +-- SPIRE's own CA (7 d; spire-server rotates it)
 #     |           +-- X.509-SVIDs (1 h; spire-agent rotates them)
 #     +-- Vault server certificate (1 y, P-256)     certs/vault  (vault)
+#     +-- Web TLS CA (1 y, P-384)                   certs/web    (edge-certs)
+#           +-- edge and Keycloak certificates (<= 397 d; edge-certs renews
+#               them, nas-feedops-sentinel/src/web_tls.py)
 #
 # Commands -- OpenSSL 3, POSIX sh; instraclustr/certs/README.md has the exact
 # docker commands for each step and the custody matrix:
@@ -23,8 +26,8 @@
 #                                   the root's certificate in certs/trust if it
 #                                   is not there yet. <certs-dir> may be the
 #                                   host's own (root USB plugged in) or a copy
-#                                   of its spire/ and vault/ CSRs carried to an
-#                                   offline machine.
+#                                   of its spire/, vault/ and web/ CSRs carried
+#                                   to an offline machine.
 #   install   <certs-dir>           HOST. Checks each pending certificate
 #                                   against its pending key, the root and the
 #                                   policy, then puts both in place.
@@ -85,10 +88,31 @@ ask_pass() {
 issued() {
     "$1" spire intermediate-ca req_spire spire_upstream_ext P-384
     "$1" vault vault req_vault vault_server_ext P-256
+    "$1" web web-ca req_web web_tls_ext P-384
 }
 
 pubkey_of_cert() { openssl x509 -in "$1" -noout -pubkey; }
 pubkey_of_key() { openssl pkey -in "$1" -pubout; }
+
+# The web TLS CA's policy extensions (signing.cnf, web_tls_ext) as
+# `openssl x509 -ext` prints them, each line trimmed; OpenSSL 3.0 and 3.5
+# print them alike. Compared whole: a name more or less in either list, a
+# lost "critical", another key usage or another purpose, and it does not
+# conform.
+WEB_TLS_EXT='X509v3 Basic Constraints: critical
+CA:TRUE, pathlen:0
+X509v3 Key Usage: critical
+Certificate Sign, CRL Sign
+X509v3 Extended Key Usage:
+TLS Web Server Authentication
+X509v3 Name Constraints: critical
+Permitted:
+DNS:localhost
+DNS:keycloak
+IP:127.0.0.1/255.255.255.255
+URI:invalid
+Excluded:
+IP:0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0'
 
 # conforms <cert> <extension section>: the certificate carries this policy's
 # defining properties (what `install` and `check` will not take on trust).
@@ -103,6 +127,9 @@ conforms() {
             ext=$(openssl x509 -in "$1" -noout -ext subjectAltName,basicConstraints 2>/dev/null) || return 1
             echo "$ext" | grep -q "DNS:vault, DNS:localhost, IP Address:127.0.0.1" \
                 && echo "$ext" | grep -q "CA:FALSE" ;;
+        web_tls_ext)
+            ext=$(openssl x509 -in "$1" -noout -ext basicConstraints,keyUsage,extendedKeyUsage,nameConstraints 2>/dev/null) || return 1
+            [ "$(printf '%s\n' "$ext" | sed 's/^ *//; s/ *$//')" = "$WEB_TLS_EXT" ] ;;
         *) return 1 ;;
     esac
 }
@@ -115,7 +142,7 @@ secure_key() {  # secure_key <dir> <key file>
         chmod 400 "$2"
         if [ "$(id -u)" = 0 ]; then chown "$VAULT_UID:$VAULT_GID" "$2"; fi
     else
-        chmod 600 "$2"            # spire-server runs as root
+        chmod 600 "$2"            # spire-server and edge-certs run as root
     fi
 }
 

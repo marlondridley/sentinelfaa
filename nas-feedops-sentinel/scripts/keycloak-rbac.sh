@@ -22,9 +22,9 @@ set -euo pipefail
 : "${KC_ADMIN_PW:?}"
 KC_SERVER="${KC_SERVER:-https://localhost:8443}"
 # Keycloak serves HTTPS only (docker-compose.yml). kcadm is a Java client, so it
-# trusts the local authority through a throwaway PKCS12 truststore built from
-# the mounted certificate; the store holds only that public certificate.
-KC_CA_FILE="${KC_CA_FILE:-/opt/keycloak/conf/tls/edge-ca.crt}"
+# trusts the offline root through a throwaway PKCS12 truststore built from
+# the mounted root certificate; the store holds only that public certificate.
+KC_CA_FILE="${KC_CA_FILE:-/opt/keycloak/conf/trust/root-ca.crt}"
 REALM=nas-sentinel
 CLIENT_ID=nas-feedops-sentinel
 CFG=/tmp/kcadm-rbac.config
@@ -33,7 +33,7 @@ TRUST=/tmp/kcadm-rbac-trust.p12
 PROFILE=/tmp/kcadm-rbac-profile.json
 trap 'rm -f "$CFG" "$TRUST" "$PROFILE"' EXIT
 TRUSTPASS=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-keytool -importcert -noprompt -alias sentinel-local-ca -file "$KC_CA_FILE" \
+keytool -importcert -noprompt -alias sentinelfaa-root -file "$KC_CA_FILE" \
     -keystore "$TRUST" -storetype PKCS12 -storepass "$TRUSTPASS" >/dev/null
 kc config truststore --trustpass "$TRUSTPASS" "$TRUST" >/dev/null
 

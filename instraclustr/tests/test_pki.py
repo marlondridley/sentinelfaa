@@ -1,6 +1,7 @@
 """
-Workload-identity PKI (instraclustr/scripts/pki.sh, policy in certs/policy/):
-the trust anchor Vault's cert auth and every Vault client verify against.
+Workload-identity and web TLS PKI (instraclustr/scripts/pki.sh, policy in
+certs/policy/): the trust anchor Vault's cert auth, every Vault client, the
+browser and every client of the edge and Keycloak verify against.
 
 Runs the real ceremony -- root-init, request, sign, install, check -- with a
 throwaway root, and checks what must hold:
@@ -10,6 +11,11 @@ throwaway root, and checks what must hold:
   * the SPIRE branch is name-constrained to the trust domain with no usable
     DNS name or IP address, so SPIRE can never mint a certificate a Vault
     client would accept as Vault -- checked with real TLS handshakes;
+  * the web TLS branch issues TLS server certificates for localhost,
+    keycloak and 127.0.0.1 only, and no spiffe:// identity: the edge's and
+    Keycloak's certificates from nas-feedops-sentinel/src/web_tls.py verify
+    against the root alone, and anything else minted with its key is
+    refused -- checked with real TLS handshakes;
   * `sign` applies the policy, never what a CSR asks for;
   * `install` and `check` refuse certificates from another root, for another
     key, or outside the policy, and `check` warns two months ahead.
@@ -17,12 +23,15 @@ throwaway root, and checks what must hold:
 Run (the test image has pytest, cryptography and OpenSSL 3):
     docker run --rm -v "$PWD/instraclustr:/infra:ro" -w /infra \
         nas-feedops-sentinel:test python -m pytest -p no:cacheprovider -q tests
-Go (Vault, SPIRE) is what verifies these chains in production; the live
-harness (scripts/smoke/) proves that end to end.
+Go (Vault, SPIRE, cloudflared) and OpenSSL (nginx, the dashboard) are what
+verify these chains in production; the live harness (scripts/smoke/) proves
+that end to end.
 """
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
+import ipaddress
 import os
 import re
 import shutil
@@ -35,7 +44,7 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from cryptography.x509.verification import PolicyBuilder, Store, VerificationError
 
 INFRA = Path(__file__).resolve().parent.parent
@@ -43,8 +52,17 @@ PKI = INFRA / "scripts" / "pki.sh"
 POLICY = INFRA / "certs" / "policy"
 TRUST_DOMAIN = "sentinelfaa.internal"
 PASSPHRASE = "throwaway-test-root-passphrase"
+# The issuer edge-certs runs (standard library and cryptography only, so it
+# loads here by path).
+WEB_TLS = INFRA.parent / "nas-feedops-sentinel" / "src" / "web_tls.py"
+# OpenSSL's reason for a certificate used for a purpose its chain does not
+# allow (X509_V_ERR_INVALID_PURPOSE): "unsupported certificate purpose" in
+# older OpenSSL 3 releases, "unsuitable certificate purpose" in 3.5, which the
+# test image has.
+WRONG_PURPOSE = "uns(?:upported|uitable) certificate purpose"
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+needs_app = pytest.mark.skipif(not WEB_TLS.is_file(), reason="needs the application's src/web_tls.py beside instraclustr/")
 
 
 def pki(*args: str, passphrase: str = PASSPHRASE, check: bool = True) -> subprocess.CompletedProcess:
@@ -82,6 +100,7 @@ def test_ceremony_leaves_each_file_where_the_custody_matrix_says(ceremony):
     assert sorted(str(p.relative_to(certs)).replace(os.sep, "/") for p in certs.rglob("*") if p.is_file()) == [
         "spire/intermediate-ca.crt", "spire/intermediate-ca.key",
         "trust/root-ca.crt", "vault/vault.crt", "vault/vault.key",
+        "web/web-ca.crt", "web/web-ca.key",
     ], "no root key, CSR or pending file on the host"
     assert (certs / "trust" / "root-ca.crt").read_bytes() == (usb / "root-ca.crt").read_bytes()
 
@@ -97,6 +116,7 @@ def test_issued_keys_are_owner_only(ceremony):
     _, certs = ceremony
     assert stat.S_IMODE((certs / "spire" / "intermediate-ca.key").stat().st_mode) == 0o600
     assert stat.S_IMODE((certs / "vault" / "vault.key").stat().st_mode) == 0o400
+    assert stat.S_IMODE((certs / "web" / "web-ca.key").stat().st_mode) == 0o600
 
 
 def test_root_init_never_overwrites_a_root(ceremony):
@@ -134,6 +154,34 @@ def test_spire_branch_is_constrained_to_the_trust_domain_with_no_usable_hostname
         x509.UniformResourceIdentifier(TRUST_DOMAIN), x509.DNSName("invalid")]
     assert {str(n.value) for n in ext.value.excluded_subtrees} == {"0.0.0.0/0", "::/0"}
     assert upstream.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length == 1
+
+
+WEB_PERMITTED = {x509.DNSName("localhost"), x509.DNSName("keycloak"),
+                 x509.IPAddress(ipaddress.ip_network("127.0.0.1/32")), x509.UniformResourceIdentifier("invalid")}
+WEB_EXCLUDED = {x509.IPAddress(ipaddress.ip_network("::/0"))}
+
+
+def test_web_branch_issues_tls_servers_only_for_localhost_keycloak_and_127_0_0_1(ceremony):
+    _, certs = ceremony
+    web = _cert(certs / "web" / "web-ca.crt")
+    assert {type(e.value) for e in web.extensions} == {
+        x509.BasicConstraints, x509.KeyUsage, x509.ExtendedKeyUsage, x509.NameConstraints,
+        x509.SubjectKeyIdentifier, x509.AuthorityKeyIdentifier,
+    }, "exactly the policy's extensions"
+    names = web.extensions.get_extension_for_class(x509.NameConstraints)
+    assert names.critical, "RFC 5280: name constraints MUST be critical"
+    assert set(names.value.permitted_subtrees) == WEB_PERMITTED, "and URI invalid: no spiffe:// identity"
+    assert set(names.value.excluded_subtrees) == WEB_EXCLUDED
+    basic = web.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert basic.critical and basic.value.ca and basic.value.path_length == 0, "leaves only, never another CA"
+    usage = web.extensions.get_extension_for_class(x509.KeyUsage)
+    assert usage.critical and usage.value.key_cert_sign and usage.value.crl_sign
+    assert not (usage.value.digital_signature or usage.value.content_commitment or usage.value.key_encipherment
+                or usage.value.data_encipherment or usage.value.key_agreement)
+    purpose = web.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+    assert list(purpose.value) == [ExtendedKeyUsageOID.SERVER_AUTH], "TLS servers only"
+    assert isinstance(web.public_key(), ec.EllipticCurvePublicKey) and web.public_key().curve.name == "secp384r1"
+    assert web.subject.rfc4514_string() == "CN=sentinelfaa Web TLS CA,O=sentinelfaa"
 
 
 def test_vault_certificate_verifies_for_the_names_its_clients_use(ceremony):
@@ -230,6 +278,36 @@ def _under_spire_branch(certs: Path, tmp_path: Path, name: str, san: x509.Genera
     return chain, key_file
 
 
+def _under_web_branch(certs: Path, tmp_path: Path, name: str, sans: list[x509.GeneralName],
+                      purposes: tuple = (ExtendedKeyUsageOID.SERVER_AUTH,)) -> tuple[Path, Path]:
+    """A leaf signed with the web TLS CA's key, with these EKU purposes (none: no EKU): (chain file, key file).
+
+    serverAuth by default, so a rejection fails on the name, not on the purpose.
+    """
+    web = _cert(certs / "web" / "web-ca.crt")
+    web_key = serialization.load_pem_private_key((certs / "web" / "web-ca.key").read_bytes(), password=None)
+    key = ec.generate_private_key(ec.SECP256R1())
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "web")]))
+        .issuer_name(web.subject).public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1))
+        .not_valid_after(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(web_key.public_key()), critical=False)
+    )
+    if purposes:
+        builder = builder.add_extension(x509.ExtendedKeyUsage(list(purposes)), critical=False)
+    chain, key_file = tmp_path / f"{name}.crt", tmp_path / f"{name}.key"
+    chain.write_bytes(builder.sign(web_key, hashes.SHA384()).public_bytes(serialization.Encoding.PEM)
+                      + web.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return chain, key_file
+
+
 def _handshake(client_ctx: ssl.SSLContext, server_ctx: ssl.SSLContext, server_hostname: str) -> None:
     """A full TLS handshake over memory BIOs; a verification failure raises."""
     c_in, c_out, s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO()
@@ -266,6 +344,12 @@ def _client(certs: Path, cert: tuple[Path, Path] | None = None) -> ssl.SSLContex
     ctx = ssl.create_default_context(cafile=certs / "trust" / "root-ca.crt")
     if cert:
         ctx.load_cert_chain(*cert)
+    return ctx
+
+
+def _server(chain: tuple[Path, Path]) -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(*chain)
     return ctx
 
 
@@ -310,6 +394,84 @@ def test_a_spiffe_id_outside_the_trust_domain_is_refused(ceremony, tmp_path):
         _handshake(_client(certs, foreign), _vault_server(certs, True), "vault")
 
 
+# -- The web TLS branch, with real handshakes ----------------------------------
+
+def _web_tls():
+    """nas-feedops-sentinel/src/web_tls.py, the issuer edge-certs runs, loaded by path."""
+    spec = importlib.util.spec_from_file_location("web_tls", WEB_TLS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@needs_app
+def test_the_issuers_certificates_verify_against_the_root_alone(ceremony, tmp_path):
+    """What edge-certs writes, served as nginx and Keycloak serve it, to clients holding only root-ca.crt."""
+    _, certs = ceremony
+    tls = tmp_path / "tls"
+
+    assert _web_tls().ensure_certificates(certs / "web", certs / "trust", tls) is True
+
+    for leaf, names in (("edge/edge", ("localhost", "127.0.0.1")),
+                        ("keycloak/keycloak", ("keycloak", "localhost", "127.0.0.1"))):
+        server = _server((tls / f"{leaf}.crt", tls / f"{leaf}.key"))
+        for name in names:
+            _handshake(_client(certs), server, name)
+
+
+def test_the_web_branch_cannot_mint_a_certificate_for_any_other_name(ceremony, tmp_path):
+    _, certs = ceremony
+    rogue = _under_web_branch(certs, tmp_path, "rogue", [x509.DNSName("example.com")])
+
+    with pytest.raises(ssl.SSLCertVerificationError, match="permitted subtree violation"):
+        _handshake(_client(certs), _server(rogue), "example.com")
+
+
+# ::1 is outside the one permitted address and inside the excluded IPv6
+# range: OpenSSL may name either subtree.
+@pytest.mark.parametrize("address, reason", [("127.0.0.2", "permitted subtree violation"),
+                                             ("::1", "subtree violation")])
+def test_the_web_branch_cannot_mint_a_certificate_for_any_other_address(ceremony, tmp_path, address, reason):
+    _, certs = ceremony
+    rogue = _under_web_branch(certs, tmp_path, "rogue-ip", [x509.IPAddress(ipaddress.ip_address(address))])
+
+    with pytest.raises(ssl.SSLCertVerificationError, match=reason):
+        _handshake(_client(certs), _server(rogue), address)
+
+
+def test_the_web_branch_cannot_mint_a_certificate_without_server_auth(ceremony, tmp_path):
+    _, certs = ceremony
+    client_only = _under_web_branch(certs, tmp_path, "client-only", [x509.DNSName("localhost")],
+                                    purposes=(ExtendedKeyUsageOID.CLIENT_AUTH,))
+
+    with pytest.raises(ssl.SSLCertVerificationError, match=WRONG_PURPOSE):
+        _handshake(_client(certs), _server(client_only), "localhost")
+
+
+@pytest.mark.parametrize("name", ["localhost", "keycloak"])
+def test_spire_cannot_mint_a_certificate_clients_accept_as_the_edge_or_keycloak(ceremony, tmp_path, name):
+    _, certs = ceremony
+    rogue = _under_spire_branch(certs, tmp_path, "rogue", x509.DNSName(name))
+
+    with pytest.raises(ssl.SSLCertVerificationError, match="permitted subtree violation"):
+        _handshake(_client(certs), _server(rogue), name)
+
+
+def test_the_web_branch_cannot_mint_a_spiffe_identity(ceremony, tmp_path):
+    _, certs = ceremony
+    spiffe = x509.UniformResourceIdentifier(f"spiffe://{TRUST_DOMAIN}/workload/api")
+    served = _under_web_branch(certs, tmp_path, "served", [x509.DNSName("localhost"), spiffe])
+
+    with pytest.raises(ssl.SSLCertVerificationError, match="permitted subtree violation"):
+        _handshake(_client(certs), _server(served), "localhost")
+
+    # Presented to Vault as a client certificate, the way an SVID logs in:
+    # refused, because the web TLS CA is for TLS servers only.
+    presented = _under_web_branch(certs, tmp_path, "presented", [spiffe], purposes=())
+    with pytest.raises(ssl.SSLError, match=WRONG_PURPOSE):
+        _handshake(_client(certs, presented), _vault_server(certs, True), "vault")
+
+
 # -- install and check refuse what does not fit -----------------------------
 
 def _age(path: Path, days_left: int, usb: Path) -> None:
@@ -330,7 +492,7 @@ def _age(path: Path, days_left: int, usb: Path) -> None:
 def test_check_is_clean_after_the_ceremony(ceremony):
     _, certs = ceremony
     result = pki("check", str(certs))
-    assert result.stdout.count("OK ") == 2
+    assert result.stdout.count("OK ") == 3 and "OK web/web-ca" in result.stdout
 
 
 def test_check_warns_two_months_ahead_and_renewal_clears_it(ceremony):
@@ -351,6 +513,61 @@ def test_check_reports_a_missing_key_as_broken(ceremony):
     (certs / "spire" / "intermediate-ca.key").unlink()
     result = pki("check", str(certs), check=False)
     assert result.returncode == 2 and "BROKEN spire/intermediate-ca: missing" in result.stdout
+
+
+def test_check_warns_two_months_ahead_of_the_web_tls_ca_and_renewal_clears_it(ceremony):
+    usb, certs = ceremony
+    _age(certs / "web" / "web-ca.crt", 20, usb)
+
+    due = pki("check", str(certs), check=False)
+    assert due.returncode == 1 and "DUE web/web-ca" in due.stdout
+
+    pki("request", str(certs))
+    pki("sign", str(usb), str(certs))
+    pki("install", str(certs))
+    assert pki("check", str(certs)).returncode == 0
+
+
+def test_check_reports_a_missing_web_tls_key_as_broken(ceremony):
+    _, certs = ceremony
+    (certs / "web" / "web-ca.key").unlink()
+    result = pki("check", str(certs), check=False)
+    assert result.returncode == 2 and "BROKEN web/web-ca: missing" in result.stdout
+
+
+def _resign_web_ca(usb: Path, certs: Path, names: x509.NameConstraints | None) -> None:
+    """Re-sign the installed web TLS CA with the root (same key and extensions), with these name constraints."""
+    path = certs / "web" / "web-ca.crt"
+    cert, root = _cert(path), _cert(usb / "root-ca.crt")
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(cert.subject).issuer_name(root.subject)
+        .public_key(cert.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(cert.not_valid_before_utc).not_valid_after(cert.not_valid_after_utc)
+    )
+    for ext in cert.extensions:
+        if not isinstance(ext.value, x509.NameConstraints):
+            builder = builder.add_extension(ext.value, ext.critical)
+    if names is not None:
+        builder = builder.add_extension(names, critical=True)
+    path.write_bytes(builder.sign(_root_key(usb), hashes.SHA384()).public_bytes(serialization.Encoding.PEM))
+
+
+@pytest.mark.parametrize("names", [
+    None,
+    # The policy's names in the policy's order, and one more.
+    x509.NameConstraints(permitted_subtrees=[
+        x509.DNSName("localhost"), x509.DNSName("keycloak"), x509.IPAddress(ipaddress.ip_network("127.0.0.1/32")),
+        x509.UniformResourceIdentifier("invalid"), x509.DNSName("example.com"),
+    ], excluded_subtrees=[x509.IPAddress(ipaddress.ip_network("::/0"))]),
+], ids=["without name constraints", "with an extra permitted name"])
+def test_check_reports_a_web_tls_ca_outside_the_policy_as_broken(ceremony, names):
+    usb, certs = ceremony
+    _resign_web_ca(usb, certs, names)
+
+    result = pki("check", str(certs), check=False)
+    assert result.returncode == 2
+    assert "BROKEN web/web-ca: does not carry the web_tls_ext policy" in result.stdout
 
 
 def test_check_reports_a_missing_root_as_broken(ceremony):
@@ -459,7 +676,7 @@ def test_a_short_passphrase_creates_nothing(tmp_path):
     assert not (tmp_path / "usb" / "root-ca.key").exists()
 
 
-def test_sign_with_the_wrong_passphrase_signs_nothing_and_the_right_one_signs_both(tmp_path):
+def test_sign_with_the_wrong_passphrase_signs_nothing_and_the_right_one_signs_them_all(tmp_path):
     usb, certs = tmp_path / "usb", tmp_path / "certs"
     assert pki_tty("root-init", str(usb), inputs=[GOOD, GOOD])[0] == 0
     pki("request", str(certs))
@@ -470,8 +687,9 @@ def test_sign_with_the_wrong_passphrase_signs_nothing_and_the_right_one_signs_bo
 
     code, out = pki_tty("sign", str(usb), str(certs), inputs=[GOOD])
     assert code == 0, out
-    assert out.count("Root key passphrase:") == 1, "one entry signs both certificates"
-    assert sorted(p.name for p in certs.rglob("*.crt.pending")) == ["intermediate-ca.crt.pending", "vault.crt.pending"]
+    assert out.count("Root key passphrase:") == 1, "one entry signs every certificate"
+    assert sorted(p.name for p in certs.rglob("*.crt.pending")) == [
+        "intermediate-ca.crt.pending", "vault.crt.pending", "web-ca.crt.pending"]
 
 
 def test_an_unfinished_root_init_says_exactly_what_to_do(tmp_path):

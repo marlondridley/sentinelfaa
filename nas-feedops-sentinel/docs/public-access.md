@@ -33,7 +33,7 @@ Zero Trust → Networks → **Tunnels** → your tunnel → **Routes** → **Add
 | Path | *(empty)* | *(empty)* |
 | Service URL | `https://nas-edge:8450` | `https://nas-edge:8451` |
 | TLS → **Origin Server Name** | `localhost` | `localhost` |
-| TLS → **CA Pool** | `/etc/cloudflared/trust/edge-ca.crt` | `/etc/cloudflared/trust/edge-ca.crt` |
+| TLS → **CA Pool** | `/etc/cloudflared/trust/root-ca.crt` | `/etc/cloudflared/trust/root-ca.crt` |
 | TLS → **Disable TLS certificate verification** (*No TLS Verify*) | **Off** | **Off** |
 | HTTP, Connection, Access | defaults | defaults |
 
@@ -46,7 +46,7 @@ Two more routes for the story site, with the same TLS settings (Origin Server Na
 
 The site listener sends `www.<your-domain>` to the bare domain itself. The site is static (`nas-feedops-sentinel/site/`): the edge serves its files and nothing else, under a Content-Security-Policy that allows only its own origin, and its Sign in button opens the dashboard.
 
-Service URL needs the `https://`: the listeners speak only TLS. The TLS settings make the tunnel verify the edge, as every other hop in this stack is verified. The edge's certificate comes from the local authority and is issued for `localhost`, and `nas-cloudflared` has that authority's public certificate (never a key) at `/etc/cloudflared/trust`. Visitors connect to Cloudflare's own certificate. Probe 05 fails if a route turns verification off.
+Service URL needs the `https://`: the listeners speak only TLS. The TLS settings make the tunnel verify the edge, as every other hop in this stack is verified. The edge's certificate comes from the web TLS branch of the offline root (`instraclustr/certs/README.md`) and is issued for `localhost`, and `nas-cloudflared` has the root's public certificate (never a key) at `/etc/cloudflared/trust/root-ca.crt`. Visitors connect to Cloudflare's own certificate. Probe 05 fails if a route turns verification off.
 
 ## 2. Cloudflare: free protections (in place of Access)
 

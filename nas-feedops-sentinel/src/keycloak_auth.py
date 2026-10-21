@@ -15,8 +15,8 @@ The TLS path, traced against the running stack:
   browser -> https://localhost:8443          the edge proxy -> dashboard:8501
   browser -> https://localhost:8081/.../auth  Keycloak's login page (KC_HOSTNAME)
   dashboard -> https://keycloak:8443/.../token and /certs, server to server
-    (KC_HOSTNAME_BACKCHANNEL_DYNAMIC), verified against the local authority by
-    [auth.keycloak.client_kwargs] verify = "/run/tls/edge-ca.crt"
+    (KC_HOSTNAME_BACKCHANNEL_DYNAMIC), verified against the offline root by
+    [auth.keycloak.client_kwargs] verify = "/run/tls/root-ca.crt"
   Keycloak -> browser -> https://localhost:8443/oauth2callback (redirect_uri)
 
 What stays Sentinel's, and lives here without importing Streamlit:

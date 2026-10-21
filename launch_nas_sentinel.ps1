@@ -79,17 +79,22 @@ if ($existingSpireVolume -eq $spireSocketVolume) {
     docker volume create $spireSocketVolume
 }
 
-# 1b. Workload-identity PKI: Vault serves TLS only, and SPIRE signs under the
-#     offline root, so nothing can start without these certificates. They come
-#     from the root ceremony (instraclustr/certs/README.md), never from here.
+# 1b. Certificates under the offline root: Vault serves TLS only, SPIRE signs
+#     under the root, and edge-certs issues the edge's and Keycloak's TLS
+#     certificates from its web TLS CA, so nothing can start without them.
+#     They come from the root ceremony (instraclustr/certs/README.md), never
+#     from here.
 $pkiScript = Join-Path $scriptDir "instraclustr\scripts\pki.ps1"
 & $pkiScript check
 switch ($LASTEXITCODE) {
-    0 { Write-Host "  [+] Workload-identity certificates are current." -ForegroundColor Green }
-    1 { Write-Host "  [!] A workload-identity certificate is due for renewal (above). Plan the ceremony: instraclustr\certs\README.md" -ForegroundColor Yellow }
+    0 { Write-Host "  [+] Certificates under the offline root (workload identity and web TLS) are current." -ForegroundColor Green }
+    1 { Write-Host "  [!] A certificate under the offline root (workload identity or web TLS) is due for renewal (above). Plan the ceremony: instraclustr\certs\README.md" -ForegroundColor Yellow }
     default {
-        Write-Host "CRITICAL ERROR: workload-identity certificates missing or invalid (above)." -ForegroundColor Red
-        Write-Host "  Run the root ceremony first: instraclustr\certs\README.md" -ForegroundColor Red
+        Write-Host "CRITICAL ERROR: certificates under the offline root (workload identity and web TLS) are missing or invalid (above)." -ForegroundColor Red
+        Write-Host "  Run the ceremony, in order (instraclustr\certs\README.md):" -ForegroundColor Red
+        Write-Host "    .\instraclustr\scripts\pki.ps1 request" -ForegroundColor Red
+        Write-Host "    .\instraclustr\scripts\pki.ps1 sign -RootDir <root USB folder>" -ForegroundColor Red
+        Write-Host "    .\instraclustr\scripts\pki.ps1 install" -ForegroundColor Red
         exit 1
     }
 }
@@ -274,7 +279,7 @@ if ($WithLiveFeed) {
 }
 
 Write-Host ""
-Write-Host "Launch sequence complete!  (HTTPS via the edge proxy; self-signed cert for localhost)" -ForegroundColor Green
+Write-Host "Launch sequence complete!  (HTTPS via the edge proxy; certificate for localhost from the offline root's web TLS branch)" -ForegroundColor Green
 if ($Public) {
     Write-Host "  - Dashboard          : the public address above (public access is on; sign-in goes through it)" -ForegroundColor Cyan
 } else {

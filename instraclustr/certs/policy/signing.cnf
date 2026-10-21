@@ -60,3 +60,45 @@ extendedKeyUsage       = serverAuth
 subjectAltName         = DNS:vault, DNS:localhost, IP:127.0.0.1
 subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid:always
+
+# -- Web TLS CA ---------------------------------------------------------------
+# edge-certs (nas-feedops-sentinel/src/web_tls.py): it signs the edge proxy's
+# certificate (localhost) and Keycloak's (keycloak, localhost, 127.0.0.1),
+# and nothing else. Browsers and the stack's own clients trust the ROOT, so a
+# renewal here never needs trusting again.
+#
+# What it may issue, and why each line is there:
+#   pathlen 0                    -- leaf certificates only, never another CA
+#   extendedKeyUsage serverAuth  -- TLS servers only: no client certificate,
+#                                   so no login to Vault's cert auth
+# Name constraints (RFC 5280 4.2.1.10, critical), inherited by every leaf:
+#   permitted DNS  localhost     -- the edge and Keycloak on this host (and
+#                                   names under localhost)
+#   permitted DNS  keycloak      -- Keycloak on nas-network (and names under it)
+#   permitted IP   127.0.0.1/32  -- Keycloak's own health check; no other IPv4
+#   permitted URI  invalid       -- the reserved TLD (RFC 6761): no real URI,
+#                                   so no spiffe:// identity Vault would admit.
+#                                   A name type with no permitted subtree is
+#                                   unconstrained, so this line is needed.
+#   excluded  IP   every v6 address
+# These are the only names any client verifies on the two certificates
+# (docs/public-access.md: the tunnel verifies the edge as localhost; the
+# public hostnames carry Cloudflare's certificate, never this one).
+
+[ req_web ]
+prompt             = no
+distinguished_name = web_dn
+default_md         = sha384
+string_mask        = utf8only
+
+[ web_dn ]
+O  = sentinelfaa
+CN = sentinelfaa Web TLS CA
+
+[ web_tls_ext ]
+basicConstraints       = critical, CA:true, pathlen:0
+keyUsage               = critical, keyCertSign, cRLSign
+extendedKeyUsage       = serverAuth
+nameConstraints        = critical, permitted;DNS:localhost, permitted;DNS:keycloak, permitted;IP:127.0.0.1/255.255.255.255, permitted;URI:invalid, excluded;IP:::/::
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always

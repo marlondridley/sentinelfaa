@@ -9,16 +9,17 @@
 #                Values are looked up in this stack's .env and then in
 #                ../instraclustr/.env -- a secret may live in either, as the
 #                launcher reads both; one found in either is not added again.
-#   2. Keycloak  the local certificates are issued (edge-certs: tls/edge-ca.crt
-#                and a certificate for Keycloak), then keycloak-postgres +
+#   2. Keycloak  the edge and Keycloak certificates are issued from the web TLS
+#                branch of the offline root (edge-certs;
+#                instraclustr\certs\README.md), then keycloak-postgres +
 #                keycloak are started. Keycloak serves HTTPS only; the realm and
 #                the dashboard client are imported from keycloak/realm-nas-sentinel.json.
 #   3. Operator  one login in the nas-sentinel realm (you choose it now).
 #
-# This script talks to https://localhost:8081, so Windows must trust
-# tls/edge-ca.crt (once, in Cert:\CurrentUser\Root). It checks, and tells you
-# the one command to run if it is not trusted yet; it does not change your
-# certificate store itself.
+# This script talks to https://localhost:8081, so Windows must trust the
+# offline root, instraclustr\certs\trust\root-ca.crt (once, in
+# Cert:\CurrentUser\Root). It checks, and tells you the one command to run if
+# it is not trusted yet; it does not change your certificate store itself.
 #
 # -PrepareOnly runs step 1 only. Safe to re-run. Secrets are never printed
 # and never placed on a command line.
@@ -108,16 +109,19 @@ if (-not $adminPw) { throw "KEYCLOAK_ADMIN_PASSWORD is missing from $envFile and
 if ($PrepareOnly) { Write-Host "Prepared .env (-PrepareOnly: Keycloak not started)."; return }
 
 # -- 2. Keycloak --------------------------------------------------------------
-Write-Host "Issuing local certificates (edge-certs)..." -ForegroundColor Yellow
+Write-Host "Issuing the edge and Keycloak certificates (edge-certs)..." -ForegroundColor Yellow
 docker compose -f $composeFile @envArgs up edge-certs
-if ($LASTEXITCODE -ne 0) { throw "edge-certs could not issue the certificates (exit $LASTEXITCODE)." }
-$caFile = Join-Path (Join-Path $appDir 'tls') 'edge-ca.crt'
-if (-not (Test-Path $caFile)) { throw "Missing $caFile after edge-certs ran." }
-$ca = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $caFile
-if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object Thumbprint -eq $ca.Thumbprint)) {
-    throw ("Windows does not trust the local certificate authority yet, so https://localhost:8081 " +
+if ($LASTEXITCODE -ne 0) {
+    throw ("edge-certs could not issue the certificates (exit $LASTEXITCODE). It says why in: docker logs nas-edge-certs. " +
+           "Check the certificates under the offline root: .\instraclustr\scripts\pki.ps1 check")
+}
+$rootFile = Join-Path (Split-Path -Parent $appDir) 'instraclustr\certs\trust\root-ca.crt'
+if (-not (Test-Path $rootFile)) { throw "Missing $rootFile. Run the root ceremony first: instraclustr\certs\README.md" }
+$root = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $rootFile
+if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object Thumbprint -eq $root.Thumbprint)) {
+    throw ("Windows does not trust the offline root yet, so https://localhost:8081 " +
            "cannot be verified. Trust it once, then re-run this script:`n" +
-           "  Import-Certificate -FilePath `"$caFile`" -CertStoreLocation Cert:\CurrentUser\Root")
+           "  Import-Certificate -FilePath `"$rootFile`" -CertStoreLocation Cert:\CurrentUser\Root")
 }
 
 Write-Host "Starting keycloak-postgres and keycloak (production mode, HTTPS only)..." -ForegroundColor Yellow
@@ -176,6 +180,6 @@ Write-Host "  authorization_endpoint : $($disc.authorization_endpoint)"
 Write-Host ""
 Write-Host "Next: docker compose --env-file .env up -d dashboard   (picks up the new settings)" -ForegroundColor Cyan
 Write-Host "  .streamlit/secrets.toml must use server_metadata_url = https://keycloak:8443/... and" -ForegroundColor Cyan
-Write-Host "  [auth.keycloak.client_kwargs] verify = /run/tls/edge-ca.crt (see .streamlit/secrets.toml.example)." -ForegroundColor Cyan
+Write-Host "  [auth.keycloak.client_kwargs] verify = /run/tls/root-ca.crt (see .streamlit/secrets.toml.example)." -ForegroundColor Cyan
 Write-Host "Then open https://localhost:8443 in a NEW tab and sign in as '$user'." -ForegroundColor Cyan
 Write-Host "Keycloak admin console: https://localhost:8081/admin  (user 'admin', KEYCLOAK_ADMIN_PASSWORD)" -ForegroundColor DarkGray

@@ -39,7 +39,7 @@ running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = tru
 FORBIDDEN_ENV='^(POSTGRES_PASSWORD|APP_DB_PASSWORD|LITELLM_API_KEY|LITELLM_MASTER_KEY|VAULT_TOKEN|VAULT_ADDR|VAULT_ROLE_ID|VAULT_SECRET_ID|VAULT_APPROLE_DIR|DATABASE_URL)='
 # DATABASE_URL is allowed only empty (compose sets it "" on purpose).
 SECRET_SHAPED='=(sk-|hvs\.|hvb\.)'
-FORBIDDEN_MOUNT='vault-init-data|vault-recovery|approle|unseal|instraclustr/certs/(spire|vault)|root-ca\.key'
+FORBIDDEN_MOUNT='vault-init-data|vault-recovery|approle|unseal|instraclustr/certs/(spire|vault|web)|root-ca\.key'
 
 echo "Zero static credentials probe: project=$PROJECT"
 

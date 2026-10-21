@@ -19,7 +19,16 @@
 #
 # Runs in CI on a clean runner. The compose files pin container names and
 # loopback ports, so it refuses to run beside a live stack, and it needs a
-# checkout with no nas-feedops-sentinel/tls/ (a fresh clone, or a worktree).
+# checkout with no nas-feedops-sentinel/tls/ and no certificates under
+# instraclustr/certs/ (a fresh clone, or a worktree).
+#
+# edge-certs issues the edge's and Keycloak's certificates only from the web
+# TLS CA under the offline root (instraclustr/certs/README.md), and refuses
+# without it. So before the application's containers are created, this runs
+# the real ceremony -- pki.sh root-init, request, sign, install -- with a
+# throwaway root in a temporary directory and a random passphrase (the real
+# root never leaves its USB), into instraclustr/certs, and removes the
+# throwaway root on exit.
 #
 # Usage: bash .github/scripts/deploy-smoke.sh
 set -euo pipefail
@@ -28,11 +37,14 @@ ROOT="$(git rev-parse --show-toplevel)"
 INFRA_ENV="$ROOT/instraclustr/.env.example"
 APP_ENV="$ROOT/nas-feedops-sentinel/.env.example"
 TLS="$ROOT/nas-feedops-sentinel/tls"
+CERTS="$ROOT/instraclustr/certs"
+CERT_DIRS="spire vault web trust"          # what the ceremony writes under $CERTS
 P=sentinel-smoke
 OLD_PG=sentinel-smoke-md5-postgres
 PG_IMAGE=pgvector/pgvector:pg16          # the image instraclustr's postgres service runs
 created_network=0
 created_socket_volume=0
+PKI_TMP=""
 SOCKET_VOLUME=nas-spire-agent-socket   # external, like nas-network; launch_nas_sentinel.ps1 creates both
 
 infra() { docker compose -p "$P-infra" -f "$ROOT/instraclustr/docker-compose.yml" --env-file "$INFRA_ENV" "$@"; }
@@ -64,6 +76,7 @@ cleanup() {
   infra down -v --remove-orphans >/dev/null 2>&1 || true
   [ "$created_network" = 1 ] && docker network rm nas-network >/dev/null 2>&1 || true
   [ "$created_socket_volume" = 1 ] && docker volume rm "$SOCKET_VOLUME" >/dev/null 2>&1 || true
+  [ -n "$PKI_TMP" ] && rm -rf "$PKI_TMP" || true
   exit "$code"
 }
 
@@ -74,6 +87,10 @@ for name in postgres postgres-scram nas-pgbouncer nas-keycloak nas-keycloak-post
   fi
 done
 [ ! -e "$TLS" ] || fail "$TLS exists: run from a fresh checkout (git worktree add), which is what this test is about"
+# The throwaway ceremony below writes these: never over a real ceremony's.
+for d in $CERT_DIRS; do
+  [ ! -e "$CERTS/$d" ] || fail "$CERTS/$d exists: run from a fresh checkout; this test makes its own throwaway root"
+done
 trap cleanup EXIT
 if ! docker network inspect nas-network >/dev/null 2>&1; then
   docker network create nas-network >/dev/null
@@ -155,23 +172,32 @@ if grep -qE "re-hashed|switched" <<<"$rerun"; then fail "postgres-scram changed 
 $rerun"; fi
 
 # ── 2. A fresh checkout starts Keycloak over TLS ─────────────────────────────
+step "a throwaway offline root: root-init, request, sign, install (the real root never leaves its USB)"
+PKI_TMP="$(mktemp -d)"
+export PKI_ROOT_PASS=env:SMOKE_ROOT_PASS SMOKE_ROOT_PASS="smoke-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+sh "$ROOT/instraclustr/scripts/pki.sh" root-init "$PKI_TMP/usb"
+sh "$ROOT/instraclustr/scripts/pki.sh" request "$CERTS"
+sh "$ROOT/instraclustr/scripts/pki.sh" sign "$PKI_TMP/usb" "$CERTS"
+sh "$ROOT/instraclustr/scripts/pki.sh" install "$CERTS"
+unset PKI_ROOT_PASS SMOKE_ROOT_PASS
+
 step "a fresh checkout: every container created before edge-certs runs"
 app create --build >/dev/null            # what `up` does first: all containers, all mounts
 app up -d keycloak                       # keycloak-postgres, edge-certs, keycloak
 [ "$(docker inspect -f '{{.State.ExitCode}}' nas-edge-certs)" = 0 ] || fail "edge-certs did not exit 0"
-for f in edge-ca.crt edge/edge.crt edge/edge.key keycloak/keycloak.crt keycloak/keycloak.key keycloak/edge-ca.crt trust/edge-ca.crt; do
-  [ -f "$TLS/$f" ] || fail "tls/$f is not a file"
-done
+issued="$(cd "$TLS" && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
+[ "$issued" = "edge/edge.crt edge/edge.key keycloak/keycloak.crt keycloak/keycloak.key " ] \
+  || fail "tls/ should hold exactly the edge and Keycloak certificates and keys, found: $issued"
 stray="$(find "$TLS" -type d \( -name '*.crt' -o -name '*.key' \))"
 [ -z "$stray" ] || fail "directories where certificate files belong: $stray"
-wait_healthy nas-keycloak 300
+wait_healthy nas-keycloak 300            # its health check trusts the root (keycloak/TlsHealth.java)
 
-step "the dashboard's path: verify Keycloak against tls/trust, mounted as the dashboard mounts it"
-status="$(docker run --rm --network nas-network -v "$TLS/trust:/run/tls:ro" nas-feedops-sentinel:latest python -c '
+step "the dashboard's path: verify Keycloak against the root, mounted as the dashboard mounts it"
+status="$(docker run --rm --network nas-network -v "$ROOT/instraclustr/certs/trust:/run/tls:ro" nas-feedops-sentinel:latest python -c '
 import ssl, urllib.request
-ctx = ssl.create_default_context(cafile="/run/tls/edge-ca.crt")
+ctx = ssl.create_default_context(cafile="/run/tls/root-ca.crt")
 url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"
 print(urllib.request.urlopen(url, context=ctx, timeout=10).status)')"
-[ "$status" = 200 ] || fail "Keycloak did not verify against tls/trust/edge-ca.crt (got: $status)"
+[ "$status" = 200 ] || fail "Keycloak did not verify against instraclustr/certs/trust/root-ca.crt (got: $status)"
 
 step "deployment smoke passed"

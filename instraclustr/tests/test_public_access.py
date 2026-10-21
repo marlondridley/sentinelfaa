@@ -5,7 +5,7 @@ sign-in pages. These tests pin the configuration that guarantees it, so an
 edit that would widen it fails CI instead of reaching the internet:
 
   * the tunnel container: opt-in (profile), no port, locked down, pinned,
-    verifying the edge with the local authority's certificate only
+    verifying the edge with the offline root's certificate only
   * the edge's two tunnel listeners: never published on the host; the
     dashboard one proxies only the dashboard, the sign-in one only the
     nas-sentinel realm's pages and assets -- admin console, master realm,
@@ -74,12 +74,12 @@ def test_the_tunnel_is_opt_in_unpublished_and_locked_down():
     assert svc["healthcheck"]["test"][-1] == "ready"
 
 
-def test_the_tunnel_verifies_the_edge_with_the_authoritys_certificate_only():
-    # Routes use CA Pool /etc/cloudflared/trust/edge-ca.crt, not noTLSVerify;
-    # the tunnel gets the public certificate and never the edge's key.
-    assert _compose()["services"]["cloudflared"]["volumes"] == ["./tls/trust:/etc/cloudflared/trust:ro"]
+def test_the_tunnel_verifies_the_edge_with_the_roots_certificate_only():
+    # Routes use CA Pool /etc/cloudflared/trust/root-ca.crt, not noTLSVerify;
+    # the tunnel gets the offline root's public certificate and never a key.
+    assert _compose()["services"]["cloudflared"]["volumes"] == ["../instraclustr/certs/trust:/etc/cloudflared/trust:ro"]
     doc = (APP / "docs" / "public-access.md").read_text(encoding="utf-8")
-    assert "/etc/cloudflared/trust/edge-ca.crt" in doc
+    assert "/etc/cloudflared/trust/root-ca.crt" in doc
     probe = (INFRA.parent / "scripts" / "smoke" / "05_public_exposure_probe.sh").read_text(encoding="utf-8")
     assert "check_hostname = False" not in probe and 'server_hostname="localhost"' in probe
     assert "noTLSVerify" in probe, "the live probe fails a route that skips verification"
@@ -112,7 +112,7 @@ def test_the_public_sign_in_listener_serves_only_the_realm_sign_in_pages():
     for path in ("/realms/nas-sentinel/account", "/"):
         assert re.fullmatch(r"\s*return 404;\s*", locs[path]), f"{path} must answer 404"
     assert re.search(r"proxy_ssl_verify\s+on;", block), "TLS to Keycloak is verified"
-    assert re.search(r"proxy_ssl_trusted_certificate\s+/etc/nginx/trust/edge-ca\.crt;", block)
+    assert re.search(r"proxy_ssl_trusted_certificate\s+/etc/nginx/trust/root-ca\.crt;", block)
 
 
 def test_the_public_listeners_ask_not_to_be_indexed_and_allow_no_devices():
@@ -179,7 +179,7 @@ def test_no_tunnel_listener_reaches_any_other_service():
 
 def test_the_edge_can_verify_keycloak():
     volumes = _compose()["services"]["edge"]["volumes"]
-    assert "./tls/trust:/etc/nginx/trust:ro" in volumes
+    assert "../instraclustr/certs/trust:/etc/nginx/trust:ro" in volumes
 
 
 # -- Keycloak -------------------------------------------------------------------
