@@ -4,8 +4,10 @@
 //
 // Keycloak serves only HTTPS (docker-compose.yml), including its management
 // interface on port 9000, and its image has no curl or openssl. This asks
-// URL over TLS, trusting only the authority in CA_PEM (edge-ca.crt from
-// src/devcert.py), and exits 0 only when the answer is 200 with "UP" in it.
+// URL over TLS, trusting only the authority in CA_PEM (the offline root's
+// root-ca.crt, instraclustr/certs/trust; Keycloak serves its certificate with
+// the web TLS CA, src/web_tls.py), and exits 0 only when the answer is 200
+// with "UP" in it.
 import java.io.FileInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;

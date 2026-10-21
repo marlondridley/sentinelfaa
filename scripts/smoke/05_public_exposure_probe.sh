@@ -5,7 +5,8 @@
 #   1. Host          the public listeners (edge 8450-8452) publish no host
 #                    port, and nas-cloudflared (if running) publishes none
 #   2. Allowed       through the listeners, exactly as the tunnel reaches them
-#                    (the edge certificate verified: local CA, name localhost):
+#                    (the edge certificate verified: the offline root, name
+#                    localhost):
 #                    the dashboard answers; the sign-in realm's discovery
 #                    document answers and names the public sign-in address;
 #                    the story site (8452) serves its page, its stylesheet as
@@ -21,7 +22,8 @@
 #                    verifies the edge (no noTLSVerify)
 #
 # Runs from the host with the Docker CLI; requests go from a throwaway
-# container on nas-network (the app image: Python, the local CA). Hostnames
+# container on nas-network (the app image: Python, and the offline root's
+# public certificate, instraclustr/certs/trust). Hostnames
 # come from PUBLIC_DASHBOARD_URL / KEYCLOAK_PUBLIC_URL in either env file;
 # unset, the listeners are still checked, with localhost as the host.
 set -u
@@ -67,13 +69,13 @@ fi
 
 # ── 2 and 3. Through the listeners, as the tunnel reaches them ──────────────
 echo "2. Allowed, and 3. refused, through the public listeners"
-out=$(docker run --rm -i --network nas-network -v "$(hostpath "$REPO/nas-feedops-sentinel/tls/trust"):/ca:ro" \
+out=$(docker run --rm -i --network nas-network -v "$(hostpath "$REPO/instraclustr/certs/trust"):/ca:ro" \
     --entrypoint python nas-feedops-sentinel:latest - "$DASH_HOST" "$AUTH_HOST" "$ISSUER" "$SITE_HOST" <<'PY'
 import http.client, json, socket, ssl, sys
 dash, auth, issuer, site = sys.argv[1:5]
-# Verified exactly as the tunnel's routes verify it: the local authority, and
+# Verified exactly as the tunnel's routes verify it: the offline root, and
 # the edge certificate's name `localhost` (Origin Server Name + CA Pool).
-ctx = ssl.create_default_context(cafile="/ca/edge-ca.crt")
+ctx = ssl.create_default_context(cafile="/ca/root-ca.crt")
 class Edge(http.client.HTTPSConnection):
     def connect(self):
         self.sock = ctx.wrap_socket(socket.create_connection((self.host, self.port), self.timeout),
@@ -149,15 +151,15 @@ if [ "$running" = true ]; then
     # The routes live in Cloudflare; the tunnel logs each configuration it receives.
     cfg=$(docker logs nas-cloudflared 2>&1 | grep 'Updated to new configuration' | tail -1)
     routes=$(printf '%s' "$cfg" | grep -o 'hostname' | wc -l)
-    pools=$(printf '%s' "$cfg" | grep -o 'caPool[^,}]*edge-ca\.crt' | wc -l)
+    pools=$(printf '%s' "$cfg" | grep -o 'caPool[^,}]*root-ca\.crt' | wc -l)
     if [ -z "$cfg" ]; then
         info "the tunnel has logged no route configuration yet"
     elif printf '%s' "$cfg" | grep -q 'noTLSVerify[^,}]*true'; then
         fail "a route skips verifying the edge: turn off TLS -> Disable TLS certificate verification"
     elif [ "$routes" -gt 0 ] && [ "$pools" -ge "$routes" ]; then
-        pass "every route verifies the edge ($pools of $routes with the local CA pool)"
+        pass "every route verifies the edge ($pools of $routes with the offline root as CA pool)"
     else
-        fail "a route does not verify the edge: set TLS -> CA Pool /etc/cloudflared/trust/edge-ca.crt ($pools of $routes)"
+        fail "a route does not verify the edge: set TLS -> CA Pool /etc/cloudflared/trust/root-ca.crt ($pools of $routes)"
     fi
 else
     info "nas-cloudflared is not running: public access is off (launch with -Public)"

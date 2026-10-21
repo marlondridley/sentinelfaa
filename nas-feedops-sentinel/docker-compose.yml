@@ -284,9 +284,10 @@ services:
       - dashboard-secrets:/vault/secrets:ro
       # Keycloak client settings (secrets.toml) and theme; read-only, never baked in.
       - ./.streamlit:/app/.streamlit:ro
-      # The authority's public certificate only (tls/trust/edge-ca.crt). A
-      # directory, never a file: see src/devcert.py.
-      - ./tls/trust:/run/tls:ro
+      # The offline root's public certificate only (root-ca.crt), which
+      # Keycloak's certificate chains to. A directory, never a file: see
+      # src/web_tls.py.
+      - ../instraclustr/certs/trust:/run/tls:ro
     depends_on:
       <<: *after-migrate
       dashboard-vault-agent:
@@ -429,24 +430,25 @@ services:
       # the visitor's address from Cloudflare, so login events name the visitor.
       KC_PROXY_HEADERS: xforwarded
       # HTTPS only, with a certificate for keycloak / localhost / 127.0.0.1
-      # signed by the local authority (src/devcert.py). The management
-      # interface (health, port 9000) inherits it.
+      # from the web TLS branch of the offline root (src/web_tls.py). The
+      # management interface (health, port 9000) inherits it.
       KC_HTTP_ENABLED: "false"
       KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/tls/keycloak.crt
       KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/tls/keycloak.key
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./keycloak/realm-nas-sentinel.json:/opt/keycloak/data/import/realm-nas-sentinel.json:ro
-      # Its own certificate and key, and the authority's public certificate
-      # (for the health check and the admin scripts) -- never the authority's key.
-      # A directory, never files: see src/devcert.py.
+      # Its own certificate and key -- never the web TLS CA's key -- and the
+      # offline root's public certificate (for the health check and the admin
+      # scripts). Directories, never files: see src/web_tls.py.
       - ./tls/keycloak:/opt/keycloak/conf/tls:ro
+      - ../instraclustr/certs/trust:/opt/keycloak/conf/trust:ro
       - ./keycloak/TlsHealth.java:/opt/keycloak/healthcheck/TlsHealth.java:ro
     healthcheck:
       # The image has no curl or openssl; the JDK checks /health/ready over
-      # TLS against the local authority (keycloak/TlsHealth.java).
+      # TLS against the offline root (keycloak/TlsHealth.java).
       test: ["CMD", "java", "/opt/keycloak/healthcheck/TlsHealth.java",
-             "https://127.0.0.1:9000/health/ready", "/opt/keycloak/conf/tls/edge-ca.crt"]
+             "https://127.0.0.1:9000/health/ready", "/opt/keycloak/conf/trust/root-ca.crt"]
       interval: 15s
       timeout: 10s
       start_period: 60s
@@ -502,14 +504,20 @@ services:
     # unauthenticated and can terminate workflows.
 
   # 8. Edge TLS termination, and the certificates for it and for Keycloak.
+  # edge-certs issues both from the web TLS CA, the name-limited branch of the
+  # offline root (../instraclustr/certs/README.md), and refuses when that CA is
+  # missing, expired or outside its policy. It is the only service that mounts
+  # the web TLS CA's key.
   edge-certs:
     <<: *app-image
     container_name: nas-edge-certs
-    command: ["python", "-m", "src.devcert", "/tls"]
+    command: ["python", "-m", "src.web_tls", "/web-ca", "/certs-trust", "/tls"]
     restart: "no"
     user: "0"
     volumes:
       - ./tls:/tls
+      - ../instraclustr/certs/web:/web-ca:ro
+      - ../instraclustr/certs/trust:/certs-trust:ro
     healthcheck:
       disable: true
 
@@ -527,9 +535,9 @@ services:
     volumes:
       - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./tls/edge:/etc/nginx/tls:ro     # its own certificate and key only
-      # The authority's public certificate: the public sign-in listener
+      # The offline root's public certificate: the public sign-in listener
       # verifies Keycloak's certificate with it.
-      - ./tls/trust:/etc/nginx/trust:ro
+      - ../instraclustr/certs/trust:/etc/nginx/trust:ro
       # The public story site (static files, listener 8452; docs/public-access.md).
       - ./site:/usr/share/nginx/site:ro
     ports:
@@ -704,10 +712,10 @@ services:
       # either env file; empty, and the tunnel refuses to start.
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     volumes:
-      # The local authority's public certificate only, so the tunnel verifies
+      # The offline root's public certificate only, so the tunnel verifies
       # the edge: each route's TLS settings are Origin Server Name `localhost`
-      # and CA Pool /etc/cloudflared/trust/edge-ca.crt (docs/public-access.md).
-      - ./tls/trust:/etc/cloudflared/trust:ro
+      # and CA Pool /etc/cloudflared/trust/root-ca.crt (docs/public-access.md).
+      - ../instraclustr/certs/trust:/etc/cloudflared/trust:ro
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

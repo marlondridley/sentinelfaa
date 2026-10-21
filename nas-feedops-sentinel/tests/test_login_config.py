@@ -134,8 +134,8 @@ class _Metadata:
 def test_the_realm_shown_is_the_issuer_keycloak_publishes():
     get = _Metadata({"issuer": "https://auth.example.com/realms/nas-sentinel"})
     url = GOOD["keycloak"]["server_metadata_url"]
-    assert login._issuer(url, "/run/tls/edge-ca.crt", get) == "https://auth.example.com/realms/nas-sentinel"
-    assert get.calls == [(url, {"verify": "/run/tls/edge-ca.crt", "timeout": 3.0})], "fetched with the local CA"
+    assert login._issuer(url, "/run/tls/root-ca.crt", get) == "https://auth.example.com/realms/nas-sentinel"
+    assert get.calls == [(url, {"verify": "/run/tls/root-ca.crt", "timeout": 3.0})], "fetched trusting the root"
 
 
 @pytest.mark.parametrize("get", [_Metadata({"issuer": "http://auth.example.com/realms/nas-sentinel"}),
