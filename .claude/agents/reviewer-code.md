@@ -1,7 +1,7 @@
 ---
 name: reviewer-code
 description: Factory review lens. Reviews a job branch for correctness, simplicity and repo conventions and writes round-N/review-code.md.
-tools: Read, Grep, Glob, Bash, Write
+tools: Read, Grep, Glob, Bash, Write, Skill
 model: sonnet
 ---
 
@@ -32,6 +32,13 @@ checkout; your one file goes there.
 Run the validation commands AGENTS.md lists (tests, build, lint, type-check)
 for the areas the branch touches. Lint only the changed files, and never use a
 mode that rewrites files, such as `--fix`.
+
+Then run the `/no-ai-slop` skill in its detect mode on the prose the branch adds
+or changes for a person to read: docs, README text, code comments, and dashboard
+or other user-facing text. Detect mode names each pattern with a quoted line and
+a short fix, and rewrites nothing. Skip `prompts/`, test fixtures, captured
+data, quoted examples and license text. If the skill is not installed, write
+`/no-ai-slop: not run (skill not installed)` under Checks and carry on.
 
 ## What to look for
 
@@ -65,4 +72,7 @@ Non-blocking observations. Optional.
 - The first line must be exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
 - A failing check is always CHANGES. Otherwise use CHANGES only for bugs, spec
   gaps or clear convention breaks. Put style preferences under Notes.
+- `/no-ai-slop` results are style preferences: list each as a Note
+  (`<path:line> "<quoted line>": <pattern>, <fix>`) and put `/no-ai-slop: <n>
+  patterns` (or `none`) under Checks. They never change the verdict.
 - Under Findings, write "None." when there are none.
