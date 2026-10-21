@@ -7,7 +7,7 @@ A scripted demonstration for someone who has five minutes and wants to know two 
 None of this counts against the five minutes.
 
 1. **Bring the stack up** from the repository root: `.\launch_nas_sentinel.ps1`. Add `-WithLiveFeed` if you have a SWIM subscription and want live FAA data on screen.
-2. **Trust the offline root** once: import `instraclustr\certs\trust\root-ca.crt` into the Windows certificate store. The dashboard, the API and Keycloak (which serves HTTPS only) all present certificates that chain to it.
+2. **Trust the offline root** once: import `instraclustr\certs\trust\root-ca.crt` into the Windows certificate store. The dashboard, the API and Keycloak (which serves HTTPS only) all present certificates that chain to it. The command, and a check that says whether this PC trusts it (`.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1`), are in [runbooks.md, "The browser says Not secure"](runbooks.md#the-browser-says-not-secure).
 3. **Have an operator** with the `watch_officer` role: `.\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1`, then open https://localhost:8443 and choose **Sign in with Keycloak**: you sign in on the realm's own page and come back signed in. For the auditor contrast in step 5, create a second login with `$env:APP_ROLES = 'auditor'` before running the script again.
 4. **Put something in the review queue.** Only real FAA data goes in; there is no synthetic mode. Live PCT data is usually quiet: the ten-message capture in the test fixtures raises 14 alerts, none of them CRITICAL. Run the live feed (`-WithLiveFeed`), or replay captured SWIM files:
    ```powershell
@@ -117,5 +117,5 @@ Not as built. The Jumpstart Kit writes one file per message, which suits one TRA
 
 - **The review queue is empty.** Nothing real has raised a CRITICAL alert yet. Replay a capture as in setup step 4, or wait for the live feed.
 - **The decision buttons are disabled.** Your login lacks `watch_officer`; the tooltip names the missing role. Grant it with `scripts/keycloak-rbac.sh` (`GRANT_USERS`, `GRANT_ROLES`); see [operations.md](operations.md).
-- **The browser warns about the certificate.** Import `instraclustr\certs\trust\root-ca.crt` into the Windows certificate store, once.
+- **The browser warns about the certificate.** Run `.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1`: it says why, and who acts. The steps are in [runbooks.md, "The browser says Not secure"](runbooks.md#the-browser-says-not-secure).
 - **Sign-in fails.** Its error message says which setting to fix. `scripts\Collect-Diagnostics.ps1` gathers container state and logs into one file without any secrets.

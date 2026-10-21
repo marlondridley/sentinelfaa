@@ -24,7 +24,10 @@ certificates from the web TLS CA, the name-limited branch of the offline root
 is re-issued when missing, within 30 days of expiry, or from another CA. It
 refuses, and issues nothing, without a sound web TLS CA. Trust the root,
 `instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate store
-and every renewal stays trusted.
+and every renewal stays trusted. The command, and
+`scripts\Test-BrowserTrust.ps1`, which says whether this PC trusts what the
+stack serves, are in [runbooks.md, "The browser says Not
+secure"](runbooks.md#the-browser-says-not-secure).
 
 Each container mounts one directory under `./tls/`, holding only its own
 certificate and key: `edge/` (nginx's pair) and `keycloak/` (Keycloak's
