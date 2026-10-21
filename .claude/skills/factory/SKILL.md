@@ -8,7 +8,8 @@ description: Run the software factory. Use when the user types /factory <feature
 You are the orchestrator for one job. You run the loop below, spawn every agent,
 and are the only writer of your job's `job.json`. You never write code, specs,
 reviews or decisions yourself. Agents do the work and each writes one file; you
-move the job along and keep `job.json` current.
+move the job along and keep `job.json` current. If you cannot spawn the agents
+in `.claude/agents/`, stop and tell the user.
 
 ## The loop
 
@@ -178,8 +179,8 @@ unless a step says otherwise.
 **Every exit releases the lock.** Once you hold the lock, every path out of
 Merge releases it with `rm -r factory/jobs/.merge-lock` before you set the stage
 and tell the user: merged, merge failed, tests failed, conflict with `main`,
-main checkout busy, `main` kept moving. Remove only the lock you took in this
-Merge; never delete or break another job's lock.
+worktree not clean, main checkout busy, `main` kept moving. Remove only the lock
+you took in this Merge; never delete or break another job's lock.
 
 1. **Take the merge lock.**
    ```bash
@@ -189,14 +190,17 @@ Merge; never delete or break another job's lock.
    as claiming a job number. The leading dot keeps it out of job numbering, and
    `/factory/jobs/` already keeps it out of git. If `mkdir` fails, another merge
    is running: tell the user the job id in `factory/jobs/.merge-lock/holder` and
-   that you are waiting, then try the `mkdir` again every 30 seconds. If you
-   still cannot take `.merge-lock` after 30 minutes, set `stage: "needs-human"`
-   and tell the user which job holds the lock; they run
-   `/factory approve <job-id>` once that merge has finished. You never held the
-   lock, so there is nothing to release. If the holder is plainly dead (no
-   session is merging it, for example its `job.json` already says `merged`),
-   tell the user it is a stale lock for them to remove with
-   `rm -r factory/jobs/.merge-lock`. Never remove it yourself.
+   that you are waiting, then try the `mkdir` again every 30 seconds.
+   - If the holder is plainly dead (no session is merging it: for example it
+     names this job, or its branch `factory/<holder>` no longer exists), tell
+     the user it is a stale lock that they remove with
+     `rm -r factory/jobs/.merge-lock`. Never remove it yourself. Keep trying the
+     `mkdir`, so the merge goes on as soon as they have removed it.
+   - After 30 minutes without the `.merge-lock`, set `stage: "needs-human"` and
+     tell the user which job holds the lock. Once that merge has finished (or
+     they have removed a stale lock), they run `/factory approve` with this
+     job's id, not the holder's. You never held the lock, so there is nothing
+     to release.
 2. **Check the main checkout.** The merge happens there, so it must be clean and
    on `main`: `git status --porcelain -- . ':!factory/backlog.md'` prints
    nothing and `git branch --show-current` prints `main`. `factory/backlog.md`
@@ -204,51 +208,66 @@ Merge; never delete or break another job's lock.
    so a dirty backlog cannot conflict with the merge. If not, release the lock,
    set `stage: "needs-human"` and tell the user the job is approved but the main
    checkout is busy; they run `/factory approve <job-id>` once it is clean.
-3. **Bring the branch up to date.** Merge `main` into the job branch in its
-   worktree, as a normal merge commit. Never rebase or force.
+3. **Bring the branch up to date.** The worktree must be clean
+   (`git -C <worktree> status --porcelain` prints nothing), or the re-test would
+   include edits that never merge; if not, release the lock and go to
+   **Needs human**, saying the worktree has uncommitted changes. Then merge
+   `main` into the job branch in its worktree, as a normal merge commit. Never
+   rebase or force.
    ```bash
    git -C <worktree> merge --no-edit main
    ```
-   - If it conflicts, run `git -C <worktree> merge --abort`, release the lock
-     and go to **Needs human**, saying the branch conflicts with `main` and
-     naming the conflicting files. If it fails any other way, release the lock
-     and go to **Needs human**, quoting what git printed.
+   - If it conflicts, note the conflicting files git lists, then run
+     `git -C <worktree> merge --abort`, release the lock and go to
+     **Needs human**, saying the branch conflicts with `main` and naming those
+     files. The human either sends the job back with
+     `/factory rework <job-id> <note>` (for example "merge main and resolve the
+     conflicts"), or merges `main` in the worktree by hand, resolves, commits
+     and runs the AGENTS.md tests there, then runs `/factory approve <job-id>`:
+     Merge will find the branch up to date and not re-test it.
+   - If it fails any other way, release the lock and go to **Needs human**,
+     quoting what git printed; the human fixes the cause and runs
+     `/factory approve <job-id>`.
    - If it prints `Already up to date.`, the branch already holds the current
      `main` and was tested as it is: skip step 4.
-4. **Re-test the merged result.** `main` has moved, so run the validation
-   commands AGENTS.md gives for build, lint and tests (and `infra` where
-   AGENTS.md says to) in the worktree, with the job id as the run name
-   (`WT_NAME`), and finish with AGENTS.md's `down` step whether they pass or
-   not. Run long steps in the background, wait for them, and read the pytest
-   summary line, not just the exit code. If anything fails, release the lock,
-   go to **Needs human** and quote the failing output; the human can send the
-   job back with `/factory rework <job-id> <note>`. Never merge on a failure.
-5. **Confirm `main` did not move** while the tests ran:
+4. **Re-test the merged result.** `main` has moved, so tell the user you are
+   re-testing against the current `main`, then run the validation commands
+   AGENTS.md gives for build, lint and tests (and `infra` where AGENTS.md says
+   to) in the worktree, with the job id as the run name (`WT_NAME`), and finish
+   with AGENTS.md's `down` step whether they pass or not. Run long steps in the
+   background, wait for them, and read the pytest summary line, not just the
+   exit code. If anything fails, release the lock, go to **Needs human** and
+   quote the failing output. Never merge on a failure. The human either sends
+   the job back with `/factory rework <job-id> <note>`, or fixes the cause and
+   runs the tests themselves before `/factory approve <job-id>`: the branch now
+   holds `main`, so Merge will find it up to date and not re-test it.
+5. **Confirm `main` did not move** while the tests ran. First repeat the step 2
+   check, since the user may have changed the main checkout meanwhile; if it is
+   busy now, take step 2's exit. Then:
    ```bash
    git -C <worktree> merge-base --is-ancestor main HEAD
    ```
    If it fails, `main` moved: go back to step 3. Make at most 3 attempts at
    steps 3 to 5; if `main` has moved again after the third, release the lock and
    go to **Needs human**, saying `main` kept moving.
-6. **Merge.** The tests take minutes, so first repeat the step 2 check; if the
-   main checkout is busy now, take step 2's exit. Then:
+6. **Merge.**
    ```bash
-   git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>"
-   git worktree remove <worktree>
-   git branch -d factory/<job-id>
-   rm -r factory/jobs/.merge-lock
+   git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>" &&
+     git worktree remove <worktree> &&
+     git branch -d factory/<job-id>
    ```
-   Set `stage: "merged"`. If the merge fails, run `git merge --abort` (when a
-   merge is in progress), release the lock, set `stage: "needs-human"` and tell
-   the user why. If removing the worktree fails, the job is still merged:
-   release the lock and tell the user what `git worktree remove` printed. Never
-   push.
+   Then release the lock and set `stage: "merged"`. If the merge fails, run
+   `git merge --abort` (when a merge is in progress), then release the lock, set
+   `stage: "needs-human"` and tell the user why. If removing the worktree fails,
+   the job is still merged: release the lock, set `stage: "merged"` and tell the
+   user what `git worktree remove` printed. Never push.
 
 ### Needs human
 
 Set `stage: "needs-human"`. The branch and its worktree stay for the human to
 inspect. Tell the user which job is waiting, give the worktree path, and quote
-`decision.md` (or the BLOCKED reason from `build.md`).
+why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
+**Merge** gave.
 
 ## /factory next
 
