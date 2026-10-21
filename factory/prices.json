@@ -1,0 +1,7 @@
+{
+  "note": "Blended list-price estimate taken 2026-10-21, US dollars per million tokens, for the model values the agent files set. The Agent result gives one token total, so each figure assumes 4 input tokens per output token at the builder's best known list prices (opus $5 in / $25 out, sonnet $3 in / $15 out), with no cache or plan discount. The owner confirms these numbers before trusting a full price.",
+  "usd_per_mtok": {
+    "opus": 9.0,
+    "sonnet": 5.4
+  }
+}
