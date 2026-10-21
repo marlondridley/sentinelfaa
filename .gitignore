@@ -20,6 +20,7 @@ ENV/
 *.properties
 config/*local*
 config/*secret*
+/factory/jobs/
 
 # ── FAA SWIM / SCDS Jumpstart Kit output ─────────────────────────────────────
 # Raw STDDS messages from the Jumpstart consumer are operational data.
