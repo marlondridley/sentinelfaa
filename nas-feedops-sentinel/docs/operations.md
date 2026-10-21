@@ -17,20 +17,24 @@ stack, `migrate` runs first and every application service waits for it to
 finish successfully.
 
 The `edge` nginx proxy is the only entry point: HTTPS, bound to `127.0.0.1`.
-On first start `python -m src.devcert` creates a local certificate authority
-in `./tls/` (`edge-ca.crt`, kept across restarts) and signs two server
-certificates with it: the edge proxy's (localhost) and Keycloak's (keycloak,
-localhost, 127.0.0.1). Each is re-issued when missing or near expiry. Trust
-`tls/edge-ca.crt` once in the Windows certificate store and renewals stay
-trusted, or replace the pairs with certificates from your own CA.
+On every start `edge-certs` (`python -m src.web_tls`) issues two server
+certificates from the web TLS CA, the name-limited branch of the offline root
+(`instraclustr/certs/web`, from the root ceremony): the edge proxy's
+(localhost, 127.0.0.1) and Keycloak's (keycloak, localhost, 127.0.0.1). Each
+is re-issued when missing, within 30 days of expiry, or from another CA. It
+refuses, and issues nothing, without a sound web TLS CA. Trust the root,
+`instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate store
+and every renewal stays trusted.
 
-Each container mounts one directory under `./tls/`, holding only what it
-needs: `edge/` (nginx's pair), `keycloak/` (Keycloak's pair and the
-authority's certificate), `trust/` (the authority's certificate, for the
-dashboard). Only `edge-certs` sees the authority's key. The mounts are
-directories, never single files: `docker compose up` creates every container
-before `edge-certs` has run, and Docker creates a missing file-mount source
-as an empty directory, which then blocks the file from being written.
+Each container mounts one directory under `./tls/`, holding only its own
+certificate and key: `edge/` (nginx's pair) and `keycloak/` (Keycloak's
+pair). The root's public certificate is mounted read-only from
+`instraclustr/certs/trust` into edge-certs, the edge, Keycloak, the dashboard
+and cloudflared. Only `edge-certs` mounts `instraclustr/certs/web`, which
+holds the web TLS CA's key. The mounts are directories, never single files:
+`docker compose up` creates every container before `edge-certs` has run, and
+Docker creates a missing file-mount source as an empty directory, which then
+blocks the file from being written.
 
 | Service | URL |
 |---|---|
@@ -47,8 +51,8 @@ with Keycloak" sends the browser to the realm's own login page
 (https://localhost:8081, the authorization code flow with PKCE S256). Keycloak
 returns it to `https://localhost:8443/oauth2callback`, and the dashboard
 exchanges the code at `https://keycloak:8443` server to server, verifying
-Keycloak against `tls/edge-ca.crt` (`[auth.keycloak.client_kwargs] verify` in
-`.streamlit/secrets.toml`). Streamlit validates the ID token and keeps the
+Keycloak against the offline root, `/run/tls/root-ca.crt`
+(`[auth.keycloak.client_kwargs] verify` in `.streamlit/secrets.toml`). Streamlit validates the ID token and keeps the
 identity in its signed, HttpOnly cookie, so a sign-in survives page loads and
 new tabs. A sign-in lasts at most the realm's maximum SSO session (10 hours)
 from authentication, and "Sign out" ends the realm session too. The password
@@ -94,8 +98,10 @@ docstring for what each step asserts.
   (`docker logs vault`) names the service behind every request. How it is
   wired, the first-time steps and the threat model:
   [`instraclustr/README.md`](../../instraclustr/README.md#workload-identity).
-* **Certificates.** Vault serves TLS only, and SPIRE signs under an offline,
-  passphrase-protected root: [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md).
+* **Certificates.** Vault serves TLS only, SPIRE signs under an offline,
+  passphrase-protected root, and the edge's and Keycloak's certificates come
+  from the root's name-limited web TLS branch:
+  [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md).
   The launcher checks them on every start and warns 60 days before renewal.
 * **Vault unseal and root.** The unseal key is split into 3 shares, any 2 of
   which unseal: share 1 in `instraclustr/vault-init-data/unseal/`, share 2

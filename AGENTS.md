@@ -23,7 +23,7 @@ Read before you touch an area:
 - An agent, its prompt, tools or model use: the `add-an-agent` skill and `nas-feedops-sentinel/docs/agent-governance.md`. The agent register (`policies/agent-register.yaml`) and the grants in `policies/model-use.yaml` and `policies/tool-use.yaml` must agree with the code.
 - Data going in or on screen: the `real-data-only` skill.
 - Tests and CI: the `ci-like-test-run` skill. `.github/workflows/pyapp-ci.yml` is authoritative; if they disagree, the workflow wins.
-- Operations, certificates, secrets, the live feed: `nas-feedops-sentinel/docs/operations.md` and `docs/runbooks.md`.
+- Operations, certificates, secrets, the live feed: `nas-feedops-sentinel/docs/operations.md` and `docs/runbooks.md`; for certificates also `instraclustr/certs/README.md`.
 
 ## Never
 

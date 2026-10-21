@@ -335,10 +335,12 @@ Fix the file, then restart the service. Policies are cached per process.
 3. The browser comes back to the sign-in screen with no error: the code
    exchange failed on the server. `docker logs nas-dashboard` shows why;
    usually the certificate (`[auth.keycloak.client_kwargs] verify` must be
-   `/run/tls/edge-ca.crt`) or a `client_secret` that no longer matches the
+   `/run/tls/root-ca.crt`) or a `client_secret` that no longer matches the
    realm.
-4. The browser warns about the certificate: trust `tls/edge-ca.crt` once in
-   the Windows certificate store.
+4. The browser warns about the certificate: trust the offline root,
+   `instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate
+   store:
+   `Import-Certificate -FilePath .\instraclustr\certs\trust\root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
 5. `docker ps` shows whether `nas-keycloak` is healthy (its health check runs
    over TLS). `scripts/Collect-Diagnostics.ps1` fetches the discovery
    document from inside the dashboard container, verified the same way.
@@ -348,28 +350,91 @@ Fix the file, then restart the service. Policies are cached per process.
 1. Update `.streamlit/secrets.toml` to match `secrets.toml.example`:
    - `redirect_uri = "https://localhost:8443/oauth2callback"`
    - `server_metadata_url = "https://keycloak:8443/realms/nas-sentinel/.well-known/openid-configuration"`
-   - `[auth.keycloak.client_kwargs]` with `verify = "/run/tls/edge-ca.crt"`
+   - `[auth.keycloak.client_kwargs]` with `verify = "/run/tls/root-ca.crt"`
 2. Bring the live realm's client up to date: `scripts/keycloak-rbac.sh`.
-3. Recreate the services:
-   `docker compose up -d --force-recreate edge-certs keycloak dashboard`
-   - `edge-certs` issues Keycloak's certificate from the existing local
-     authority, so nothing needs trusting again.
+3. Recreate the services, from the repository root, with both env files in
+   the launcher's order; `edge-certs` runs first, in the foreground:
+   ```powershell
+   docker compose -f nas-feedops-sentinel\docker-compose.yml --env-file instraclustr\.env --env-file nas-feedops-sentinel\.env up --no-deps edge-certs
+   docker compose -f nas-feedops-sentinel\docker-compose.yml --env-file instraclustr\.env --env-file nas-feedops-sentinel\.env up -d --no-deps --force-recreate keycloak dashboard
+   ```
+   - `edge-certs` issues Keycloak's certificate from the web TLS branch of the
+     offline root (`instraclustr/certs/README.md`), which the browser and the
+     dashboard already trust, so nothing needs trusting again.
 4. Admin console: https://localhost:8081/admin
 
 ### Certificates
 
-`edge-certs` renews the edge and Keycloak certificates when they are within
-30 days of expiry, on every start. The local authority (`tls/edge-ca.crt`)
-lasts 10 years. To move to your own CA:
-1. replace `tls/edge/edge.crt` / `edge.key` and `tls/keycloak/keycloak.crt` /
-   `keycloak.key` (Keycloak's needs `keycloak` and `localhost` in its names);
-2. put your CA in `tls/edge-ca.crt`; `edge-certs` copies it to
-   `tls/keycloak/` and `tls/trust/`.
+`edge-certs` issues the edge's and Keycloak's certificates from the web TLS
+CA, the name-limited branch of the offline root (`instraclustr/certs/web`),
+on every start. It renews a certificate within 30 days of its expiry, and
+re-issues both when the web TLS CA is renewed. When the web TLS CA is
+missing, expired, not from the root or outside its policy, it refuses,
+issues nothing, and names the ceremony to run.
 
-A `tls/` directory from before the per-container layout (certificates beside
-`edge-ca.crt`, or empty directories named `keycloak.crt` / `keycloak.key`
-that Docker created) is cleared by `edge-certs` on its next run; the
-authority is kept, so nothing needs trusting again.
+Running containers keep the certificates they loaded at start. After any
+renewal (`docker logs nas-edge-certs` says "issued"), recreate edge,
+keycloak, dashboard and, while public access is on, cloudflared. The
+commands are the web TLS pickup in "Every year" in
+[`instraclustr/certs/README.md`](../../instraclustr/certs/README.md).
+
+### Move the edge and Keycloak certificates to the offline root (once)
+
+Do this once, before the first launch of the code that retired the local
+certificate authority (`src/devcert.py`, "NAS FeedOps Sentinel Local CA").
+Until it is done, `pki.ps1 check` exits 2, so the launcher stops, and
+`edge-certs` refuses to issue anything. Containers already running keep
+working. Commands are PowerShell, from the repository root;
+`E:\sentinelfaa-root` stands for the root's folder on its USB drive.
+
+1. **Request.** Run `.\instraclustr\scripts\pki.ps1 request`. This also makes
+   new keys for SPIRE and Vault: `request` always handles every certificate
+   under the root together.
+2. **Sign with the root USB.** Plug in the root USB and run
+   `.\instraclustr\scripts\pki.ps1 sign -RootDir E:\sentinelfaa-root`; it asks
+   for the passphrase. Then unplug the USB.
+3. **Install.** Run `.\instraclustr\scripts\pki.ps1 install`, then
+   `.\instraclustr\scripts\pki.ps1 check`, which exits 0 and lists
+   `OK web/web-ca`. Running services are unaffected. SPIRE's and Vault's
+   renewed certificates are picked up as in "Every year" in
+   [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md), now
+   or at their next restart.
+4. **Trust the root.** Run
+   `Import-Certificate -FilePath .\instraclustr\certs\trust\root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
+5. **Remove the old authority.** List it:
+   ```powershell
+   Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Subject -like '*NAS FeedOps Sentinel Local CA*'
+   ```
+   Remove each entry it lists, by its thumbprint: an entry under
+   `CurrentUser` with `certutil -user -delstore Root <thumbprint>`, one under
+   `LocalMachine` with `certutil -delstore Root <thumbprint>` from an elevated
+   prompt. List again to confirm it is gone. The browser warns on
+   `https://localhost` until step 6 is done.
+6. **Switch over.**
+   - Set `verify = "/run/tls/root-ca.crt"` in
+     `nas-feedops-sentinel\.streamlit\secrets.toml`.
+   - Only while public access is used: in the Cloudflare dashboard, set every
+     tunnel route's TLS → CA Pool to `/etc/cloudflared/trust/root-ca.crt`.
+     Public access is down from this edit until the launch finishes.
+   - Run the launcher as usual, with `-Public` if public access is on. It
+     rebuilds the image, `edge-certs` issues both certificates from the web
+     TLS branch, and compose recreates edge-certs, edge, keycloak, dashboard
+     and cloudflared because their mounts changed.
+7. **Check.**
+   - `docker logs nas-edge-certs` says "issued".
+   - `https://localhost:8443` shows no warning, and its certificate path is
+     `sentinelfaa Web TLS CA` under `sentinelfaa Root CA`.
+   - `docker ps` shows `nas-keycloak` healthy.
+   - Signing in works.
+   - With public access on, `scripts/smoke/05_public_exposure_probe.sh`
+     passes.
+8. **Delete what nothing uses any more.** Delete
+   `nas-feedops-sentinel\tls\edge-ca.key`, `tls\edge-ca.crt`, `tls\trust\`
+   and `tls\keycloak\edge-ca.crt`:
+   ```powershell
+   Remove-Item nas-feedops-sentinel\tls\edge-ca.key, nas-feedops-sentinel\tls\edge-ca.crt, nas-feedops-sentinel\tls\keycloak\edge-ca.crt
+   Remove-Item -Recurse nas-feedops-sentinel\tls\trust
+   ```
 
 ### Send telemetry to a collector
 
