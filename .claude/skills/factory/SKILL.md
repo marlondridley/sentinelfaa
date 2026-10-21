@@ -190,17 +190,20 @@ you took in this Merge; never delete or break another job's lock.
    as claiming a job number. The leading dot keeps it out of job numbering, and
    `/factory/jobs/` already keeps it out of git. If `mkdir` fails, another merge
    is running: tell the user the job id in `factory/jobs/.merge-lock/holder` and
-   that you are waiting, then try the `mkdir` again every 30 seconds.
-   - If the holder is plainly dead (no session is merging it: for example it
-     names this job, or its branch `factory/<holder>` no longer exists), tell
-     the user it is a stale lock that they remove with
-     `rm -r factory/jobs/.merge-lock`. Never remove it yourself. Keep trying the
-     `mkdir`, so the merge goes on as soon as they have removed it.
-   - After 30 minutes without the `.merge-lock`, set `stage: "needs-human"` and
-     tell the user which job holds the lock. Once that merge has finished (or
-     they have removed a stale lock), they run `/factory approve` with this
-     job's id, not the holder's. You never held the lock, so there is nothing
-     to release.
+   that you are waiting, then try the `mkdir` again every 30 seconds. If
+   `holder` is empty or missing, another session has only just taken the lock:
+   keep waiting.
+   - If the holder names this job, an earlier Merge of this job probably died
+     and left a stale lock. Tell the user so: if no other session is merging
+     this job, they remove it with `rm -r factory/jobs/.merge-lock`. Never
+     remove it yourself, and do not call any other holder stale. Keep trying
+     the `mkdir`, so the merge goes on as soon as they have removed it.
+   - If you still cannot take `.merge-lock` after 30 minutes of waiting, set
+     `stage: "needs-human"` and tell the user which job holds the lock. If that
+     job's session is no longer running, the lock is stale and they remove it
+     with `rm -r factory/jobs/.merge-lock`. Once that merge has finished (or the
+     stale lock is gone), they run `/factory approve` with this job's id, not
+     the holder's. You never held the lock, so there is nothing to release.
 2. **Check the main checkout.** The merge happens there, so it must be clean and
    on `main`: `git status --porcelain -- . ':!factory/backlog.md'` prints
    nothing and `git branch --show-current` prints `main`. `factory/backlog.md`
@@ -211,9 +214,10 @@ you took in this Merge; never delete or break another job's lock.
 3. **Bring the branch up to date.** The worktree must be clean
    (`git -C <worktree> status --porcelain` prints nothing), or the re-test would
    include edits that never merge; if not, release the lock and go to
-   **Needs human**, saying the worktree has uncommitted changes. Then merge
-   `main` into the job branch in its worktree, as a normal merge commit. Never
-   rebase or force.
+   **Needs human**, saying the worktree has uncommitted changes; the human
+   commits or removes them, then runs `/factory approve <job-id>`. Otherwise,
+   merge `main` into the job branch in its worktree, as a normal merge commit.
+   Never rebase or force.
    ```bash
    git -C <worktree> merge --no-edit main
    ```
@@ -249,7 +253,8 @@ you took in this Merge; never delete or break another job's lock.
    ```
    If it fails, `main` moved: go back to step 3. Make at most 3 attempts at
    steps 3 to 5; if `main` has moved again after the third, release the lock and
-   go to **Needs human**, saying `main` kept moving.
+   go to **Needs human**, saying `main` kept moving; the human runs
+   `/factory approve <job-id>` again once it is quiet.
 6. **Merge.**
    ```bash
    git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>" &&
@@ -258,9 +263,11 @@ you took in this Merge; never delete or break another job's lock.
    ```
    Then release the lock and set `stage: "merged"`. If the merge fails, run
    `git merge --abort` (when a merge is in progress), then release the lock, set
-   `stage: "needs-human"` and tell the user why. If removing the worktree fails,
-   the job is still merged: release the lock, set `stage: "merged"` and tell the
-   user what `git worktree remove` printed. Never push.
+   `stage: "needs-human"` and tell the user why; once they have fixed the cause
+   they run `/factory approve <job-id>`. If removing the worktree fails, the job
+   is still merged: release the lock, set `stage: "merged"` and tell the user
+   what `git worktree remove` printed, and that `factory/<job-id>` is left to
+   delete with `git branch -d` once the worktree is gone. Never push.
 
 ### Needs human
 
