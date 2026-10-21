@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory approve <job-id>, or /factory rework <job-id> <note>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
+description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory approve <job-id>, /factory rework <job-id> <note>, or /factory paid <job-id> <usd>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
 ---
 
 # Factory
@@ -66,6 +66,7 @@ state that never lands in a commit.
 
 ```
 <repo>/factory/backlog.md                      queue for /factory next
+<repo>/factory/prices.json                     list price per model, for the dashboard's full price (committed)
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
@@ -83,7 +84,13 @@ state that never lands in a commit.
   "branch": "factory/003-rate-limiting",
   "worktree": "/Users/you/code/my-app-factory/003-rate-limiting",
   "stage": "review", "round": 2,
-  "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" } }
+  "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
+  "points": 3, "paid_usd": null, "merged_at": null,
+  "usage": [
+    { "agent": "spec-writer", "round": 0, "model": "opus", "tokens": 61234, "seconds": 212 },
+    { "agent": "builder", "round": 1, "model": "opus", "tokens": 402118, "seconds": 1490 },
+    { "agent": "reviewer-ux", "round": 1, "model": "sonnet", "tokens": null, "seconds": 318 }
+  ] }
 ```
 
 - `stage` is one of `spec`, `build`, `review`, `approve`, `merged`,
@@ -92,7 +99,37 @@ state that never lands in a commit.
 - `reviews` holds the current round only. Each value is `pending`, `PASS` or
   `CHANGES`. Earlier rounds live in their `round-<N>/` folders, which the
   dashboard reads directly.
+- `points` is the job's size in story points, copied from the `Story points: N`
+  line of `spec.md` after the spec step (`null` until then). You never pick one.
+- `paid_usd` is what the human actually paid for the job, in US dollars, set
+  only by `/factory paid`. It stays `null` until they set it.
+- `merged_at` is the UTC time you set `stage: "merged"`, as ISO 8601 with `Z`
+  (`2026-10-21T14:05:00Z`), and `null` until then. The dashboard dates velocity
+  by it.
+- `usage` is the log of agent runs, `[]` at first. Each time an agent run
+  finishes, append one entry:
+  `{ "agent": "<name>", "round": <N>, "model": "<model>", "tokens": <tokens>, "seconds": <seconds> }`.
+  - `agent` is the `subagent_type` (`spec-writer`, `builder`,
+    `reviewer-security`, `reviewer-ux`, `reviewer-ui`, `reviewer-code`,
+    `approver`), and `model` is the `model:` value that agent's file in
+    `.claude/agents/` sets.
+  - `round` is `0` for the spec-writer, the round being built for a builder run
+    (its first run and each resume), the review round for a reviewer, and the
+    job's last round for a rework builder run and for the approver.
+  - `tokens` is the total tokens the Agent result reports for that run, and
+    `seconds` its duration, in whole seconds. If the result does not report a
+    number, write `null`. Never estimate, carry over or invent a figure.
+  - Time per round is the sum of `seconds` over the entries with that `round`;
+    tokens per round likewise. Neither is stored: the dashboard adds them up,
+    and works out the full price from `factory/prices.json` (tokens / 1e6 ×
+    `usd_per_mtok[model]`, the list price with no plan discount). An entry with
+    `null` tokens, or a model missing from `prices.json`, makes the full price
+    read "unknown".
 - Rewrite the whole file on every change. `worktree` is always an absolute path.
+  Read the file's `paid_usd` before each rewrite and keep it, because
+  `/factory paid` may have set it from another session.
+- Jobs from before these fields existed have none of them; the dashboard shows
+  their figures as `-`. Never back-fill them.
 
 ### Prompts
 
@@ -113,7 +150,8 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    another session took the number, pick the next number and try again.
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
-   `round: 0` and all reviews `pending`.
+   `round: 0`, all reviews `pending`, `points`, `paid_usd` and `merged_at`
+   `null`, and `usage: []`.
 2. **Worktree.** Create the branch and its worktree from `main`:
    ```bash
    git worktree add -b factory/<job-id> <worktree> main
@@ -123,14 +161,19 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    the user.
 3. **Spec.** Spawn `spec-writer` with the prompt
    `<paths> Feature: <feature, verbatim>`.
-   Wait for it to finish, then check that `spec.md` exists.
+   Wait for it to finish, append its `usage` entry, then check that `spec.md`
+   exists and has a line `Story points: N`, directly under the title block,
+   with N one of 1, 2, 3, 5, 8, 13. Copy N into `job.json` as `points`. If
+   `spec.md` is missing, or the line is missing or N is not one of those values,
+   stop and tell the user which; never pick a value yourself.
 4. **Build.** Set `stage: "build"`. Spawn `builder` **with the name
    `builder-<job-id>`** and the prompt `<paths> Build round 1. Port: <port>.`
    Wait for it to finish, then go to **Build check**.
 
 ### Build check
 
-Read the first line of `build.md`.
+Every builder run (first run, resume or rework) ends here. Append its `usage`
+entry, then read the first line of `build.md`.
 
 - `STATUS: READY`: start the next review round.
 - `STATUS: BLOCKED`: go to **Needs human**.
@@ -143,9 +186,10 @@ Read the first line of `build.md`.
    gets the prompt `<paths> Review round N.`, plus its port for `reviewer-ux`
    and `reviewer-ui`.
 3. **WAIT FOR ALL.** Each time a reviewer finishes, read the first line of its
-   file (`VERDICT: PASS` or `VERDICT: CHANGES`) and write that verdict to
-   `job.json` straight away, so the dashboard chips fill in as they land. The
-   round is done only when all four `review-*.md` files exist in `round-<N>/`.
+   file (`VERDICT: PASS` or `VERDICT: CHANGES`) and write that verdict and the
+   reviewer's `usage` entry to `job.json` straight away, so the dashboard chips
+   fill in as they land. The round is done only when all four `review-*.md`
+   files exist in `round-<N>/`.
    Never resume the builder mid-round. If a reviewer finishes without writing
    its file, or writes a first line that isn't a verdict, stop and tell the user.
 4. Decide:
@@ -162,7 +206,8 @@ Read the first line of `build.md`.
 ### Approve
 
 Set `stage: "approve"`. Spawn `approver` with the prompt `<paths> Final round: N.`
-When it finishes, read the first line of `decision.md`:
+When it finishes, append its `usage` entry, then read the first line of
+`decision.md`:
 
 - `APPROVE`: go to **Merge**.
 - `ESCALATE`: go to **Needs human**.
@@ -261,11 +306,13 @@ you took in this Merge; never delete or break another job's lock.
      git worktree remove <worktree> &&
      git branch -d factory/<job-id>
    ```
-   Then release the lock and set `stage: "merged"`. If the merge fails, run
+   Then release the lock and set `stage: "merged"` and `merged_at` to the
+   current UTC time (`date -u +%Y-%m-%dT%H:%M:%SZ`). If the merge fails, run
    `git merge --abort` (when a merge is in progress), then release the lock, set
    `stage: "needs-human"` and tell the user why; once they have fixed the cause
    they run `/factory approve <job-id>`. If removing the worktree fails, the job
-   is still merged: release the lock, set `stage: "merged"` and tell the user
+   is still merged: release the lock, set `stage: "merged"` and `merged_at`
+   as above, and tell the user
    what `git worktree remove` printed, and that `factory/<job-id>` is left to
    delete with `git branch -d` once the worktree is gone. Never push.
 
@@ -301,6 +348,22 @@ The job must be in `needs-human`.
    `<paths> Rework: read rework-<k>.md and address it, then update build.md for round N+1. Port: <port>.`
    (`N` is the job's last round.) A rework run gets a fresh `MAX_RESUMES`.
 4. Continue from **Build check**, exactly like a new job.
+
+## /factory paid <job-id> <usd>
+
+Records what the human actually paid for the job: their own figure, for example
+the metered cost on their billing page, or `0` on a flat plan. The factory never
+fetches a bill. It works in any stage, `merged` included, because the bill
+arrives after the job.
+
+1. `factory/jobs/<job-id>/job.json` must exist, and `<usd>` must be a plain
+   number of dollars, 0 or more (`12.40`, `0`). If either is wrong, change
+   nothing and tell the user which.
+2. Read that `job.json`, set `paid_usd` to the number, and rewrite that file.
+   Touch no other job and no other field. This is the one command that may
+   write a job another session runs; that session keeps `paid_usd` when it
+   next rewrites the file (see **job.json**).
+3. Tell the user the job id and the amount recorded.
 
 ## Reporting
 
