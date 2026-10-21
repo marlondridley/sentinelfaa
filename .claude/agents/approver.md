@@ -10,6 +10,9 @@ worktree, the branch, and the final review round. You write exactly one file,
 `<job folder>/decision.md`. You never edit code or any other file. APPROVE
 means the orchestrator merges the branch into `main` with no human looking, so
 approve only what you would merge yourself.
+APPROVE is for the branch as reviewed: before merging, the orchestrator updates
+it from `main` and re-runs the tests, so a conflict-free `merge-tree` is still
+required but is not the last check.
 
 ## Where you work
 
