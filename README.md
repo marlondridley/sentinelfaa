@@ -100,7 +100,7 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 |---|---|---|
 | `instraclustr/` | `postgres`, `pgbouncer` | the database, pooled |
 | | `vault` (+ `vault-unseal` job) | secrets; TLS only; unseal key split 2-of-3; no stored root token; policy as code (Terraform), applied in a root ceremony |
-| | `spire-server`, `spire-agent` | workload identity: each application service gets its own short-lived X.509-SVID, chained to an offline root, and uses it to log in to Vault over mutual TLS |
+| | `spire-server`, `spire-agent` | workload identity (SPIFFE, the open standard for naming a service, issued here by SPIRE): each application service gets its own short-lived X.509-SVID (the certificate that names the service), chained to an offline root, and uses it to log in to Vault over mutual TLS |
 | | `litellm` (+ `litellm-db-init`, `litellm-bootstrap` jobs) | the model gateway; the application holds a scoped, budgeted key |
 | `nas-feedops-sentinel/` | `migrate` | one-shot schema owner job; everything else runs as a restricted role |
 | | `sentinel` | the live SWIM folder watcher and the reconciler |
@@ -108,7 +108,7 @@ The live watcher, a Temporal workflow started through the API, the dashboard's s
 | | `temporal`, `temporal-worker`, `temporal-ui` | ingest and pipeline workflows started through the API |
 | | `dashboard` | the Streamlit operator console |
 | | `keycloak` (+ its own Postgres) | operator identity and realm roles; serves HTTPS only |
-| | `prometheus`, `grafana` | metrics and alert rules, including the GenAI and AGT agent metrics (OTLP export optional) |
+| | `prometheus`, `grafana`, `alertmanager` | metrics and alert rules, including the GenAI and AGT agent metrics (OTLP export optional); Alertmanager sends what fires to Slack once `SLACK_WEBHOOK_URL` is set |
 | | `edge` | nginx: the only published entry point, HTTPS on 127.0.0.1 |
 
 Every port is bound to `127.0.0.1`. How identities, secrets and certificates fit together is in [docs/operations.md](nas-feedops-sentinel/docs/operations.md). To let invited guests use the dashboard from the internet (a Cloudflare tunnel, no port opened, read-only guest accounts), see [docs/public-access.md](nas-feedops-sentinel/docs/public-access.md).
@@ -179,7 +179,7 @@ PROOF PASSED
 
 ## Tests and CI
 
-The suite (about 490 tests at this writing, 18 of them strict xfails that document bugs in the Agent Governance Toolkit) lives in `nas-feedops-sentinel/tests/` and runs against a real Postgres. It refuses to touch any database whose name is not marked disposable; see [nas-feedops-sentinel/README.md](nas-feedops-sentinel/README.md) for how to run it.
+The suite (about 2,000 tests as of 2026-10-22, 18 of them strict xfails that document bugs in the Agent Governance Toolkit) lives in `nas-feedops-sentinel/tests/` and runs against a real Postgres. It refuses to touch any database whose name is not marked disposable; see [nas-feedops-sentinel/README.md](nas-feedops-sentinel/README.md) for how to run it.
 
 [CI](.github/workflows/pyapp-ci.yml) runs on every push and pull request:
 
@@ -239,7 +239,7 @@ Production agentic systems are judged less by model quality than by how they hol
 
 - **RVR encoding.** APDS reports runway visual range as a coded value. The ×100-to-feet scale is corroborated against KBWI weather observations but not confirmed against the non-public APDS interface document; implausible readings are refused rather than stored. `ALERT_LOW_RVR` depends on it.
 - **Transport.** JMS is the only authorized SCDS API, so a JVM (the Jumpstart Kit) is the edge. It writes one durable record per message and stops rather than acknowledge one it could not write; Python reads the folder through a small source interface. That is fine for PCT volumes on one host (a janitor keeps the folder scannable). A broker such as Kafka would be a second implementation of that interface, and is deferred until a second consumer or a second feed (TFMS, TBFM) appears. What the broker does after the JVM halts has not been observed against a real broker here.
-- **Paging.** Prometheus alert rules are defined, but no Alertmanager is configured, so nothing pages anyone.
+- **Paging.** Prometheus alert rules are defined, and Alertmanager posts what fires to a Slack channel once the person who runs the stack sets `SLACK_WEBHOOK_URL`. Without that variable, Alertmanager holds the alerts, shows them at https://localhost:8448 and sends nothing. A Slack message is not a page: there is no on-call schedule, no acknowledgement and no phone, SMS or paging-service escalation, so nobody is contacted who is not already reading the channel.
 - **Decisions.** One approver per action; there is no four-eyes workflow.
 - **Audit integrity.** The audit log is append-only in the database, but it is not hash-chained or signed.
 - **Sign-in.** Operators sign in on Keycloak's own page (OIDC, authorization code with PKCE), so a second factor or a federated identity provider is a realm setting, not a code change. The edge's and Keycloak's certificates come from a name-limited branch of the offline root, valid only for `localhost`, `keycloak` and `127.0.0.1`; its limits, such as no revocation, are in [instraclustr/certs/README.md](instraclustr/certs/README.md).
@@ -268,7 +268,7 @@ The goal was not to prove that an LLM can summarize aviation data. The goal was 
 
 ## Technical Outcomes
 
-> Built **PCT TAIS FeedOps Sentinel**, a Python system that monitors the trustworthiness of live FAA SWIM / STDDS data (TAIS, TDES, APDS, SMES) for PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit with single-consumer file claims and idempotent event identities; Pydantic-validated normalization; deterministic alert and feed-health rules; FAA data-handling rules (blockAtFAA withholding, beacon codes released only for active flight plans); a four-specialist investigation workflow whose claims must cite evidence and whose records are sealed; a human-in-the-loop gate with Keycloak role-based authorization (HTTPS only) and a database-enforced append-only audit log; Microsoft Agent Governance Toolkit policies over every model call and every agent tool call, with agents barred from deciding; OpenTelemetry GenAI telemetry; an evaluation layer and readiness gate that measure the AI from the record rather than from its own account; and a Streamlit operator console. Designed around Latency, Cost, Failure and Evaluation constraints, with every model call budgeted, redacted and routed through a LiteLLM gateway under a scoped key, and secrets held in Vault behind per-service AppRoles. Backed by a test suite of about 490 tests and a one-command end-to-end proof, run in CI alongside a dependency CVE audit and a blocking container image scan.
+> Built **PCT TAIS FeedOps Sentinel**, a Python system that monitors the trustworthiness of live FAA SWIM / STDDS data (TAIS, TDES, APDS, SMES) for PCT TRACON (KDCA, KIAD, KBWI, KADW). Implemented live broker ingest through the SCDS Jumpstart Kit with single-consumer file claims and idempotent event identities; Pydantic-validated normalization; deterministic alert and feed-health rules; FAA data-handling rules (blockAtFAA withholding, beacon codes released only for active flight plans); a four-specialist investigation workflow whose claims must cite evidence and whose records are sealed; a human-in-the-loop gate with Keycloak role-based authorization (HTTPS only) and a database-enforced append-only audit log; Microsoft Agent Governance Toolkit policies over every model call and every agent tool call, with agents barred from deciding; OpenTelemetry GenAI telemetry; an evaluation layer and readiness gate that measure the AI from the record rather than from its own account; and a Streamlit operator console. Designed around Latency, Cost, Failure and Evaluation constraints, with every model call budgeted, redacted and routed through a LiteLLM gateway under a scoped key, and secrets held in Vault, which each service logs in to over mutual TLS with its own short-lived SPIFFE X.509-SVID issued by SPIRE. Backed by a test suite of about 2,000 tests and a one-command end-to-end proof, run in CI alongside a dependency CVE audit and a blocking container image scan.
 
 ---
 
@@ -279,7 +279,7 @@ launch_nas_sentinel.ps1   one-command local launcher (Windows / PowerShell)
 instraclustr/             infrastructure: Postgres, PgBouncer, Vault, LiteLLM
 nas-feedops-sentinel/     the application
   src/                    ingest, pipeline, alert rules, gate, investigation, storage, API, Temporal
-  dashboard/              the Streamlit console: the Dashboard and six pages, including Agent Evaluation
+  dashboard/              the Streamlit console: seven pages, from the Dashboard to Agent Evaluation
   policies/               AGT model-use and tool-use policies; readiness objectives and gate limits
   tests/                  the pytest suite, with real SWIM captures in fixtures/swim_kit/
   scripts/                end-to-end proof, Keycloak setup, diagnostics
