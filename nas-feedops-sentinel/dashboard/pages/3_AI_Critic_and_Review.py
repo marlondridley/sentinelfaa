@@ -19,8 +19,13 @@ never readings, and its three numbers are its own rows (src/review_queue.py):
   Monitoring              answered "keep watching": out of the queue, still
                           open, still decidable from its detail
 
-A tile opens the rows it counts (?show=awaiting|escalate|monitoring). A
-review's full detail -- investigation, evaluation, ticket, the readings it
+A tile opens the rows it counts (?show=awaiting|escalate|monitoring). The
+address names the open list: a link arrives on the list it names, whatever
+this session chose before, and the Awaiting and Monitoring pills write their
+list back to ?show=, so a refresh or a copied link shows the same one. (Back
+between two pill choices is the exception: Streamlit reruns with the address
+it last wrote, so the list stays as it was until a reload.)
+A review's full detail -- investigation, evaluation, ticket, the readings it
 covers -- opens in a drawer (?review=<action id> opens one by link; a
 decided one opens read-only, as the record of who decided and why). Reject
 and Continue monitoring can also be applied to selected rows at once; each
@@ -284,6 +289,13 @@ AWAITING, MONITORING = "awaiting", "monitoring"
 _show = str(st.query_params.get("show") or "").lower()
 _SHOW = "SHOW ↓"
 
+
+def _choose_list() -> None:
+    """A pill writes its list into the address. Clicking the highlighted one clears the pill, not the list."""
+    if st.session_state["q_show"]:
+        st.query_params["show"] = st.session_state["q_show"]
+
+
 theme.kpi_row(
     [
         theme.kpi("Awaiting decision", f"{len(_awaiting):,}", tone="bad" if _awaiting else "ok",
@@ -323,10 +335,14 @@ if not _reviews:
     )
 else:
     _labels = {AWAITING: f"Awaiting decision ({len(_awaiting)})", MONITORING: f"Monitoring ({len(_monitored)})"}
-    _view_name = st.segmented_control(
-        "Show", list(_labels), format_func=_labels.get, key="q_show", label_visibility="collapsed",
-        default=MONITORING if _show == MONITORING or (not _awaiting and _show != AWAITING) else AWAITING,
-    ) or AWAITING
+    # The address names the list on every run, whatever pill this session held: a
+    # held pill used to beat a link's ?show=, so the Monitoring tile could open the
+    # empty Awaiting list. With no ?show=, the queue if anything awaits.
+    _view_name = (MONITORING if _show == MONITORING or (not _awaiting and _show not in (AWAITING, "escalate"))
+                  else AWAITING)
+    st.session_state["q_show"] = _view_name
+    st.segmented_control("Show", list(_labels), format_func=_labels.get, key="q_show",
+                         label_visibility="collapsed", on_change=_choose_list)
     _shown = _monitored if _view_name == MONITORING else _awaiting
 
     if not _shown:
