@@ -128,3 +128,48 @@ def test_the_key_material_script_covers_the_files_the_review_named():
     for path in ("nas-feedops-sentinel\\tls", "instraclustr\\vault-init-data", "instraclustr\\certs",
                  "instraclustr\\.env", "nas-feedops-sentinel\\.env", "secrets.toml", "instraclustr\\terraform"):
         assert path in script
+
+
+# ── the browser trust check ───────────────────────────────────────────────────
+# Test-BrowserTrust.ps1 runs on the operator's PC and must change nothing there: trusting the offline root is the
+# person's own step (docs/runbooks.md, "The browser says Not secure"). PowerShell does not run here, so the script is
+# checked by reading it.
+
+BROWSER_TRUST = APP / "scripts" / "Test-BrowserTrust.ps1"
+
+# Comments, here-strings, single-quoted strings ('' is a quote) and double-quoted strings (` escapes, "" is a quote),
+# matched from the left so that a quote inside one of them does not start another.
+POWERSHELL_TEXT = re.compile(r"""<#.*?#>|#[^\n]*|@'\n.*?\n'@|@"\n.*?\n"@|'(?:[^']|'')*'|"(?:[^"`]|`.|"")*\"""", re.S)
+# Writes a certificate store, the registry or a file, or runs text as code.
+CHANGES_THE_MACHINE = re.compile(
+    r"Import-PfxCertificate|Export-Certificate|certutil|X509Store|Registry|HK(?:LM|CU|EY_)|\breg(?:\.exe)?\s|"
+    r"(?:Set|New|Remove|Move|Copy|Rename|Clear)-Item|Set-Content|Add-Content|Out-File|"
+    r"Invoke-Expression|\biex\b|Start-Process|ScriptBlock", re.IGNORECASE)
+SECRET_PATHS = re.compile(r"\.(?:key|pfx|p12)\b|\.env\b|\btls[\\/]|certs[\\/](?:spire|vault|web)\b", re.IGNORECASE)
+
+
+def _powershell_code(script: str) -> tuple[str, str]:
+    """(code, what runs): the script without comments, and that again with every single-quoted string emptied.
+
+    A single-quoted string is text: unlike a double-quoted string ("$(...)" runs) or a here-string (the C# source the
+    script compiles), nothing in it can run.
+    """
+    def code(match: re.Match) -> str:
+        return "" if match.group().startswith("#") or match.group().startswith("<#") else match.group()
+
+    def runs(match: re.Match) -> str:
+        return "''" if match.group().startswith("'") else code(match)
+
+    return POWERSHELL_TEXT.sub(code, script), POWERSHELL_TEXT.sub(runs, script)
+
+
+@needs_app
+def test_the_browser_trust_check_changes_nothing_and_names_no_secret():
+    script = BROWSER_TRUST.read_text(encoding="utf-8")
+    code, runs = _powershell_code(script)
+
+    assert script.isascii(), "Windows PowerShell 5.1 reads a UTF-8 script without a byte order mark as ANSI"
+    assert not CHANGES_THE_MACHINE.findall(code), "no command that writes a certificate store, the registry or a file"
+    assert "Import-Certificate -FilePath" in code, "it prints the command for the person at the PC"
+    assert "import-certificate" not in runs.lower(), "only as text it prints (a single-quoted string), never run"
+    assert not SECRET_PATHS.findall(script), "it never names a private key, .env, tls\\ or certs\\{spire,vault,web}"

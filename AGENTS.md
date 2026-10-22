@@ -30,6 +30,7 @@ Read before you touch an area:
 - Touch the live stack: no `launch_nas_sentinel.ps1`, no `docker compose up/down/restart` on the repository's compose files, no writes to a running container, no starting Docker Desktop (starting it restarts the live stack and its public tunnel; ask the human).
 - Load synthetic, demo or sample data anywhere. Only real FAA SWIM data goes in: replayed captures from `tests/fixtures/` or the live feed. There is no synthetic mode.
 - Read, print, copy or commit secrets: `.env`, `.streamlit/secrets.toml`, keys, certificates, `tls/`, `ceremony/`, Vault output. The test credentials in `pyapp-ci.yml` are throwaway and fine to use.
+- Change the machine's certificate trust (the Windows certificate store, browser trust settings, `Import-Certificate`, `certutil`, group policy), or pass a flag that skips certificate checks. Trusting the offline root on a PC is a one-time step the human does, in `nas-feedops-sentinel/docs/runbooks.md`, "The browser says Not secure".
 - Push, force-push, open a pull request, or touch a remote. The factory merges locally and stops.
 - Open or edit `capgemini-*.md`, `BUILD_PROMPT.md`, `RAG_System/`, `demo-briefing/` or `llm-wiki/`. They are the owner's, not part of the product.
 - Call a model provider directly. Every model call goes through `src/llm_client.py` to the LiteLLM proxy (`ruff` rule TID251 enforces it).

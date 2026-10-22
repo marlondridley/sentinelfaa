@@ -15,7 +15,9 @@ throwaway root, and checks what must hold:
     keycloak and 127.0.0.1 only, and no spiffe:// identity: the edge's and
     Keycloak's certificates from nas-feedops-sentinel/src/web_tls.py verify
     against the root alone, and anything else minted with its key is
-    refused -- checked with real TLS handshakes;
+    refused -- checked with real TLS handshakes, and the edge's and
+    Keycloak's certificates also with cryptography's strict RFC 5280
+    verifier;
   * `sign` applies the policy, never what a CSR asks for;
   * `install` and `check` refuse certificates from another root, for another
     key, or outside the policy, and `check` warns two months ahead.
@@ -417,6 +419,30 @@ def test_the_issuers_certificates_verify_against_the_root_alone(ceremony, tmp_pa
         server = _server((tls / f"{leaf}.crt", tls / f"{leaf}.key"))
         for name in names:
             _handshake(_client(certs), server, name)
+
+
+@needs_app
+def test_a_strict_verifier_holding_only_the_root_accepts_the_issuers_certificates_for_their_names_only(
+        ceremony, tmp_path):
+    """A second verifier, besides OpenSSL: cryptography's RFC 5280 path builder, given each file edge-certs writes
+    (the server certificate and the web TLS CA served with it) and trusting the root alone."""
+    _, certs = ceremony
+    tls = tmp_path / "tls"
+    _web_tls().ensure_certificates(certs / "web", certs / "trust", tls)
+    root = _cert(certs / "trust" / "root-ca.crt")
+    localhost, keycloak = x509.DNSName("localhost"), x509.DNSName("keycloak")
+    loopback = x509.IPAddress(ipaddress.ip_address("127.0.0.1"))
+
+    # The name each refuses is one the web TLS CA could issue, so the refusal is the certificate's own list.
+    for served, names, unlisted in (("edge/edge.crt", (localhost, loopback), keycloak),
+                                    ("keycloak/keycloak.crt", (keycloak, localhost, loopback),
+                                     x509.DNSName("a.localhost"))):
+        leaf, web_ca = x509.load_pem_x509_certificates((tls / served).read_bytes())
+        for name in names:
+            verifier = PolicyBuilder().store(Store([root])).build_server_verifier(name)
+            assert verifier.verify(leaf, [web_ca]) == [leaf, web_ca, root]
+        with pytest.raises(VerificationError, match="no matching subjectAltName"):
+            PolicyBuilder().store(Store([root])).build_server_verifier(unlisted).verify(leaf, [web_ca])
 
 
 def test_the_web_branch_cannot_mint_a_certificate_for_any_other_name(ceremony, tmp_path):

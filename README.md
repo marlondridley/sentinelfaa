@@ -125,11 +125,12 @@ Requires Windows with Docker Desktop and PowerShell. The live feed also needs Ja
    .\launch_nas_sentinel.ps1                # infrastructure, then the application
    .\launch_nas_sentinel.ps1 -WithLiveFeed  # also start the Jumpstart Kit
    ```
-3. Create an operator (granted `watch_officer` unless `APP_ROLES` says otherwise):
+3. Trust the offline root, `instraclustr\certs\trust\root-ca.crt`, once on this PC, so the browser accepts the stack's certificates. The command, and a read-only check that says what is wrong and who acts (`.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1`), are in [the runbook, "The browser says Not secure"](nas-feedops-sentinel/docs/runbooks.md#the-browser-says-not-secure).
+4. Create an operator (granted `watch_officer` unless `APP_ROLES` says otherwise). `Setup-Keycloak.ps1` refuses to start Keycloak until step 3 is done:
    ```powershell
    .\nas-feedops-sentinel\scripts\Setup-Keycloak.ps1
    ```
-4. Trust the offline root, `instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate store, then sign in:
+5. Sign in:
 
 | URL | What |
 |---|---|

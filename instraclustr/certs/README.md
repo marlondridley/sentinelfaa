@@ -37,7 +37,7 @@ What the web TLS branch does not do:
 
 - **There is no revocation.** A copied `web-ca.key` can issue certificates for those names until its certificate expires, at most a year later.
 - **Trusting the root in Windows trusts everything it signs.** The SPIRE branch carries no name a browser accepts, but Vault's server certificate names `localhost` and `127.0.0.1`.
-- **The constraints are proven with OpenSSL handshakes only.** Other verifiers are expected to enforce RFC 5280 name constraints on an intermediate: Windows and browsers, Go in cloudflared, and Java in Keycloak's health check and kcadm. Nothing here tests them.
+- **The constraints are proven with OpenSSL handshakes only.** Other verifiers are expected to enforce RFC 5280 name constraints on an intermediate: Windows and browsers, Go in cloudflared, and Java in Keycloak's health check and kcadm. The suite runs none of them (Windows and Chrome included), so it does not test them. It does also check the real edge and Keycloak certificates (what `edge-certs` writes) with a second, strict verifier, the RFC 5280 path builder in Python's `cryptography`: trusting the root alone, it accepts each certificate for the names it lists and refuses any other. On the operator's PC, `nas-feedops-sentinel/scripts/Test-BrowserTrust.ps1` shows Windows' own verdict on the certificates the stack serves ([runbooks.md, "The browser says Not secure"](../../nas-feedops-sentinel/docs/runbooks.md#the-browser-says-not-secure)).
 
 ## Custody
 

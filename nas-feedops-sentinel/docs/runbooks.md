@@ -337,13 +337,90 @@ Fix the file, then restart the service. Policies are cached per process.
    usually the certificate (`[auth.keycloak.client_kwargs] verify` must be
    `/run/tls/root-ca.crt`) or a `client_secret` that no longer matches the
    realm.
-4. The browser warns about the certificate: trust the offline root,
-   `instraclustr\certs\trust\root-ca.crt`, once in the Windows certificate
-   store:
-   `Import-Certificate -FilePath .\instraclustr\certs\trust\root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
+4. The browser warns about the certificate ("Not secure"): see "The browser
+   says Not secure".
 5. `docker ps` shows whether `nas-keycloak` is healthy (its health check runs
    over TLS). `scripts/Collect-Diagnostics.ps1` fetches the discovery
    document from inside the dashboard container, verified the same way.
+
+### The browser says Not secure
+
+Chrome shows "Not secure", or a full-page warning, when it cannot verify the
+certificate of the dashboard (`https://localhost:8443`) or of Keycloak's
+sign-in page (`https://localhost:8081`). Both certificates chain to the
+offline root, `instraclustr\certs\trust\root-ca.crt`, and Chrome accepts them
+only if that root is in Windows' trust store: the list of certificate
+authorities Windows trusts ("Trusted Root Certification Authorities").
+
+1. **Run the check.** In PowerShell, from the repository root:
+   `.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1`. It changes
+   nothing. It prints the root's subject and thumbprint and whether Windows
+   trusts it. Then, for 8443 and 8081, it prints who issued the certificate,
+   its end date, the names it lists and Windows' verdict, and ends with one
+   of the verdicts below. Windows' verdict stands in for Chrome's: Chrome
+   uses its own verifier, on the same trusted roots. The check exits 0 when
+   every address is all clear, 1 when one has a problem, and 2 when it could
+   not run.
+2. **Do what the verdict says.** Each one names who acts: the person at this
+   PC, or whoever runs the stack.
+   - **Nothing answered**: not a certificate problem; the stack may be down.
+     Whoever runs the stack checks `docker ps` and starts the stack.
+   - **Does not come from the offline root**: the stack is serving an old
+     certificate, for example one from the retired "NAS FeedOps Sentinel
+     Local CA". Whoever runs the stack issues the current certificates and
+     recreates the containers. The first time after the move to the offline
+     root, that is step 5 of "Move the edge and Keycloak certificates to the
+     offline root (once)"; after that, the web TLS pickup in "Certificates".
+     Trusting another authority does not fix this.
+   - **Windows does not trust that root**: the certificate comes from the
+     offline root, but the root is not in the trust store. Only the person
+     at this PC can fix this: step 3.
+   - **Expired**, or **not valid until** a later date: the person at this PC
+     first checks the PC's date, time and time zone. If they are right, whoever
+     runs the stack renews: `docker logs nas-edge-certs` says whether
+     `edge-certs` issued new certificates (then the pickup in
+     "Certificates"), and `.\instraclustr\scripts\pki.ps1 check` says
+     whether the web TLS CA itself is due.
+   - **Does not list localhost**: the port serves a certificate made for
+     another name. Whoever runs the stack issues the current certificates
+     and recreates the containers, as for an old certificate.
+   - **Windows does not accept the certificate**, with a status name such as
+     `HasNotPermittedNameConstraint`: none of the cases above. Whoever runs
+     the stack runs `.\instraclustr\scripts\pki.ps1 check` and keeps the
+     status name. A fault in the certificates themselves is a human
+     decision, not a quick fix.
+   - **All clear**: Windows trusts the certificate. If Chrome still warns,
+     the person at this PC does step 4, then step 5.
+3. **Trust the root, once.** Only the person at this PC does this; an agent
+   never runs it. In PowerShell, from the repository root:
+   ```powershell
+   Import-Certificate -FilePath .\instraclustr\certs\trust\root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
+   ```
+   It needs no administrator rights. Windows asks for a confirmation naming
+   `sentinelfaa Root CA` and shows its thumbprint, which must be the one the
+   check printed. To compare it with the root on the offline USB, run the
+   check with `-RootFile E:\sentinelfaa-root\root-ca.crt` (the root's folder
+   on the USB): the two thumbprints must be the same. One import covers
+   `https://localhost:8443`, `https://localhost:8081`, every 844x port and
+   Incognito windows.
+4. **Reopen Chrome.** Close every Chrome window, Incognito too, open the
+   address again, and run the check again.
+5. **If Chrome still warns**, read the error code under the warning's
+   headline and pass it on to whoever runs the stack:
+   - `NET::ERR_CERT_AUTHORITY_INVALID`: the root is not trusted, or the
+     stack serves an old certificate. The check's verdict says which.
+   - `NET::ERR_CERT_COMMON_NAME_INVALID`: the certificate does not list the
+     name in the address bar.
+   - `NET::ERR_CERT_DATE_INVALID`: a certificate expired or is not valid
+     yet, or the PC's clock is wrong.
+   - `NET::ERR_CERT_NAME_CONSTRAINT_VIOLATION`: a certificate asks for a
+     name its authority may not issue.
+
+   If the check says all clear and Chrome still warns, Chrome's verifier
+   disagrees with Windows'. Changing a certificate is then a human decision.
+
+Firefox keeps its own list of trusted authorities, so neither the import nor
+the check covers it.
 
 ### Upgrade from HTTP Keycloak
 
@@ -419,9 +496,9 @@ not been rehearsed.
    renewed certificates are picked up as in "Every year" in
    [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md), now
    or at their next restart.
-4. **Trust the root.** Run
-   `Import-Certificate -FilePath .\instraclustr\certs\trust\root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
-   Windows then trusts everything the root signs; the limits are in
+4. **Trust the root.** The person at this PC does it once: step 3 of "The
+   browser says Not secure". Windows then trusts everything the root signs;
+   the limits are in
    [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md). The
    old authority stays trusted for now.
 5. **Switch over.** Do this in one sitting, because sign-in and public access
@@ -445,6 +522,9 @@ not been rehearsed.
      again (`.agents/skills/stack-bring-up/SKILL.md` has the full steps).
 6. **Check.**
    - `docker logs nas-edge-certs` says "issued".
+   - `.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1` exits 0: Windows
+     trusts the certificates on 8443 and 8081 ("The browser says Not
+     secure").
    - `https://localhost:8443` shows no warning, and its certificate path is
      `sentinelfaa Web TLS CA` under `sentinelfaa Root CA`.
    - `docker ps` shows `nas-keycloak` healthy.
