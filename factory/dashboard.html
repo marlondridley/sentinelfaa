@@ -438,12 +438,19 @@ function priceText(cost, v) {
   return v === null ? 'unknown' : usd(v)
 }
 
+// Level of effort (LOE): minutes per 1,000 tokens times 100, (seconds / 60) / tokens × 100,000; "-" when either is unknown or zero.
+function loeText(s) {
+  const ok = (v) => Number.isFinite(v) && v !== 0
+  return ok(s.tokens) && ok(s.seconds) ? (s.seconds / 60 / s.tokens * 100000).toFixed(1) : '-'
+}
+
 function figures(job, cost) {
   const t = cost.total
   const parts = [
     `points ${POINTS.includes(job.points) ? job.points : '-'}`,
     `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
     `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
+    `LOE ${cost.recorded ? loeText(t) : '-'}`,
     `full price ${priceText(cost, t.usd)}`,
     `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
   ]
@@ -619,8 +626,8 @@ function costTable(cost) {
   if (!cost.recorded) return '<p class="note">No usage recorded for this job.</p>'
   const cell = (v, fmt) => (v === null ? '-' : fmt(v))
   const row = (label, s) => `<tr><td>${esc(label)}</td><td>${cell(s.tokens, tokensText)}</td>` +
-    `<td>${cell(s.seconds, duration)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
-  return '<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>Full price</th></tr>' +
+    `<td>${cell(s.seconds, duration)}</td><td>${loeText(s)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
+  return '<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>LOE</th><th>Full price</th></tr>' +
     cost.rounds.map(([n, s]) => row(n === 0 ? '0 (spec)' : String(n), s)).join('') +
     row('Total', cost.total) + '</table>'
 }
