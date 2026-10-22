@@ -130,6 +130,14 @@
     font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.6;
     overflow-wrap: anywhere;
   }
+  .approve { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  .approve button {
+    flex: none; cursor: pointer; font-size: 12px; font-weight: 600; padding: 3px 10px;
+    border-radius: 6px; border: 1px solid var(--human); background: none; color: var(--human);
+  }
+  .approve button:hover { background: color-mix(in srgb, var(--human) 14%, transparent); }
+  .approve button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .approve-msg { font-size: 11px; line-height: 1.4; color: var(--muted); }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -465,9 +473,10 @@ function card(job, past, cost) {
   const rows = past.map((v, i) => chips(i + 1, v, false))
   if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
   const [num, ...slug] = job.id.split('-')
+  // A div, not a button, so the Approve button can sit inside it; the keydown listener gives it Enter and Space.
   return `
-    <button class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
-            data-job="${esc(job.id)}">
+    <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
+         role="button" tabindex="0" data-job="${esc(job.id)}">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
         <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
@@ -477,8 +486,26 @@ function card(job, past, cost) {
       <div class="branch">${esc(job.branch)}</div>
       ${figures(job, cost)}
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
-      ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>` : ''}
-    </button>`
+      ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>
+      <div class="approve">
+        <button type="button" data-approve="${esc(job.id)}">Approve</button>
+        <span class="approve-msg" role="status">${APPROVE_BEFORE}</span>
+      </div>` : ''}
+    </div>`
+}
+
+// The page only reads job files, so Approve cannot merge: it copies the command for a factory session.
+const APPROVE_BEFORE = 'Copies the approve command. Paste it into a factory session; this page cannot merge.'
+
+async function copyApprove(el) {
+  const msg = el.parentElement.querySelector('.approve-msg')
+  try {
+    // navigator.clipboard is undefined outside a secure context; reading writeText off it throws into the catch.
+    await navigator.clipboard.writeText(`/factory approve ${el.dataset.approve}`)
+    msg.textContent = 'Copied. Paste into a factory session to approve.'
+  } catch {
+    msg.textContent = 'Could not copy. Select the /factory approve line above and copy it by hand.'
+  }
 }
 
 async function render() {
@@ -657,6 +684,8 @@ function closeDrawer() {
 }
 
 document.addEventListener('click', (e) => {
+  const approveEl = e.target.closest('[data-approve]')
+  if (approveEl) return copyApprove(approveEl)
   const cardEl = e.target.closest('[data-job]')
   if (cardEl) return openDrawer(cardEl.dataset.job)
   const fileEl = e.target.closest('[data-file]')
@@ -668,7 +697,14 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.closest('[data-close]')) closeDrawer()
 })
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer() })
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') return closeDrawer()
+  // Only when the card itself has focus; Enter on the Approve button inside it is that button's own click.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job]')) {
+    e.preventDefault() // Space would otherwise scroll the page
+    openDrawer(e.target.dataset.job)
+  }
+})
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 
