@@ -17,6 +17,7 @@ gets a new record that supersedes the old one.
 | [0005](0005-single-model-provider-behind-a-gateway.md) | One model (Claude Haiku) behind a LiteLLM gateway, no fallback | Accepted |
 | [0006](0006-verification-from-independent-evidence.md) | Agents never grade themselves; quality comes from independent evidence | Accepted |
 | [0007](0007-structured-retrieval-not-vector-search.md) | Agents read by keyed query; no vector search or reranking | Accepted |
+| [0008](0008-custom-only-where-nothing-fits.md) | Custom code is the SWIM layer, the human gate and the AI evaluation; the rest is off the shelf | Proposed |
 
 Related: [agent-governance.md](../agent-governance.md) (how each boundary is
 enforced and tested), [framework-mapping.md](../framework-mapping.md) (NIST AI

@@ -369,7 +369,7 @@ authorities Windows trusts ("Trusted Root Certification Authorities").
      certificate, for example one from the retired "NAS FeedOps Sentinel
      Local CA". Whoever runs the stack issues the current certificates and
      recreates the containers. The first time after the move to the offline
-     root, that is step 6 of "Move the edge and Keycloak certificates to the
+     root, that is step 5 of "Move the edge and Keycloak certificates to the
      offline root (once)"; after that, the web TLS pickup in "Certificates".
      Trusting another authority does not fix this.
    - **Windows does not trust that root**: the certificate comes from the
@@ -457,12 +457,32 @@ commands are the web TLS pickup in "Every year" in
 
 ### Move the edge and Keycloak certificates to the offline root (once)
 
-Do this once, before the first launch of the code that retired the local
-certificate authority (`src/devcert.py`, "NAS FeedOps Sentinel Local CA").
-Until it is done, `pki.ps1 check` exits 2, so the launcher stops, and
-`edge-certs` refuses to issue anything. Containers already running keep
-working. Commands are PowerShell, from the repository root;
-`E:\sentinelfaa-root` stands for the root's folder on its USB drive.
+Do this once, before you next launch the stack. The code that retired the local
+certificate authority (`src/devcert.py`, "NAS FeedOps Sentinel Local CA") is
+merged, but nothing on this machine has changed yet. Commands are PowerShell,
+from the repository root; `E:\sentinelfaa-root` stands for the root's folder on
+its USB drive.
+
+**Where you are now.** The containers that are running keep running, on the old
+build and the old certificates, until you launch. The next
+`.\launch_nas_sentinel.ps1` stops at its step 1b ("certificates under the
+offline root ... missing or invalid") before it starts or stops anything,
+because `pki.ps1 check` exits 2 until step 3 below is done, and `edge-certs`
+would refuse to issue anything without it. To see it, run
+`.\instraclustr\scripts\pki.ps1 check`: it lists `BROKEN web/web-ca` and exits 2.
+
+**You need** the root USB and its passphrase, Docker Desktop running (`request`,
+`install` and `check` run in a throwaway container), and about 15 minutes. If
+the USB or the passphrase is lost, stop and read "If something is lost" in
+[`instraclustr/certs/README.md`](../../instraclustr/certs/README.md).
+
+**Going back.** Until you do steps 7 and 8, you can return to the old build:
+check out the commit before the merge (`a102a8c`), put
+`verify = "/run/tls/edge-ca.crt"` back in `secrets.toml`, put each Cloudflare
+route's CA Pool back to the old path, and launch. That works only while Windows
+still trusts the old authority and its files are still in
+`nas-feedops-sentinel\tls\`, which is why removing them is last. This path has
+not been rehearsed.
 
 1. **Request.** Run `.\instraclustr\scripts\pki.ps1 request`. This also makes
    new keys for SPIRE and Vault: `request` always handles every certificate
@@ -477,27 +497,30 @@ working. Commands are PowerShell, from the repository root;
    [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md), now
    or at their next restart.
 4. **Trust the root.** The person at this PC does it once: step 3 of "The
-   browser says Not secure".
-5. **Remove the old authority.** List it:
-   ```powershell
-   Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Subject -like '*NAS FeedOps Sentinel Local CA*'
-   ```
-   Remove each entry it lists, by its thumbprint: an entry under
-   `CurrentUser` with `certutil -user -delstore Root <thumbprint>`, one under
-   `LocalMachine` with `certutil -delstore Root <thumbprint>` from an elevated
-   prompt. List again to confirm it is gone. The browser warns on
-   `https://localhost` until step 6 is done.
-6. **Switch over.**
+   browser says Not secure". Windows then trusts everything the root signs;
+   the limits are in
+   [`instraclustr/certs/README.md`](../../instraclustr/certs/README.md). The
+   old authority stays trusted for now.
+5. **Switch over.** Do this in one sitting, because sign-in and public access
+   are down from the first edit until the launch finishes (the running dashboard
+   still has the old certificate directory mounted, so it cannot find
+   `root-ca.crt`).
+   - Tag the running image so there is something to return to:
+     `docker tag nas-feedops-sentinel:latest nas-feedops-sentinel:rollback-<yyyy-mm-dd>`.
    - Set `verify = "/run/tls/root-ca.crt"` in
      `nas-feedops-sentinel\.streamlit\secrets.toml`.
    - Only while public access is used: in the Cloudflare dashboard, set every
      tunnel route's TLS → CA Pool to `/etc/cloudflared/trust/root-ca.crt`.
-     Public access is down from this edit until the launch finishes.
    - Run the launcher as usual, with `-Public` if public access is on. It
      rebuilds the image, `edge-certs` issues both certificates from the web
      TLS branch, and compose recreates edge-certs, edge, keycloak, dashboard
      and cloudflared because their mounts changed.
-7. **Check.**
+   - If the launcher then stops with "spire-agent is not running", Docker was
+     restarted while the stack was down. That is a separate, known recovery:
+     run `.\instraclustr\scripts\spire-first-boot.ps1`, wait for the
+     `nas-*-spiffe` helpers to log `X.509 certificates updated`, and launch
+     again (`.agents/skills/stack-bring-up/SKILL.md` has the full steps).
+6. **Check.**
    - `docker logs nas-edge-certs` says "issued".
    - `.\nas-feedops-sentinel\scripts\Test-BrowserTrust.ps1` exits 0: Windows
      trusts the certificates on 8443 and 8081 ("The browser says Not
@@ -508,6 +531,19 @@ working. Commands are PowerShell, from the repository root;
    - Signing in works.
    - With public access on, `scripts/smoke/05_public_exposure_probe.sh`
      passes.
+
+   If any of these fails, stop here and use "Going back" above. The next two
+   steps cannot be undone.
+7. **Remove the old authority.** List it:
+   ```powershell
+   Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Subject -like '*NAS FeedOps Sentinel Local CA*'
+   ```
+   Remove each entry it lists, by its thumbprint: an entry under
+   `CurrentUser` with `certutil -user -delstore Root <thumbprint>`, one under
+   `LocalMachine` with `certutil -delstore Root <thumbprint>` from an elevated
+   prompt. List again to confirm it is gone. Its key is still on disk until
+   step 8 and it has no limit on names or purposes, so do not leave this for
+   later.
 8. **Delete what nothing uses any more.** Delete
    `nas-feedops-sentinel\tls\edge-ca.key`, `tls\edge-ca.crt`, `tls\trust\`
    and `tls\keycloak\edge-ca.crt`:
