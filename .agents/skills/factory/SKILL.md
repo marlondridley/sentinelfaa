@@ -83,6 +83,7 @@ state that never lands in a commit.
 { "id": "003-rate-limiting", "feature": "Rate limit the signup form",
   "branch": "factory/003-rate-limiting",
   "worktree": "/Users/you/code/my-app-factory/003-rate-limiting",
+  "commit": "4f2a9c1",
   "stage": "review", "round": 2,
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
   "points": 3, "paid_usd": null, "merged_at": null,
@@ -93,6 +94,15 @@ state that never lands in a commit.
   ] }
 ```
 
+- `commit` is a short git id (`git rev-parse --short=7`). While the job is not
+  merged it is the tip of `factory/<job-id>`
+  (`git rev-parse --short=7 factory/<job-id>`, run from `<repo>`); once merged
+  it is the merge commit on `main`. It is `null` until the branch exists.
+  Refresh it every time you rewrite `job.json` after the branch changed: when
+  the worktree is created, after each builder run (**Build check**), after
+  **Merge** step 3 merges `main` into the branch, and whenever you set
+  `stage: "needs-human"`. The page cannot run git and the merge deletes the
+  branch, so this is the only git id the dashboard has for a job.
 - `stage` is one of `spec`, `build`, `review`, `approve`, `merged`,
   `needs-human`. Worktree setup counts as `spec`.
 - `round` is the current review round (0 until the first round starts).
@@ -129,7 +139,7 @@ state that never lands in a commit.
   Read the file's `paid_usd` before each rewrite and keep it, because
   `/factory paid` may have set it from another session.
 - Jobs from before these fields existed have none of them; the dashboard shows
-  their figures as `-`. Never back-fill them.
+  their figures and git id as `-`. Never back-fill them, `commit` included.
 
 ### Prompts
 
@@ -150,15 +160,16 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    another session took the number, pick the next number and try again.
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
-   `round: 0`, all reviews `pending`, `points`, `paid_usd` and `merged_at`
-   `null`, and `usage: []`.
+   `round: 0`, all reviews `pending`, `commit`, `points`, `paid_usd` and
+   `merged_at` `null`, and `usage: []`.
 2. **Worktree.** Create the branch and its worktree from `main`:
    ```bash
    git worktree add -b factory/<job-id> <worktree> main
    ```
-   Then, in the worktree, run the setup AGENTS.md gives for a fresh checkout
-   (installing dependencies, for example). If any of it fails, stop and tell
-   the user.
+   Set `commit` to `git rev-parse --short=7 factory/<job-id>` and rewrite
+   `job.json`. Then, in the worktree, run the setup AGENTS.md gives for a
+   fresh checkout (installing dependencies, for example). If any of it fails,
+   stop and tell the user.
 3. **Spec.** Spawn `spec-writer` with the prompt
    `<paths> Feature: <feature, verbatim>`.
    Wait for it to finish, append its `usage` entry, then check that `spec.md`
@@ -173,7 +184,8 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
 ### Build check
 
 Every builder run (first run, resume or rework) ends here. Append its `usage`
-entry, then read the first line of `build.md`.
+entry and refresh `commit` to the branch tip, then read the first line of
+`build.md`.
 
 - `STATUS: READY`: start the next review round.
 - `STATUS: BLOCKED`: go to **Needs human**.
@@ -300,6 +312,7 @@ you took in this Merge; never delete or break another job's lock.
    - If it fails any other way, release the lock and go to **Needs human**,
      quoting what git printed; the human fixes the cause and runs
      `/factory approve <job-id>`.
+   - If it merged, refresh `commit` to the new branch tip.
    - If it prints `Already up to date.`, the branch already holds the current
      `main` and was tested as it is: skip step 4.
 4. **Re-test the merged result.** `main` has moved, so tell the user you are
@@ -329,23 +342,26 @@ you took in this Merge; never delete or break another job's lock.
    touch them, here or in any other step.
    ```bash
    git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>" &&
+     git rev-parse --short=7 HEAD &&
      git worktree remove <worktree> &&
      git branch -d factory/<job-id>
    ```
-   Then release the lock and set `stage: "merged"` and `merged_at` to the
+   The id `git rev-parse` prints, right after the merge and before the worktree
+   is removed, is the merge commit on `main`. Then release the lock and set
+   `stage: "merged"`, `commit` to that id and `merged_at` to the
    current UTC time (`date -u +%Y-%m-%dT%H:%M:%SZ`). If the merge fails, run
    `git merge --abort` (when a merge is in progress), then release the lock, set
    `stage: "needs-human"` and tell the user why; once they have fixed the cause
    they run `/factory approve <job-id>`. If removing the worktree fails, the job
-   is still merged: release the lock, set `stage: "merged"` and `merged_at`
-   as above, and tell the user
+   is still merged: release the lock, set `stage: "merged"`, `commit` and
+   `merged_at` as above, and tell the user
    what `git worktree remove` printed, and that `factory/<job-id>` is left to
    delete with `git branch -d` once the worktree is gone. Never push.
 
 ### Needs human
 
-Set `stage: "needs-human"`. The branch and its worktree stay for the human to
-inspect. Tell the user which job is waiting, give the worktree path, and quote
+Set `stage: "needs-human"` and refresh `commit` to the branch tip. The branch
+and its worktree stay for the human to inspect. Tell the user which job is waiting, give the worktree path, and quote
 why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
 **Merge** gave.
 

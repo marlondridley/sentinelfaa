@@ -139,6 +139,37 @@
   .approve button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .approve-msg { font-size: 11px; line-height: 1.4; color: var(--muted); }
 
+  /* Branch graph */
+  .graph { padding: 0 32px 40px; min-width: 0; }
+  .g-row, .g-main { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
+  .g-row {
+    cursor: pointer; border-radius: 8px; padding-right: 10px; transition: background .15s;
+  }
+  .g-row:hover { background: var(--card); }
+  .g-row:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .g-lane { position: relative; flex: none; width: 48px; min-height: 56px; color: var(--faint); }
+  /* main runs the whole height of every row, so the rows join into one line. */
+  .g-lane::before {
+    content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 2px; background: var(--muted);
+  }
+  .g-lane svg { position: absolute; left: 0; top: 0; overflow: visible; }
+  .g-lane .main-node { fill: var(--muted); }
+  .g-lane .br { fill: none; stroke: currentColor; stroke-width: 2; }
+  .g-lane .tip { fill: var(--bg); stroke: currentColor; stroke-width: 2; }
+  .g-lane .node { fill: currentColor; }
+  .g-row.live .g-lane { color: var(--active); }
+  .g-row.merged .g-lane { color: var(--merged); }
+  .g-row.human .g-lane { color: var(--human); }
+  .g-main .g-lane { min-height: 28px; }
+  .g-main .g-lane::before { top: 14px; }
+  .g-main .num { align-self: center; }
+  .g-text { min-width: 0; flex: 1; padding: 8px 0 10px; }
+  .g-text .feature { margin: 2px 0 4px; overflow-wrap: anywhere; }
+  .g-meta {
+    font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere;
+  }
+  .g-meta .k { color: var(--muted); }
+
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   @media (prefers-reduced-motion: reduce) { .pulse, .chip.wait { animation: none; } }
@@ -233,6 +264,7 @@
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
+    .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
@@ -257,6 +289,10 @@
 </header>
 <div id="banner"></div>
 <main class="board" id="board"></main>
+<section class="graph">
+  <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
+  <div id="graph"></div>
+</section>
 <footer>
   <span>/factory &lt;feature&gt;</span>
   <span>/factory next</span>
@@ -419,7 +455,15 @@ function jobProblems(job, cost) {
   if (isSet(job.merged_at) && mergedAt(job) === null) {
     out.push(`Job ${job.id} has merged_at ${JSON.stringify(job.merged_at)}, not a UTC time like 2026-10-21T14:05:00Z`)
   }
+  if (isSet(job.commit) && commitOf(job) === null) {
+    out.push(`Job ${job.id} has commit ${JSON.stringify(job.commit)}, not a git id`)
+  }
   return out
+}
+
+// The job's short git id: the branch tip, or the merge commit on main once merged. Null when unset or unreadable.
+function commitOf(job) {
+  return typeof job.commit === 'string' && /^[0-9a-f]{7,40}$/.test(job.commit) ? job.commit : null
 }
 
 const usd = (v) => `$${v.toFixed(2)}`
@@ -515,6 +559,41 @@ async function copyApprove(el) {
   }
 }
 
+// ---- Branch graph -----------------------------------------------------------
+
+// One row per job, oldest first: its lane leaves main, and a merged job joins main again at a merge node.
+// Unmerged jobs end at an open tip. main is the line every row's lane draws down its left edge.
+function graphRow(job) {
+  const live = LIVE.has(job.stage)
+  const merged = job.stage === 'merged'
+  const human = job.stage === 'needs-human'
+  const lane = merged
+    ? '<path class="br" d="M12 4 C12 16 34 12 34 24 L34 32 C34 44 12 40 12 52"/>' +
+      '<circle class="node" cx="34" cy="28" r="4"/><circle class="node" cx="12" cy="52" r="5"/>'
+    : '<path class="br" d="M12 4 C12 16 34 12 34 24"/><circle class="tip" cx="34" cy="28" r="4.5"/>'
+  const commit = commitOf(job)
+  const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
+  return `
+    <div class="g-row ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}"
+         role="button" tabindex="0" data-job="${esc(job.id)}">
+      <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
+        <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
+      <div class="g-text">
+        <div class="num">${esc(job.id)} · ${esc(state)}</div>
+        <p class="feature">${esc(job.feature)}</p>
+        <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
+        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>
+        <div class="g-meta"><span class="k">worktree</span> ${esc(job.worktree)}${merged ? ' <span class="k">removed</span>' : ''}</div>
+      </div>
+    </div>`
+}
+
+function graph() {
+  if (!jobs.length) return '<div class="empty">—</div>'
+  return '<div class="g-main"><div class="g-lane"></div><span class="num">main</span></div>' +
+    jobs.map(graphRow).join('')
+}
+
 async function render() {
   const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
@@ -535,9 +614,11 @@ async function render() {
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
-  if (html + banner !== lastRender) {
-    lastRender = html + banner
+  const graphHtml = graph()
+  if (html + graphHtml + banner !== lastRender) {
+    lastRender = html + graphHtml + banner
     $('board').innerHTML = html
+    $('graph').innerHTML = graphHtml
     $('banner').innerHTML = banner
   }
 }
@@ -706,8 +787,8 @@ document.addEventListener('click', (e) => {
 })
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') return closeDrawer()
-  // Only when the card itself has focus; Enter on the Approve button inside it is that button's own click.
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job]')) {
+  // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
     openDrawer(e.target.dataset.job)
   }
