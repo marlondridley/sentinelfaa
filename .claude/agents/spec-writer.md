@@ -32,6 +32,8 @@ worktree. The job folder is in the main checkout; your one file goes there.
 
 > Feature: <the request, verbatim>
 
+Story points: <N>
+
 ## Context
 Where this lives in the codebase: the files, components and data involved, and
 how they work today. Cite paths.
@@ -52,6 +54,24 @@ What a reasonable builder might be tempted to do but must not.
 Decisions you made where the request was ambiguous, each with a one-line reason.
 The approver escalates to a human when one of these is a product decision.
 ```
+
+## Story points
+
+The `Story points: N` line states the job's size, so the factory can measure
+velocity (points merged per day). Write it exactly as shown, directly under the
+title block, with N one of these and nothing else:
+
+| N  | The job is                                        |
+| -- | ------------------------------------------------- |
+| 1  | a one-file doc or wording change                  |
+| 2  | a small change in one area                        |
+| 3  | a change across a few files, with tests           |
+| 5  | a feature across several areas                    |
+| 8  | a large feature                                   |
+| 13 | too big for one job: it should be split           |
+
+Pick the smallest size that fits the whole spec. The orchestrator copies N into
+`job.json` and stops the job if the line is missing or N is not on this list.
 
 ## Rules
 

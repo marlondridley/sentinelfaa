@@ -104,6 +104,10 @@
     font-family: var(--mono); font-size: 11px; color: var(--faint);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .figures {
+    margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    overflow-wrap: anywhere;
+  }
   .rounds { margin-top: 10px; display: grid; gap: 5px; }
   .round { display: flex; align-items: center; gap: 4px; }
   .round .r { font-family: var(--mono); font-size: 10px; color: var(--faint); width: 20px; }
@@ -147,6 +151,8 @@
   .d-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); position: relative; }
   .d-head .num { font-size: 12px; }
   .d-head h3 { margin: 4px 40px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
+  .d-head .md { margin-top: 10px; }
+  .d-head .md table { margin: 0; }
   .close {
     position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
@@ -236,7 +242,10 @@
 <body>
 <header>
   <h1>Software factory</h1>
-  <div class="status" id="status">connecting…</div>
+  <div>
+    <div class="status" id="status">connecting…</div>
+    <div class="status" id="velocity"></div>
+  </div>
 </header>
 <div id="banner"></div>
 <main class="board" id="board"></main>
@@ -245,6 +254,7 @@
   <span>/factory next</span>
   <span>/factory approve &lt;job-id&gt;</span>
   <span>/factory rework &lt;job-id&gt; &lt;note&gt;</span>
+  <span>/factory paid &lt;job-id&gt; &lt;usd&gt;</span>
 </footer>
 
 <div id="overlay">
@@ -254,6 +264,7 @@
       <div class="num" id="d-num"></div>
       <h3 id="d-title"></h3>
       <div class="branch" id="d-branch"></div>
+      <div class="md" id="d-cost"></div>
       <button class="close" data-close aria-label="Close">×</button>
     </div>
     <div class="d-body">
@@ -275,12 +286,17 @@ const STAGES = [
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
+const POINTS = [1, 2, 3, 5, 8, 13]
+const USAGE_KEYS = ['agent', 'round', 'model', 'tokens', 'seconds']
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
 let jobs = []
+let prices = null // prices.json, or null when it could not be read
+let pricesError = null
 let lastRender = ''
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
@@ -336,7 +352,114 @@ function chips(n, verdicts, waiting) {
   return `<div class="round"><span class="r">R${n}</span>${cells}</div>`
 }
 
-function card(job, past) {
+// ---- Cost and velocity ----------------------------------------------------
+
+// Jobs from before the cost fields existed have none of them; absent or null reads as "not set", never as a fault.
+const isSet = (v) => v !== undefined && v !== null
+const isFigure = (v) => v === null || (Number.isFinite(v) && v >= 0)
+
+function usageEntryOk(u) {
+  return u !== null && typeof u === 'object' && USAGE_KEYS.every((k) => k in u) &&
+    typeof u.agent === 'string' && Number.isInteger(u.round) && u.round >= 0 &&
+    typeof u.model === 'string' && isFigure(u.tokens) && isFigure(u.seconds)
+}
+
+function mergedAt(job) {
+  const ok = typeof job.merged_at === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(job.merged_at)
+  const t = ok ? Date.parse(job.merged_at) : NaN
+  return Number.isNaN(t) ? null : t
+}
+
+// List price of one usage entry, or null when its tokens or its model's price are unknown.
+function entryUsd(u) {
+  const rates = prices && prices.usd_per_mtok
+  if (u.tokens === null || !rates || !Object.hasOwn(rates, u.model) || !isFigure(rates[u.model])) return null
+  return u.tokens / 1e6 * rates[u.model]
+}
+
+// A sum is null as soon as one of its parts is unknown, so a total is never shown short.
+function sums(entries) {
+  const add = (a, b) => (a === null || b === null ? null : a + b)
+  return entries.reduce((s, u) => ({
+    tokens: add(s.tokens, u.tokens), seconds: add(s.seconds, u.seconds), usd: add(s.usd, entryUsd(u)),
+  }), { tokens: 0, seconds: 0, usd: 0 })
+}
+
+function costOf(job) {
+  const log = isSet(job.usage) ? job.usage : []
+  const listed = Array.isArray(log) ? log : []
+  const good = listed.filter(usageEntryOk)
+  const bad = Array.isArray(log) ? listed.length - good.length : 1
+  const rounds = [...new Set(good.map((u) => u.round))].sort((a, b) => a - b)
+    .map((n) => [n, sums(good.filter((u) => u.round === n))])
+  const total = bad ? { tokens: null, seconds: null, usd: null } : sums(good)
+  return { recorded: Array.isArray(log) ? listed.length : 1, bad, rounds, total }
+}
+
+function jobProblems(job, cost) {
+  const out = []
+  if (cost.bad) {
+    out.push(`Job ${job.id} has ${cost.bad} usage ${cost.bad === 1 ? 'entry' : 'entries'} in job.json the dashboard cannot read, so its token, time and price totals are unknown`)
+  }
+  if (isSet(job.points) && !POINTS.includes(job.points)) {
+    out.push(`Job ${job.id} has points ${JSON.stringify(job.points)}, not one of ${POINTS.join(', ')}`)
+  }
+  if (isSet(job.paid_usd) && !isFigure(job.paid_usd)) {
+    out.push(`Job ${job.id} has paid_usd ${JSON.stringify(job.paid_usd)}, not an amount in dollars`)
+  }
+  if (isSet(job.merged_at) && mergedAt(job) === null) {
+    out.push(`Job ${job.id} has merged_at ${JSON.stringify(job.merged_at)}, not a UTC time like 2026-10-21T14:05:00Z`)
+  }
+  return out
+}
+
+const usd = (v) => `$${v.toFixed(2)}`
+const tokensText = (v) => v.toLocaleString('en-US')
+
+function duration(s) {
+  s = Math.round(s)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`
+}
+
+// "-" when nothing is recorded; "unknown" when a full price cannot be worked out from what is.
+function priceText(cost, v) {
+  if (!cost.recorded) return '-'
+  return v === null ? 'unknown' : usd(v)
+}
+
+function figures(job, cost) {
+  const t = cost.total
+  const parts = [
+    `points ${POINTS.includes(job.points) ? job.points : '-'}`,
+    `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
+    `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
+    `full price ${priceText(cost, t.usd)}`,
+    `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
+  ]
+  // Non-breaking spaces keep each label on one line with its value when the card wraps.
+  return `<div class="figures">${parts.map((p) => esc(p).replace(/ /g, '&nbsp;')).join(' · ')}</div>`
+}
+
+// Velocity: story points merged per day, over the last 7 days and the 7 days before.
+function velocity() {
+  const now = Date.now()
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const counted = merged.filter((j) => POINTS.includes(j.points) && mergedAt(j) !== null)
+  const perDay = (fromDays, toDays) => counted
+    .filter((j) => mergedAt(j) > now - toDays * DAY_MS && mergedAt(j) <= now - fromDays * DAY_MS)
+    .reduce((s, j) => s + j.points, 0) / 7
+  const left = merged.length - counted.length
+  const leftText = left
+    ? ` · ${left} merged ${left === 1 ? 'job' : 'jobs'} left out (no points or no merged_at)`
+    : ''
+  return `velocity ${perDay(0, 7).toFixed(2)} points/day in the last 7 days, ` +
+    `${perDay(7, 14).toFixed(2)} in the 7 days before${leftText}`
+}
+
+function card(job, past, cost) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
   const rows = past.map((v, i) => chips(i + 1, v, false))
@@ -352,18 +475,21 @@ function card(job, past) {
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
+      ${figures(job, cost)}
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>` : ''}
     </button>`
 }
 
 async function render() {
-  const problems = []
+  const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
   const pasts = await Promise.all(jobs.map(pastRounds))
   jobs.forEach((job, i) => {
+    const cost = costOf(job)
+    problems.push(...jobProblems(job, cost))
     if (!byStage[job.stage]) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
-    else byStage[job.stage].push(card(job, pasts[i]))
+    else byStage[job.stage].push(card(job, pasts[i], cost))
   })
   // Newest first within a column.
   const html = STAGES.map((s) => `
@@ -386,13 +512,16 @@ async function poll() {
   const status = $('status')
   try {
     jobs = await loadJobs()
+    await loadPrices()
     await render()
     if (openJobId) await refreshDrawer()
     status.className = 'status'
     status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
+    $('velocity').textContent = velocity()
   } catch (err) {
     status.className = 'status error'
     status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
+    $('velocity').textContent = ''
   }
 }
 
@@ -405,6 +534,19 @@ async function loadJobs() {
     .map((h) => h.slice(0, -1))
     .sort()
   return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+}
+
+// A missing or broken prices.json makes full prices unknown and says why in a banner; the board still renders.
+async function loadPrices() {
+  try {
+    const p = JSON.parse(await fetchText('prices.json'))
+    if (!p || typeof p.usd_per_mtok !== 'object' || p.usd_per_mtok === null) throw new Error('no usd_per_mtok')
+    prices = p
+    pricesError = null
+  } catch (err) {
+    prices = null
+    pricesError = err.message
+  }
 }
 
 // ---- Drawer --------------------------------------------------------------
@@ -445,12 +587,24 @@ function tone(first) {
 
 const firstLines = new Map()
 
+// One row per round from the usage log (round 0 is the spec), then the job's total.
+function costTable(cost) {
+  if (!cost.recorded) return '<p class="note">No usage recorded for this job.</p>'
+  const cell = (v, fmt) => (v === null ? '-' : fmt(v))
+  const row = (label, s) => `<tr><td>${esc(label)}</td><td>${cell(s.tokens, tokensText)}</td>` +
+    `<td>${cell(s.seconds, duration)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
+  return '<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>Full price</th></tr>' +
+    cost.rounds.map(([n, s]) => row(n === 0 ? '0 (spec)' : String(n), s)).join('') +
+    row('Total', cost.total) + '</table>'
+}
+
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
   $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
   $('d-title').textContent = job.feature
   $('d-branch').textContent = job.branch
+  $('d-cost').innerHTML = costTable(costOf(job))
 
   const base = `jobs/${job.id}/`
   const files = sortFiles(await listFiles(base))
