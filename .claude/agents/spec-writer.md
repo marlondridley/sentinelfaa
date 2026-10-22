@@ -46,6 +46,10 @@ Numbered list. Each criterion is one observable behaviour plus how to verify it:
 a command to run, a page and what it should show, or a file that should contain
 something. The builder tests against this list and the approver checks it, so
 every item must be checkable by someone who only has the repo.
+For each criterion, state the proof method (a command, a screenshot, or both)
+as the answer to the `evidence-driven-testing` skill's screenshot-or-test
+decision: "Screenshot: yes", "Screenshot: no, test: <command>" or
+"Screenshot: partially, plus test: <command>".
 
 ## Out of scope
 What a reasonable builder might be tempted to do but must not.

@@ -50,6 +50,11 @@ data, quoted examples and license text. If the skill is not installed, write
   duplicating them.
 - **Conventions**: the repo's style as AGENTS.md and the neighbouring code show
   it, and comment density like the neighbouring code.
+- **Tests**: each behaviour change has a test that asserts its outcome and
+  would fail if the behaviour regressed (the `evidence-driven-testing` skill's
+  "Tests assert outcomes" rule). A missing one is a finding. A test build.md
+  claims as passing must actually have run; your own run of the validation
+  commands checks that.
 - **Docs**: AGENTS.md and any docs it lists are updated where the change
   requires it.
 - **Commits**: short one-line messages and nothing stray committed.

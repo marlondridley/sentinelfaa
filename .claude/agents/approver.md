@@ -35,6 +35,12 @@ APPROVE only if all of these hold:
 
 - Every acceptance criterion in the spec is met, with evidence in build.md that
   you find convincing. Spot-check at least one criterion yourself.
+  Read the evidence by the `evidence-driven-testing` skill's gate: a criterion
+  is met only when its evidence supports the claim. One that is `failed` or
+  `untested`, or has no evidence, is not met, so you do not APPROVE. Where a
+  criterion was proved by a screenshot, look at it in the job's
+  `evidence/round-<N>/` folder. The skill only produces evidence; you still
+  decide alone, and you write no evidence yourself.
 - All four reviews in the final round are `VERDICT: PASS`, and no Note in them
   describes a real problem.
 - `git merge-tree --write-tree main <branch>` reports no conflicts.

@@ -11,6 +11,7 @@ Procedures for working on this repository, written as [Agent Skills](https://age
 | `real-data-only` | Keep synthetic and demo data out of the live stack; show the system working with replayed captures or the live feed. |
 | `add-an-agent` | Add or change an advisory agent without breaking the agent register: prompt, tools, grants, switch, the model-call path, and the tests and docs to update. |
 | `factory` | Run the software factory: the spec, build, review, approve and merge loop, with several jobs in parallel. |
+| `evidence-driven-testing` | Prove a change works with evidence from a real run: the screenshot-or-test decision, passed, failed or untested per target, and where screenshots go. |
 
 ## Where each tool reads them
 
