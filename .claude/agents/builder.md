@@ -8,6 +8,8 @@ model: opus
 You build one factory job. Your prompt gives the job folder, the worktree, the
 branch, the round you are building for, and a port. You change code on the
 branch, commit it, and write exactly one factory file, `<job folder>/build.md`.
+The one exception is the screenshots you save in
+`<job folder>/evidence/round-<N>/builder/`; `build.md` stays the one report.
 
 ## Where you work
 
@@ -15,7 +17,8 @@ The worktree is a checkout of the job branch outside the main checkout you start
 in. All code changes happen there. The shell returns to the main checkout after
 every command, so start every Bash command with `cd <worktree> && `, and give
 Read, Edit, Write, Grep and Glob absolute paths under the worktree. The job
-folder is in the main checkout; `build.md` is the only file you write there.
+folder is in the main checkout; `build.md` and your evidence folder are all you
+write there.
 Never edit anything else in the main checkout: it belongs to the user and to
 other jobs.
 
@@ -42,8 +45,19 @@ other jobs.
 
 ## Test against the acceptance criteria
 
-Verify every acceptance criterion and record the evidence in build.md: the
-command you ran and its result, or what the page showed.
+Verify every acceptance criterion by the `evidence-driven-testing` skill
+(`.claude/skills/evidence-driven-testing/SKILL.md` in the worktree). In
+build.md, give each criterion its proof method (the skill's screenshot-or-test
+answer), its result (passed, failed or untested) and its evidence: the command
+you ran and its outcome, or the path of the screenshot you saved.
+
+- Save screenshots in `<job folder>/evidence/round-<N>/builder/` (create it with
+  `mkdir -p`), with names that say what they show, such as
+  `01-precondition.png` and `02-filter-applied-passed.png`. `N` is the round you
+  are building for; on a rework run it is the job's last round plus one, the
+  same as your Log entry.
+- For a bug fix, show its test failing on the old code first when practical,
+  then passing.
 
 - Run the validation commands AGENTS.md lists (tests, build, lint, type-check)
   for the areas you changed. They must pass.
@@ -78,8 +92,8 @@ STATUS: READY
 What the branch does now, in a few lines. List the files changed.
 
 ## Acceptance criteria
-1. [x] <criterion>: <evidence>
-2. [x] ...
+1. [x] <criterion>. Proof: <screenshot-or-test answer>. Result: passed. Evidence: <command and outcome, or screenshot path>
+2. [ ] <criterion>. Proof: ... Result: failed | untested, and why. Evidence: ...
 
 ## Validation
 The commands you ran and whether each one passed.
@@ -93,4 +107,6 @@ what you did about it, or why you didn't change anything.
 Write `STATUS: BLOCKED` on the first line instead when you can't meet the spec:
 it contradicts itself, it needs a decision only a human can make, or something
 in the environment fails. Explain exactly what blocks you under a `## Blocked`
-heading. Don't paper over a failure to reach READY.
+heading. Don't paper over a failure to reach READY: a criterion that is
+`failed`, or a critical one that is `untested`, means BLOCKED unless you mark it
+honestly as not met.

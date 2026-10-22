@@ -39,6 +39,9 @@ edit the agents in `.claude/agents/`.
 
 Every agent reads `AGENTS.md` (or `CLAUDE.md`) for the repo's setup, dev server,
 validation commands and conventions. Nothing repo-specific lives in these files.
+The agents record what they tested by the `evidence-driven-testing` skill: proof
+method and result per criterion in their one file, and screenshots in the job's
+evidence folder (see **Files**).
 
 ## Parallel jobs
 
@@ -73,9 +76,15 @@ state that never lands in a commit.
 <repo>/factory/jobs/<job-id>/rework-<k>.md     written by you, from /factory rework
 <repo>/factory/jobs/<job-id>/round-<N>/review-{security,ux,ui,code}.md
 <repo>/factory/jobs/<job-id>/decision.md
+<repo>/factory/jobs/<job-id>/evidence/round-<N>/{builder,ux,ui}/   screenshots, made by those agents
 <repo>/factory/jobs/.merge-lock/holder         the merge lock; holder names the job that is merging
 <repo>/../<name>-factory/<job-id>/             the job's worktree, on factory/<job-id>
 ```
+
+The builder, `reviewer-ux` and `reviewer-ui` each create their own
+`evidence/round-<N>/<agent>/` folder for the round they work on (for a rework
+run, the job's last round plus one) and name its files in their report. It is
+the one place an agent writes besides its one file; you never create it.
 
 ### job.json
 
