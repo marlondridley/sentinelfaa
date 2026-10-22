@@ -224,7 +224,8 @@ unless a step says otherwise.
 **Every exit releases the lock.** Once you hold the lock, every path out of
 Merge releases it with `rm -r factory/jobs/.merge-lock` before you set the stage
 and tell the user: merged, merge failed, tests failed, conflict with `main`,
-worktree not clean, main checkout busy, `main` kept moving. Remove only the lock
+worktree not clean, main checkout has uncommitted changes to files this job
+also changes (or is not on `main`), `main` kept moving. Remove only the lock
 you took in this Merge; never delete or break another job's lock.
 
 1. **Take the merge lock.**
@@ -249,13 +250,35 @@ you took in this Merge; never delete or break another job's lock.
      with `rm -r factory/jobs/.merge-lock`. Once that merge has finished (or the
      stale lock is gone), they run `/factory approve` with this job's id, not
      the holder's. You never held the lock, so there is nothing to release.
-2. **Check the main checkout.** The merge happens there, so it must be clean and
-   on `main`: `git status --porcelain -- . ':!factory/backlog.md'` prints
-   nothing and `git branch --show-current` prints `main`. `factory/backlog.md`
-   is exempt: every `/factory next` edits it, and job branches never touch it,
-   so a dirty backlog cannot conflict with the merge. If not, release the lock,
-   set `stage: "needs-human"` and tell the user the job is approved but the main
-   checkout is busy; they run `/factory approve <job-id>` once it is clean.
+2. **Check the main checkout.** The merge happens there, so it must be on
+   `main`, and none of its uncommitted files may be one the merge writes. Other
+   uncommitted files are the user's work in progress and do not block the merge.
+   `git branch --show-current` must print `main`. Then list the two sets of
+   paths:
+   ```bash
+   git status --porcelain -- . ':!factory/backlog.md'
+   git diff --name-only main...factory/<job-id>
+   git diff --name-only factory/<job-id>...main
+   ```
+   - **Dirty paths** are every path the first command prints: modified, staged,
+     deleted and untracked files, and both names of a rename
+     (`R  old -> new`). `factory/backlog.md` is ignored: every `/factory next`
+     edits it, and job branches never touch it, so a dirty backlog cannot
+     conflict with the merge.
+   - **Job paths** are what the other two print. The first gives the files the
+     job branch changes, counted from where it left `main` (three dots, so it
+     is right both before and after step 3 merges `main` in). The second gives
+     the files `main` changed since then: the final merge rewrites those too,
+     so a dirty copy of one would be overwritten or block the merge.
+
+   A dirty path overlaps when it is also a job path; an untracked file counts
+   when the job adds a file at the same path. A dirty folder (`?? dir/`)
+   overlaps when any job path is under it. If any path overlaps, or the
+   checkout is not on `main`, release the lock, set `stage: "needs-human"` and
+   tell the user the job is approved but cannot merge: the main checkout has
+   uncommitted changes to files this job also changes (name each overlapping
+   file), or is on another branch (name it). They commit, stash or remove those
+   files, or switch back to `main`, then run `/factory approve <job-id>`.
 3. **Bring the branch up to date.** The worktree must be clean
    (`git -C <worktree> status --porcelain` prints nothing), or the re-test would
    include edits that never merge; if not, release the lock and go to
@@ -291,8 +314,9 @@ you took in this Merge; never delete or break another job's lock.
    runs the tests themselves before `/factory approve <job-id>`: the branch now
    holds `main`, so Merge will find it up to date and not re-test it.
 5. **Confirm `main` did not move** while the tests ran. First repeat the step 2
-   check, since the user may have changed the main checkout meanwhile; if it is
-   busy now, take step 2's exit. Then:
+   check, running its commands again, since the user may have changed the main
+   checkout and `main` may have moved meanwhile; if any path overlaps now, or
+   the checkout is not on `main`, take step 2's exit. Then:
    ```bash
    git -C <worktree> merge-base --is-ancestor main HEAD
    ```
@@ -300,7 +324,9 @@ you took in this Merge; never delete or break another job's lock.
    steps 3 to 5; if `main` has moved again after the third, release the lock and
    go to **Needs human**, saying `main` kept moving; the human runs
    `/factory approve <job-id>` again once it is quiet.
-6. **Merge.**
+6. **Merge.** The main checkout may still hold the user's uncommitted files.
+   Only read them: never stash, commit, reset, check out, clean or otherwise
+   touch them, here or in any other step.
    ```bash
    git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>" &&
      git worktree remove <worktree> &&
