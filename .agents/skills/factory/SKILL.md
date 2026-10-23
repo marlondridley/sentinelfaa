@@ -96,6 +96,15 @@ copyleft (GPL), ISO 27001, SOC 2 and FedRAMP rows are placeholders that always
 read `not run`, until a job builds that check. Status is only ever `passed`,
 `failed` or `not run`.
 
+The dashboard has four views, chosen by the URL hash: `#board`, `#git`, `#cost`
+and `#stream`. Its header shows main's short commit, which it reads as the
+`commit` of the merged job with the latest `merged_at`, so the merge step must
+go on setting `commit` to the merge commit and `merged_at` to the merge time, as
+it does now; the project name beside it is the folder that holds the worktrees.
+The header's monthly spend counts every job not yet merged plus every job whose
+`merged_at` falls in the current month, so a merged job with no `merged_at` is
+left out of it.
+
 ### job.json
 
 ```json
