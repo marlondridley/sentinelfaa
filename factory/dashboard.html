@@ -1861,7 +1861,7 @@ let briefingRun = 0 // the current openBriefing() call, so a slow one cannot dra
 
 const utcDate = (ms) => new Date(ms).toISOString().slice(0, 10)
 const utcTime = (ms) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`
-const VERDICTS = ['PASS', 'CHANGES', 'pending']
+const BRIEFING_VERDICTS = ['PASS', 'CHANGES', 'pending']
 
 // The lines under a "## <name>" heading, up to the next "## " heading, or null when there is no such heading.
 function sectionOf(lines, name) {
@@ -1923,7 +1923,7 @@ function briefingJob(job) {
   const j = {
     id: job.id, feature: job.feature,
     round: Number.isInteger(job.round) ? job.round : null,
-    verdicts: Object.fromEntries(REVIEWERS.map(([k]) => [k, VERDICTS.includes(reviews[k]) ? reviews[k] : null])),
+    verdicts: Object.fromEntries(REVIEWERS.map(([k]) => [k, BRIEFING_VERDICTS.includes(reviews[k]) ? reviews[k] : null])),
     points: POINTS.includes(job.points) ? job.points : null,
     at: mergedAt(job), commit: commitOf(job),
     price: known(t.usd), tokens: known(t.tokens), seconds: known(t.seconds),
