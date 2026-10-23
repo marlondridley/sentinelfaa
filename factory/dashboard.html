@@ -57,7 +57,7 @@
   .strip .k, .kpi .k { color: var(--faint); }
   .strip .m { color: var(--muted); }
   .kpis {
-    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
     padding: 14px 32px 0;
   }
   .kpi {
@@ -463,11 +463,15 @@ function usageEntryOk(u) {
     typeof u.model === 'string' && isFigure(u.tokens) && isFigure(u.seconds)
 }
 
-function mergedAt(job) {
-  const ok = typeof job.merged_at === 'string' &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(job.merged_at)
-  const t = ok ? Date.parse(job.merged_at) : NaN
+// Milliseconds of a UTC time written as ISO 8601 with Z, or null for anything else.
+function utcMs(v) {
+  const ok = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)
+  const t = ok ? Date.parse(v) : NaN
   return Number.isNaN(t) ? null : t
+}
+
+function mergedAt(job) {
+  return utcMs(job.merged_at)
 }
 
 // List price of one usage entry, or null when its tokens or its model's price are unknown.
@@ -518,6 +522,10 @@ function jobProblems(job, cost) {
   }
   if (isSet(job.base) && baseOf(job) === null) {
     out.push(`Job ${job.id} has base ${JSON.stringify(job.base)}, not a git id`)
+  }
+  const fault = stageLog(job).fault
+  if (fault) {
+    out.push(`Job ${job.id} has a stage_log the dashboard cannot read (${fault}), so it is left out of mean time to delivery, approval wait and rework rate`)
   }
   return out
 }
@@ -594,21 +602,99 @@ function velocity() {
   }
 }
 
+// ---- Stage times ------------------------------------------------------------
+
+const STAGE_NAMES = ['spec', 'build', 'review', 'approve', 'merged', 'needs-human']
+
+// The orchestrator appends { stage, at } to stage_log each time it sets stage. Returns { log, fault }: log is
+// [{ stage, t }] oldest first, or null; fault says why a stage_log that is there cannot be read.
+// A bad log counts as none, never partly: the entries that do read could skip a wait or a whole round, and the
+// figures would show times that never happened.
+// Jobs from before stage_log have none and show "-". Their times are never back-filled or guessed from file dates,
+// which say when a file was last written, not when a stage began.
+function stageLog(job) {
+  if (!isSet(job.stage_log)) return { log: null, fault: null }
+  if (!Array.isArray(job.stage_log)) return { log: null, fault: 'it is not a list' }
+  const log = []
+  for (const [i, e] of job.stage_log.entries()) {
+    if (e === null || typeof e !== 'object' || !('stage' in e) || !('at' in e)) {
+      return { log: null, fault: `entry ${i + 1} is not { stage, at }` }
+    }
+    if (!STAGE_NAMES.includes(e.stage)) {
+      return { log: null, fault: `entry ${i + 1} has unknown stage ${JSON.stringify(e.stage)}` }
+    }
+    const t = utcMs(e.at)
+    if (t === null) {
+      return { log: null, fault: `entry ${i + 1} has at ${JSON.stringify(e.at)}, not a UTC time like 2026-10-21T14:05:00Z` }
+    }
+    if (log.length && t < log[log.length - 1].t) {
+      return { log: null, fault: `entry ${i + 1} is earlier than entry ${i}` }
+    }
+    log.push({ stage: e.stage, t })
+  }
+  // A log that does not start at spec was begun mid-job, by a job already running when stage_log was added. Its start
+  // is unknown, so it counts as none; that is expected, not a fault.
+  return { log: log.length && log[0].stage === 'spec' ? log : null, fault: null }
+}
+
+// Mean time to delivery, approval wait and rework rate. Only jobs with a readable stage_log count, in all three, so
+// every timing figure comes from the same jobs. pasts holds each job's earlier-round verdicts, from pastRounds.
+function timing(pasts) {
+  const timed = jobs.map((job, i) => ({ job, log: stageLog(job).log, past: pasts[i] })).filter((x) => x.log)
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const sum = (ms) => ms.reduce((s, x) => s + x, 0)
+  const mean = (ms) => (ms.length ? duration(sum(ms) / ms.length / 1000) : '-')
+
+  // Delivery: from the spec entry that opens the log to the merged entry.
+  const deliveries = timed
+    .filter(({ job, log }) => job.stage === 'merged' && log.some((e) => e.stage === 'merged'))
+    .map(({ log }) => log.find((e) => e.stage === 'merged').t - log[0].t)
+
+  // The owner's wait is time in needs-human only: there the job waits for /factory approve or /factory rework. The
+  // approve stage is the approver agent running, not the owner. A wait runs from a needs-human entry to the next
+  // entry, whatever its stage; after /factory approve that is merged, so the wait includes the merge and its re-test.
+  // A job still in needs-human has an open wait with no end yet. It is left out until it ends, because averaging a
+  // wait that is still growing would understate it.
+  const waits = timed
+    .map(({ log }) => log.slice(0, -1).flatMap((e, k) => (e.stage === 'needs-human' ? [log[k + 1].t - e.t] : [])))
+    .filter((w) => w.length)
+    .map(sum)
+
+  // Rework: a reviewed job that went to the owner, or got a CHANGES review in any round. A job the owner sent back
+  // always went to needs-human first, so the rework-<k>.md files add no job this rule misses.
+  const reviewed = timed.filter(({ job }) => Number.isInteger(job.round) && job.round >= 1)
+  const reworked = reviewed.filter(({ job, log, past }) => log.some((e) => e.stage === 'needs-human') ||
+    [...past, job.reviews].flatMap(Object.values).includes('CHANGES'))
+  // A missing or unreadable earlier review could have been a CHANGES, so the rate is "-" rather than a guess.
+  const unknown = reviewed.some((x) => !reworked.includes(x) &&
+    x.past.flatMap(Object.values).some((v) => v !== 'PASS' && v !== 'CHANGES'))
+
+  return {
+    delivery: { value: mean(deliveries), sub: `spec to merge · ${count(deliveries.length, 'merged job', 'merged jobs')} timed` },
+    wait: { value: mean(waits), sub: `mean time in Client approval · ${count(waits.length, 'job', 'jobs')} the owner waited on` },
+    rework: unknown
+      ? { value: '-', sub: 'unknown: a review file of an earlier round is missing or unreadable' }
+      : {
+          value: percent(reworked.length, reviewed.length),
+          sub: `${reworked.length} of ${count(reviewed.length, 'reviewed job', 'reviewed jobs')} with stage times ` +
+            'went to Client approval or got a CHANGES review',
+        },
+  }
+}
+
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
 // The KPI tiles. Each figure comes from the job files; one with no source shows "-".
-function kpis(reworks) {
+function kpis(pasts) {
   const merged = jobs.filter((j) => j.stage === 'merged')
-  const reached = jobs.map((j, i) => [j, reworks[i]]).filter(([j]) => Number.isInteger(j.round) && j.round >= 1)
-  // An unreadable folder listing leaves the rework count unknown, so the rate is "-" rather than a guess.
-  const reworkRate = reached.some(([, r]) => r.error)
-    ? '-'
-    : percent(reached.filter(([, r]) => r.count > 0).length, reached.length)
   const v = velocity()
+  const t = timing(pasts)
   return [
     ['Velocity', v.value, v.sub],
+    ['Mean time to delivery', t.delivery.value, t.delivery.sub],
+    ['Approval wait', t.wait.value, t.wait.sub],
     ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
-    ['Rework rate', reworkRate, 'jobs sent back to the builder'],
+    ['Rework rate', t.rework.value, t.rework.sub],
     // Margin savings compares the list price with what the work would cost at the owner's traditional bill rate.
     // No file holds that rate yet, so nothing is read and the tile stays "-".
     ['Margin savings', '-', "needs the owner's traditional bill rate (later job)"],
@@ -756,7 +842,7 @@ async function render() {
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const stripHtml = strip()
-  const kpiHtml = kpis(reworks)
+  const kpiHtml = kpis(pasts)
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
   if (html + stripHtml + kpiHtml + graphHtml + banner !== lastRender) {

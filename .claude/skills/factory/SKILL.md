@@ -106,6 +106,13 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
   "stage": "review", "round": 2,
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
   "points": 3, "paid_usd": null, "merged_at": null,
+  "stage_log": [
+    { "stage": "spec", "at": "2026-10-21T13:02:11Z" },
+    { "stage": "build", "at": "2026-10-21T13:06:40Z" },
+    { "stage": "review", "at": "2026-10-21T13:31:05Z" },
+    { "stage": "build", "at": "2026-10-21T13:52:18Z" },
+    { "stage": "review", "at": "2026-10-21T14:10:44Z" }
+  ],
   "usage": [
     { "agent": "spec-writer", "round": 0, "model": "opus", "tokens": 61234, "seconds": 212 },
     { "agent": "builder", "round": 1, "model": "opus", "tokens": 402118, "seconds": 1490 },
@@ -147,6 +154,17 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
 - `merged_at` is the UTC time you set `stage: "merged"`, as ISO 8601 with `Z`
   (`2026-10-21T14:05:00Z`), and `null` until then. The dashboard dates velocity
   by it.
+- `stage_log` is the job's stage history, oldest first: one
+  `{ "stage": "<stage>", "at": "<time>" }` entry for each time you set `stage`,
+  with `at` the UTC time of that change from `date -u +%Y-%m-%dT%H:%M:%SZ`,
+  taken at the moment you set it. Step 1 of **/factory <feature>** writes the
+  first entry, `spec`. Every later time you set `stage` (each return to
+  `build`, each `review`, `approve`, `needs-human` and `merged`), append one
+  entry in the same rewrite, even when the stage is the one the job already
+  had. Never edit, reorder or remove an entry. The `merged` entry has the same
+  time as `merged_at`. The dashboard works out from it the time from spec to
+  merge, how long the owner kept a job waiting in `needs-human`, and the
+  rework rate.
 - `usage` is the log of agent runs, `[]` at first. Each time an agent run
   finishes, append one entry:
   `{ "agent": "<name>", "round": <N>, "model": "<model>", "tokens": <tokens>, "seconds": <seconds> }`.
@@ -168,10 +186,13 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
     read "unknown".
 - Rewrite the whole file on every change. `worktree` is always an absolute path.
   Read the file's `paid_usd` before each rewrite and keep it, because
-  `/factory paid` may have set it from another session.
+  `/factory paid` may have set it from another session. Carry `stage_log` over
+  from the file the same way and append to it; never rebuild it.
 - Jobs from before these fields existed have none of them; the dashboard shows
-  their figures and git id as `-`. Never back-fill them, `commit`, `behind` and
-  `base` included.
+  their cost and timing figures and git id as `-`. Never back-fill them,
+  `commit`, `behind`, `base` and `stage_log` included. A job whose `job.json`
+  has no `stage_log` keeps none: never start one part-way through a job, and
+  never work out times from file dates.
 
 ### Prompts
 
@@ -193,7 +214,8 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
    `round: 0`, all reviews `pending`, `commit`, `behind`, `base`, `points`,
-   `paid_usd` and `merged_at` `null`, and `usage: []`.
+   `paid_usd` and `merged_at` `null`, `usage: []`, and a `stage_log` holding
+   one entry, `{ "stage": "spec", "at": "<now>" }` (see **job.json**).
 2. **Worktree.** Create the branch and its worktree from `main`:
    ```bash
    git worktree add -b factory/<job-id> <worktree> main
@@ -210,7 +232,8 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    with N one of 1, 2, 3, 5, 8, 13. Copy N into `job.json` as `points`. If
    `spec.md` is missing, or the line is missing or N is not one of those values,
    stop and tell the user which; never pick a value yourself.
-4. **Build.** Set `stage: "build"`. Spawn `builder` **with the name
+4. **Build.** Set `stage: "build"` and append a `stage_log` entry. Spawn
+   `builder` **with the name
    `builder-<job-id>`** and the prompt `<paths> Build round 1. Port: <port>.`
    Wait for it to finish, then go to **Build check**.
 
@@ -225,7 +248,8 @@ read the first line of `build.md`.
 
 ### Review round N
 
-1. Set `stage: "review"`, `round: N` and all four reviews to `pending`. Create
+1. Set `stage: "review"` and append a `stage_log` entry, and set `round: N`
+   and all four reviews to `pending`. Create
    `factory/jobs/<job-id>/round-<N>/`.
 2. Spawn all four reviewers **in one message**, so they run in parallel. Each
    gets the prompt `<paths> Review round N.`, plus its port for `reviewer-ux`
@@ -239,8 +263,9 @@ read the first line of `build.md`.
    its file, or writes a first line that isn't a verdict, stop and tell the user.
 4. Decide:
    - **All PASS**: go to **Approve**.
-   - **Any CHANGES, resumes left**: set `stage: "build"`, then resume the same
-     builder with `SendMessage` to `builder-<job-id>`:
+   - **Any CHANGES, resumes left**: set `stage: "build"` and append a
+     `stage_log` entry, then resume the same builder with `SendMessage` to
+     `builder-<job-id>`:
      `Round N reviews are in factory/jobs/<job-id>/round-<N>/. Address every review with VERDICT: CHANGES, commit, and update build.md for round N+1.`
      Wait for it to finish, then go to **Build check**.
    - **Any CHANGES, no resumes left**: write `decision.md` yourself, reading
@@ -250,7 +275,8 @@ read the first line of `build.md`.
 
 ### Approve
 
-Set `stage: "approve"`. Spawn `approver` with the prompt `<paths> Final round: N.`
+Set `stage: "approve"` and append a `stage_log` entry. Spawn `approver` with
+the prompt `<paths> Final round: N.`
 When it finishes, append its `usage` entry, then read the first line of
 `decision.md`:
 
@@ -290,7 +316,8 @@ you took in this Merge; never delete or break another job's lock.
      remove it yourself, and do not call any other holder stale. Keep trying
      the `mkdir`, so the merge goes on as soon as they have removed it.
    - If you still cannot take `.merge-lock` after 30 minutes of waiting, set
-     `stage: "needs-human"` and tell the user which job holds the lock. If that
+     `stage: "needs-human"`, append a `stage_log` entry, and tell the user
+     which job holds the lock. If that
      job's session is no longer running, the lock is stale and they remove it
      with `rm -r factory/jobs/.merge-lock`. Once that merge has finished (or the
      stale lock is gone), they run `/factory approve` with this job's id, not
@@ -319,8 +346,9 @@ you took in this Merge; never delete or break another job's lock.
    A dirty path overlaps when it is also a job path; an untracked file counts
    when the job adds a file at the same path. A dirty folder (`?? dir/`)
    overlaps when any job path is under it. If any path overlaps, or the
-   checkout is not on `main`, release the lock, set `stage: "needs-human"` and
-   tell the user the job is approved but cannot merge: the main checkout has
+   checkout is not on `main`, release the lock, set `stage: "needs-human"`,
+   append a `stage_log` entry, and tell the user the job is approved but cannot
+   merge: the main checkout has
    uncommitted changes to files this job also changes (name each overlapping
    file), or is on another branch (name it). They commit, stash or remove those
    files, or switch back to `main`, then run `/factory approve <job-id>`.
@@ -384,19 +412,21 @@ you took in this Merge; never delete or break another job's lock.
    is removed, is the merge commit on `main`. Then release the lock and set
    `stage: "merged"`, `commit` to that id, `behind` and `base` to
    `null`, and `merged_at` to the current UTC time
-   (`date -u +%Y-%m-%dT%H:%M:%SZ`). If the merge fails, run
+   (`date -u +%Y-%m-%dT%H:%M:%SZ`), and append a `stage_log` entry for
+   `merged` with that same time. If the merge fails, run
    `git merge --abort` (when a merge is in progress), then release the lock, set
-   `stage: "needs-human"` and tell the user why; once they have fixed the cause
-   they run `/factory approve <job-id>`. If removing the worktree fails, the job
-   is still merged: release the lock, set `stage: "merged"`, `commit`,
-   `behind`, `base` and `merged_at` as above, and tell the user
+   `stage: "needs-human"`, append a `stage_log` entry, and tell the user why;
+   once they have fixed the cause they run `/factory approve <job-id>`. If
+   removing the worktree fails, the job is still merged: release the lock, set
+   `stage: "merged"`, `commit`, `behind`, `base` and `merged_at` as above,
+   append the `merged` `stage_log` entry as above, and tell the user
    what `git worktree remove` printed, and that `factory/<job-id>` is left to
    delete with `git branch -d` once the worktree is gone. Never push.
 
 ### Needs human
 
-Set `stage: "needs-human"` and refresh `commit` to the branch tip, and `behind`
-and `base`. The branch
+Set `stage: "needs-human"`, append a `stage_log` entry, and refresh `commit`
+to the branch tip, and `behind` and `base`. The branch
 and its worktree stay for the human to inspect. Tell the user which job is waiting, give the worktree path, and quote
 why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
 **Merge** gave.
@@ -421,7 +451,7 @@ The job must be in `needs-human`.
 
 1. Write the note, verbatim, to `factory/jobs/<job-id>/rework-<k>.md`, where `k`
    is the next unused number.
-2. Set `stage: "build"`.
+2. Set `stage: "build"` and append a `stage_log` entry.
 3. Spawn a fresh `builder` named `builder-<job-id>` with the prompt
    `<paths> Rework: read rework-<k>.md and address it, then update build.md for round N+1. Port: <port>.`
    (`N` is the job's last round.) A rework run gets a fresh `MAX_RESUMES`.
