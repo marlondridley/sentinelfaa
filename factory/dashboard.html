@@ -458,12 +458,30 @@ function jobProblems(job, cost) {
   if (isSet(job.commit) && commitOf(job) === null) {
     out.push(`Job ${job.id} has commit ${JSON.stringify(job.commit)}, not a git id`)
   }
+  if (isSet(job.behind) && behindOf(job) === null) {
+    out.push(`Job ${job.id} has behind ${JSON.stringify(job.behind)}, not a count of commits`)
+  }
+  if (isSet(job.base) && baseOf(job) === null) {
+    out.push(`Job ${job.id} has base ${JSON.stringify(job.base)}, not a git id`)
+  }
   return out
 }
 
+const isGitId = (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v)
+
 // The job's short git id: the branch tip, or the merge commit on main once merged. Null when unset or unreadable.
 function commitOf(job) {
-  return typeof job.commit === 'string' && /^[0-9a-f]{7,40}$/.test(job.commit) ? job.commit : null
+  return isGitId(job.commit) ? job.commit : null
+}
+
+// How many commits on main the branch does not have. Null when unset or unreadable.
+function behindOf(job) {
+  return Number.isInteger(job.behind) && job.behind >= 0 ? job.behind : null
+}
+
+// The short git id of the main commit the branch last synced to. Null when unset or unreadable.
+function baseOf(job) {
+  return isGitId(job.base) ? job.base : null
 }
 
 const usd = (v) => `$${v.toFixed(2)}`
@@ -572,6 +590,11 @@ function graphRow(job) {
       '<circle class="node" cx="34" cy="28" r="4"/><circle class="node" cx="12" cy="52" r="5"/>'
     : '<path class="br" d="M12 4 C12 16 34 12 34 24"/><circle class="tip" cx="34" cy="28" r="4.5"/>'
   const commit = commitOf(job)
+  const behind = behindOf(job)
+  // Drift is counted when job.json was last written, so a merged job, whose branch is gone, has none to show.
+  const drift = merged ? '' : `
+        <div class="g-meta"><span class="k">behind main</span> ${behind === null ? '-' : behind}` +
+    ` <span class="k">synced to</span> ${esc(baseOf(job) || '-')}${behind > 0 ? ' <span class="flag">out of date</span>' : ''}</div>`
   const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
   return `
     <div class="g-row ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}"
@@ -582,7 +605,7 @@ function graphRow(job) {
         <div class="num">${esc(job.id)} · ${esc(state)}</div>
         <p class="feature">${esc(job.feature)}</p>
         <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
-        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>
+        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
         <div class="g-meta"><span class="k">worktree</span> ${esc(job.worktree)}${merged ? ' <span class="k">removed</span>' : ''}</div>
       </div>
     </div>`
