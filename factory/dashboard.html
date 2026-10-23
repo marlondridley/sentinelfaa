@@ -123,8 +123,8 @@
   .kpi-bar { margin-top: auto; height: 6px; border-radius: 3px; background: var(--rule); }
   .kpi-bar span { display: block; height: 100%; border-radius: inherit; background: #6366f1; }
   .kpi-bolt { fill: var(--orange); color: var(--orange); vertical-align: -1px; margin-right: 3px; }
-  /* Where the cards are at their narrowest, between a five-column row at 1280px and a three-column row at 740px, the
-     label and its corner step down one size. Both then stay on the label's own line, so the five values stay level. */
+  /* From 641px to 1400px, where a row of cards can be at its narrowest, the label and its corner step down one size.
+     Both then stay on the label's own line, so the five values stay level. */
   @media (min-width: 641px) and (max-width: 1400px) {
     .kpi-label { font-size: 12px; letter-spacing: 0; }
     .kpi-corner { font-size: 11px; }
@@ -1440,11 +1440,12 @@ function showView() {
   }
 }
 
-// The band and the five cards can fill a phone screen, so a view that starts below it is brought to the top when it
-// is chosen. Only on a hash change, never on a poll, so nothing moves under the visitor while they read.
+// The band and the five cards can fill a phone screen, so a view that would show below the middle of the window,
+// as a sliver at the bottom or not at all, is brought to the top when it is chosen. Only on a hash change, never on
+// a poll, so nothing moves under the visitor while they read.
 function revealView() {
   const el = $(`view-${viewName()}`)
-  if (el.getBoundingClientRect().top >= document.documentElement.clientHeight) el.scrollIntoView({ block: 'start' })
+  if (el.getBoundingClientRect().top > document.documentElement.clientHeight / 2) el.scrollIntoView({ block: 'start' })
 }
 
 async function render() {
@@ -1485,7 +1486,13 @@ async function render() {
   put('view-stream', streamView(problems))
 }
 
+// Said in the banner when the very first read of jobs/ fails. There is no page to protect then, and an empty one
+// would leave the reason on the Live Stream view alone, behind the pill.
+const firstReadText = (message) => `Cannot read jobs/ (${message}). Serve this page from the factory/ folder, where ` +
+  'jobs/ appears when the first job starts. It fills in by itself once jobs/ can be read.'
+
 async function poll() {
+  const last = { jobs, prices, pricesError, engagement, engagementProblems, lastOk }
   try {
     jobs = await loadJobs()
     await loadPrices()
@@ -1496,12 +1503,16 @@ async function poll() {
     lastOk = Date.now()
     await render()
   } catch (err) {
-    // Only what reports the failure is drawn again: the pill, and the Live Stream view's status line and Last update.
-    // The banner, the cards, the board, the graph and the Cost & LOE view keep their last good markup, because this
-    // poll learned nothing new about the jobs, and redrawing from a failed read would move cards between columns and
-    // raise problems that the job files do not say.
+    // A poll counts only when all of it came through, so nothing this one read is kept: the band, the Live Stream
+    // facts and Last update go on saying exactly what the last good poll said, however far this one got.
+    ({ jobs, prices, pricesError, engagement, engagementProblems, lastOk } = last)
     streamState = 'error'
     streamError = err.message
+    // Only what reports the failure is drawn again: the pill, and the Live Stream view's status line and Last update.
+    // The cards, the board, the graph and the Cost & LOE view keep their last good markup, because this poll learned
+    // nothing new about the jobs, and redrawing from a failed read would move cards between columns and raise
+    // problems that the job files do not say.
+    if (lastOk === null) put('banner', `<div class="banner">${esc(firstReadText(err.message))}</div>`)
     renderBand()
     put('view-stream', streamView(lastProblems))
   }
