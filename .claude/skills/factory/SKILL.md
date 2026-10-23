@@ -94,6 +94,16 @@ and in its drawer, the latest round with images by default. Only image files
 from the file name, so name files for what they show (`02-filter-applied-passed.png`
 reads "Filter applied passed"), as the `evidence-driven-testing` skill says.
 
+The dashboard has four views, picked by the links under its title and kept in
+the address's hash, so Back and Forward work and a poll never changes the view.
+`#board` (the default, and for an empty or unknown hash) shows the engagement
+strip, the Executive Financial Pulse, the Executive Overview Panel, Pass rate,
+the cost per point tile and the six lanes, each with its card count. `#git`
+shows the strip and the branch graph. `#cost` shows the strip, the cost per
+point tile and a table with one row per job: stage, points, full price and cost
+per point. `#stream` shows the live event stream from each job's
+`events.jsonl`.
+
 The dashboard's job drawer has a compliance matrix, read from these same files.
 Only the rows the factory really runs show a result: the four review verdicts of
 the latest round (with each reviewer's earlier rounds), the approver's decision
