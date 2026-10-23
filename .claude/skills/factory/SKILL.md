@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory approve <job-id>, /factory rework <job-id> <note>, or /factory paid <job-id> <usd>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
+description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory approve <job-id>, /factory rework <job-id> <note>, /factory paid <job-id> <usd>, /factory cancel <job-id> <why>, or /factory revive <job-id> <stage>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
 ---
 
 # Factory
@@ -54,10 +54,10 @@ only the job it started or was handed.
 share the machine and Docker fairly. Change the number here and nowhere else.
 
 - A job is running when its `job.json` `stage` is `spec`, `build`, `review` or
-  `approve`. Jobs in `needs-human` or `merged` are not running.
-- To count running jobs, read every `factory/jobs/*/job.json`. Skip folders whose
-  name starts with `.` (such as `.merge-lock`, which is not a job) and any job
-  whose `decision.md` first line starts with `CANCELLED`.
+  `approve`. Jobs in `needs-human`, `merged` or `cancelled` are not running.
+- To count running jobs, read every `factory/jobs/*/job.json` and go by `stage`
+  alone. Skip folders whose name starts with `.` (such as `.merge-lock`, which
+  is not a job).
 - `/factory <feature>` (step 1) and `/factory next` count running jobs before they
   claim anything. At `MAX_RUNNING_JOBS` or more, they create and claim nothing
   and tell the user which jobs are running, with each job's id and stage, so the
@@ -65,7 +65,8 @@ share the machine and Docker fairly. Change the number here and nowhere else.
   waiting.
 - `/factory approve`, `/factory rework` and `/factory paid` are not blocked by
   the cap: they act on a job that already exists, and approving or reworking one
-  is how a slot frees up.
+  is how a slot frees up. `/factory cancel` is not blocked either: cancelling
+  frees a slot. `/factory revive` is blocked, because reviving claims a slot.
 - Your session stays in the main checkout. Agents work in the job's worktree.
   The main checkout is the user's, and it may be dirty or on another branch.
   Only **Merge** touches it.
@@ -96,6 +97,7 @@ state that never lands in a commit.
 <repo>/factory/jobs/<job-id>/decision.md
 <repo>/factory/jobs/<job-id>/evidence/round-<N>/{builder,ux,ui}/   screenshots, made by those agents
 <repo>/factory/jobs/.merge-lock/holder         the merge lock; holder names the job that is merging
+<repo>/factory/cancelled/<job-id>.md           summary of a cancelled job, from /factory cancel (committed, one per cancelled job)
 <repo>/../<name>-factory/<job-id>/             the job's worktree, on factory/<job-id>
 ```
 
@@ -187,7 +189,9 @@ calls it.
   `main`, since branches are never pushed, and show the drift as of the last
   refresh; they never block a job.
 - `stage` is one of `spec`, `build`, `review`, `approve`, `merged`,
-  `needs-human`. Worktree setup counts as `spec`.
+  `needs-human`, `cancelled`. Worktree setup counts as `spec`. `cancelled` is
+  an end state: only `/factory cancel` sets it, and only `/factory revive`
+  leaves it.
 - `round` is the current review round (0 until the first round starts).
 - `reviews` holds the current round only. Each value is `pending`, `PASS` or
   `CHANGES`. Earlier rounds live in their `round-<N>/` folders, which the
@@ -395,7 +399,9 @@ other jobs may have merged since. So Merge takes a lock, brings the branch up to
 date with `main`, re-tests the result and only then merges. The lock is held for
 the whole of Merge, re-test included, so a second session's merge waits until
 the first has finished and then sees the new `main`. Run commands from `<repo>`
-unless a step says otherwise.
+unless a step says otherwise. Merge never runs on a `cancelled` job, and
+`/factory cancel` refuses a job while `factory/jobs/.merge-lock/holder` names
+it (see **/factory cancel**).
 
 **Every exit releases the lock.** Once you hold the lock, every path out of
 Merge releases it with `rm -r factory/jobs/.merge-lock` before you set the stage
@@ -558,11 +564,14 @@ on its backlog line with the job id.
 
 ## /factory approve <job-id>
 
-The job must be in `needs-human`. Run **Merge** with that job id.
+The job must be in `needs-human`. Run **Merge** with that job id. A
+`cancelled` job is refused, with nothing changed: the only way back for it is
+`/factory revive`.
 
 ## /factory rework <job-id> <note>
 
-The job must be in `needs-human`.
+The job must be in `needs-human`. A `cancelled` job is refused, with nothing
+changed: the only way back for it is `/factory revive`.
 
 1. Write the note, verbatim, to `factory/jobs/<job-id>/rework-<k>.md`, where `k`
    is the next unused number.
@@ -589,6 +598,124 @@ arrives after the job.
    write a job another session runs; that session keeps `paid_usd` when it
    next rewrites the file (see **job.json**).
 3. Tell the user the job id and the amount recorded.
+
+## /factory cancel <job-id> <why>
+
+Stops a job for good, unless the owner later revives it. It works from any
+stage except `merged`. Refuse, with nothing changed, and tell the user why, when
+`factory/jobs/<job-id>/job.json` does not exist, the job is `merged` (its work
+is already on `main`), it is already `cancelled`, or
+`factory/jobs/.merge-lock/holder` names it (Merge is running for it; cancel
+again once it has finished). It is not blocked by `MAX_RUNNING_JOBS`. If another
+session orchestrates the job, that session stops its loop when it sees the
+stage is `cancelled`. If `<why>` is missing, ask the user for it once; never
+write an empty `Reason:`. Otherwise, in this order:
+
+1. **Stop its agents.** Stop the `builder-<job-id>` agent and any reviewer or
+   approver still running for the job. For each one stopped, append
+   `agent_finished` with `verdict: null`, and a `usage` entry only if the
+   stopped run's result reports figures; if it reports none, write `null`
+   tokens and seconds. Never estimate.
+2. **Refresh git ids.** If the branch `factory/<job-id>` exists, refresh
+   `commit`, `behind` and `base` from it, as in **Needs human**.
+3. **Set the stage.** Set `stage: "cancelled"`, append a `stage_log` entry (only
+   if the job already has a `stage_log`; never start one) and a
+   `stage_changed` event from the previous stage to `cancelled`.
+4. **Write the summary.** Write `factory/cancelled/<job-id>.md` in the main
+   checkout (`mkdir -p factory/cancelled` first) in the format below, and
+   commit it on `main` with that one explicit path and a one-line message, as
+   AGENTS.md says for commits. If the main checkout is not on `main`, or
+   already has uncommitted changes to that exact path, commit nothing: leave
+   the file and tell the owner to commit `factory/cancelled/<job-id>.md`
+   themselves once the main checkout is back on `main` with that path clean.
+   The stage change still stands.
+5. **Keep the rest.** Never delete the job folder, the branch or the worktree;
+   the owner may revive the job. Never write `decision.md`: the reason lives in
+   the summary file.
+
+Tell the user the job id, the stage it was cancelled from and the summary
+file's path, then, in plain words: its spend so far stays counted in the
+monthly and all-time figures; it no longer takes one of the
+`MAX_RUNNING_JOBS` running slots; nothing was deleted; and
+`/factory revive <job-id> spec` or `/factory revive <job-id> build` brings it
+back.
+
+The summary file is plain text, exactly these ten labelled lines, one per line,
+in this order:
+
+```
+Job: <job-id>
+Feature: <feature from job.json>
+Points: <points>
+Reason: <why, verbatim>
+Cancelled at: <time>
+Cancelled from stage: <the stage before cancelled>
+Branch: <branch>
+Last commit: <commit>
+Tokens: <total>
+List-price spend (USD): <spend>
+```
+
+- `Reason` is `<why>` word for word, on one line: a reason given over several
+  lines is joined with single spaces. The file is committed and the repository
+  is public, so never put secrets or personal data in it; if `<why>` holds
+  any, ask the user for a reason without them.
+
+- `Points`, `Branch` and `Last commit` are the value, or `none` when it is
+  `null` or no branch exists.
+- `Cancelled at` is the UTC time from `date -u +%Y-%m-%dT%H:%M:%SZ`. For a
+  migrated job where only the day is known, it is the date `YYYY-MM-DD` alone.
+- `Tokens` is the sum of `tokens` over `usage`, and `List-price spend (USD)`
+  the sum of tokens / 1e6 × `usd_per_mtok[model]` from `factory/prices.json`,
+  to two decimals. If any entry has `null` tokens or a model missing from
+  `prices.json`, both read `unknown`: never a partial sum, never an estimate.
+  With no `usage` entries they read `0` and `0.00`.
+
+A cancelled job's `usage` stays counted in the dashboard's monthly pulse, the
+strip's all-time spend and the cost view: the tokens were spent. Showing
+cancelled jobs on the dashboard is separate work; this skill only records the
+stage.
+
+**Migration.** Jobs `020-executive-briefing` and `027-pulse-in-header` were
+cancelled before this stage existed: the first line of their `decision.md`
+reads `CANCELLED`, while their `job.json` still says `build` and
+`needs-human`. Their summary files, `factory/cancelled/020-executive-briefing.md`
+and `factory/cancelled/027-pulse-in-header.md`, were written from their
+`job.json` and `decision.md`, with `Cancelled at: 2026-10-23` and
+`Cancelled from stage:` `build` for 020 and `spec` for 027, which never got a
+spec written. Then only `stage` was set to
+`cancelled` in each `job.json`: no `stage_log` entry, no event, no other field,
+and their `decision.md` files stay as they are. `decision.md` no longer decides
+whether a job is running; `stage` does.
+
+## /factory revive <job-id> <stage>
+
+Brings a cancelled job back. Otherwise change nothing and tell the user, in one
+short sentence:
+
+- the job is not cancelled: say its stage, and that only a cancelled job can be
+  revived;
+- `<stage>` is not `spec` or `build`: say those are the two stages a job can
+  go back to.
+
+1. Count running jobs (see **Parallel jobs**). At `MAX_RUNNING_JOBS` or more,
+   change nothing and tell the user there is no free slot, which jobs are
+   running, with each job's id and stage, and to approve, rework or cancel one
+   of them first: reviving claims a slot.
+2. Set `stage` to `<stage>`, and append a `stage_log` entry (only if the job
+   already has a `stage_log`; never start one) and a `stage_changed` event
+   from `cancelled`. Keep `usage`, `points`, `paid_usd` and every other field
+   as they are, so the job's cost keeps adding up.
+3. Leave `factory/cancelled/<job-id>.md` in place, unedited, as history.
+4. Tell the user the job id, the stage it went back to, that its earlier spend
+   carries on adding up, and that its summary file stays as history.
+5. Carry on from that stage's step of **/factory <feature>**, without setting
+   the stage again. If the worktree is gone, recreate it first: from the
+   existing branch with `git worktree add <worktree> factory/<job-id>` (no
+   `-b`), or by step 2 if the branch does not exist either. For `spec`, carry
+   on at step 3. For `build`, it is step 4, with the builder building round
+   `N+1` (`N` the job's last round, as for a rework run) and a fresh
+   `MAX_RESUMES`. Your session now orchestrates the job.
 
 ## Reporting
 
