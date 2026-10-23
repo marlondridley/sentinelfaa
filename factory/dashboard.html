@@ -398,12 +398,6 @@
 
   /* Executive briefing: a full-page view shown by the body's briefing class, in place of everything else. It is a light
      panel on screen too, so the owner sees what will print. Its own variables override the dark theme inside it. */
-  .export {
-    margin-left: auto; cursor: pointer; font-size: 12px; font-weight: 600; padding: 3px 10px;
-    border-radius: 6px; border: 1px solid var(--active); background: none; color: var(--active);
-  }
-  .export:hover { background: color-mix(in srgb, var(--active) 14%, transparent); }
-  .export:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   #briefing { display: none; }
   body.briefing > :not(#briefing) { display: none; }
   body.briefing #briefing { display: block; }
@@ -521,7 +515,6 @@
 <body>
 <header>
   <h1>Software factory</h1>
-  <button type="button" class="export" id="export">Export Executive Briefing</button>
   <div class="status" id="status">connecting…</div>
 </header>
 <nav id="views" aria-label="Views">
@@ -1773,9 +1766,6 @@ function closeDrawer() {
 }
 
 document.addEventListener('click', (e) => {
-  if (e.target.closest('#export')) return openBriefing()
-  if (e.target.closest('#b-print')) return window.print()
-  if (e.target.closest('#b-close')) return closeBriefing()
   const approveEl = e.target.closest('[data-approve]')
   if (approveEl) return copyApprove(approveEl)
   const cardEl = e.target.closest('[data-job]')
@@ -1947,11 +1937,12 @@ async function refreshMatrix(base, files, openDecision) {
 
 // ---- Executive briefing -----------------------------------------------------
 
-// The briefing is a snapshot: openBriefing() copies the jobs and works out every per-job figure once, and the period
+// The briefing is a snapshot: exportBriefing() copies the jobs and works out every per-job figure once, and the period
 // select only filters that copy. poll() never draws it, so nothing changes under the print dialog; reopening makes a
 // new snapshot. Only merged jobs are counted; the rest are listed once, as in flight.
 let briefing = null // the snapshot while the briefing is open, else null
-let briefingRun = 0 // the current openBriefing() call, so a slow one cannot draw over a later one or a closed briefing
+let briefingRun = 0 // the current exportBriefing() call, so a slow one cannot draw over a later one or a closed briefing
+let briefingFrom = null // the element that had focus before the briefing opened, given focus back on close
 
 const utcDate = (ms) => new Date(ms).toISOString().slice(0, 10)
 const utcTime = (ms) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`
@@ -2174,8 +2165,12 @@ function drawBriefing() {
   if (briefing) $('b-body').innerHTML = briefingHtml(briefing, $('b-period').value)
 }
 
-async function openBriefing() {
+// The briefing's entry point. No control on the page calls it yet; the header's export button will (job 031). It
+// resolves once the briefing is drawn, or once a later call or a close has taken over.
+async function exportBriefing() {
   const run = ++briefingRun
+  // A second call while the briefing is open would see its own heading focused, so the first call's element is kept.
+  if (!document.body.classList.contains('briefing')) briefingFrom = document.activeElement
   // Everything from job.json and prices.json is read now, before any await, so a poll cannot mix in.
   const snapshot = {
     now: Date.now(),
@@ -2198,10 +2193,15 @@ function closeBriefing() {
   briefingRun++
   briefing = null
   document.body.classList.remove('briefing')
-  $('export').focus()
+  // Back to where the reader was, unless a redraw has since removed that element.
+  if (briefingFrom?.isConnected) briefingFrom.focus()
+  briefingFrom = null
 }
 
 $('b-period').addEventListener('change', drawBriefing)
+$('b-print').addEventListener('click', () => window.print())
+$('b-close').addEventListener('click', closeBriefing)
+window.exportBriefing = exportBriefing
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 
