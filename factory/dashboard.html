@@ -123,6 +123,12 @@
   .kpi-bar { margin-top: auto; height: 6px; border-radius: 3px; background: var(--rule); }
   .kpi-bar span { display: block; height: 100%; border-radius: inherit; background: #6366f1; }
   .kpi-bolt { fill: var(--orange); color: var(--orange); vertical-align: -1px; margin-right: 3px; }
+  /* Where the cards are at their narrowest, between a five-column row at 1280px and a three-column row at 740px, the
+     label and its corner step down one size. Both then stay on the label's own line, so the five values stay level. */
+  @media (min-width: 641px) and (max-width: 1400px) {
+    .kpi-label { font-size: 12px; letter-spacing: 0; }
+    .kpi-corner { font-size: 11px; }
+  }
   .c-indigo { color: var(--indigo); font-family: var(--mono); }
   .c-emerald { color: var(--emerald); font-family: var(--mono); }
   .c-amber { color: var(--amber); }
@@ -260,9 +266,12 @@
   /* Cost and LOE */
   .cost-wrap { padding: 16px 24px 40px; }
   .engagement { font-family: var(--mono); font-size: 12px; color: var(--text); margin-bottom: 16px; }
+  /* Wider than the cards, and a smaller figure: these tiles hold the longest values on the page, such as a spend
+     against a budget, and each one stays on a single line. */
   .tile-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px;
   }
+  .tile-grid .kpi-value { font-size: 18px; }
   .cost-table-box { overflow-x: auto; margin-bottom: 24px; }
   #cost-table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
   #cost-table th, #cost-table td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; white-space: nowrap; }
@@ -297,6 +306,7 @@
   .facts dt { font-size: 12px; color: var(--label); }
   .facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
   .facts ul { margin: 4px 0 0; padding-left: 1.2em; color: var(--human); }
+  .stream-table-box { overflow-x: auto; }
   #stream-activity { border-collapse: collapse; font-size: 13px; }
   #stream-activity th, #stream-activity td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; white-space: nowrap; }
   #stream-activity th { color: var(--label); font-weight: 600; font-size: 12px; }
@@ -466,10 +476,12 @@
 </header>
 <div id="banner"></div>
 <div class="kpi-grid" id="kpi-cards"></div>
-<main class="view board" id="view-board"></main>
-<section class="view" id="view-git" aria-label="Git topology"></section>
-<section class="view" id="view-cost" aria-label="Cost and LOE"></section>
-<section class="view" id="view-stream" aria-label="Live stream"></section>
+<main>
+  <section class="view board" id="view-board" aria-label="Engagement board"></section>
+  <section class="view" id="view-git" aria-label="Git topology"></section>
+  <section class="view" id="view-cost" aria-label="Cost and LOE"></section>
+  <section class="view" id="view-stream" aria-label="Live stream"></section>
+</main>
 <footer>
   <span>/factory &lt;feature&gt;</span>
   <span>/factory next</span>
@@ -537,6 +549,7 @@ let openText = null
 let streamState = 'connecting' // 'active' after a poll succeeded, 'error' after one threw
 let streamError = null
 let lastOk = null // ms of the last successful poll, or null before the first one
+let lastProblems = [] // the problems of the last render, so a failed poll does not invent new ones
 
 async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
@@ -1131,8 +1144,8 @@ function renderBand() {
 const BOLT = '<svg class="kpi-bolt" width="9" height="12" viewBox="0 0 9 12" aria-hidden="true">' +
   '<path d="M5.4 0 0 7.2h2.8L2.2 12 9 4.8H5z"/></svg>'
 
-// Each card keeps the whole explanation its tile had before, as a title and, for a screen reader, as the text its
-// aria-describedby points at; the two are the same lines, so nothing on screen is the short version of something lost.
+// Each card carries its full explanation twice over: as a title, and as the text its aria-describedby points at for a
+// screen reader. Both are the same lines, so what a card shows is never the only account of how its figure was made.
 function kpiCards(figs) {
   const [value, cycle, flow] = figs
   const v = velocity()
@@ -1222,7 +1235,7 @@ function gitLane(job, y) {
       `<text class="g-line tip" x="56" y="${y + 58}">tip ${commit}</text>${drift}`
   return `<g class="g-job ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}" ` +
     `data-job="${esc(job.id)}" tabindex="0" role="button">` +
-    `<rect class="g-hit" x="2" y="${y}" width="${GIT.w - 4}" height="${GIT.lane - 6}" rx="8"/>` +
+    `<rect class="g-hit" x="6" y="${y + 2}" width="${GIT.w - 12}" height="${GIT.lane - 10}" rx="8"/>` +
     `<circle class="main-node" cx="12" cy="${y + 4}" r="3"/>${body}</g>`
 }
 
@@ -1331,10 +1344,10 @@ function streamView(problems) {
     `<div><dt>Problems</dt><dd>${problems.length}` +
     (problems.length ? `<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : '') + '</dd></div>'
   const table = rows.length
-    ? '<table id="stream-activity"><thead><tr><th>Time (UTC)</th><th>Job</th><th>Stage entered</th></tr></thead><tbody>' +
+    ? '<div class="stream-table-box"><table id="stream-activity"><thead><tr><th>Time (UTC)</th><th>Job</th><th>Stage entered</th></tr></thead><tbody>' +
       rows.map((r) => `<tr><td>${esc(r.at)}</td>` +
         `<td><button class="job-btn" type="button" data-job="${esc(r.id)}">${esc(r.id)}</button></td>` +
-        `<td>${esc(r.stage)}</td></tr>`).join('') + '</tbody></table>'
+        `<td>${esc(r.stage)}</td></tr>`).join('') + '</tbody></table></div>'
     : '<div class="empty">—</div>'
   const left = missing
     ? `<div class="stream-left">${esc(`${missing} ${missing === 1 ? 'job has' : 'jobs have'} no readable stage log and ` +
@@ -1407,12 +1420,17 @@ async function copyApprove(el) {
 // ---- Views -----------------------------------------------------------------------
 
 // The four views live in one page and the URL hash chooses between them, so each has its own address and the browser's
-// Back button steps through them. An empty or unknown hash is the board.
+// Back button steps through them. The hash text is matched as written, never decoded: the four names are plain ASCII,
+// so an empty, encoded, malformed or unknown hash is simply none of them and the board is shown.
 const VIEWS = ['board', 'git', 'cost', 'stream']
 
+function viewName() {
+  const name = location.hash.replace(/^#/, '')
+  return VIEWS.includes(name) ? name : 'board'
+}
+
 function showView() {
-  const name = decodeURIComponent(location.hash.replace(/^#/, ''))
-  const now = VIEWS.includes(name) ? name : 'board'
+  const now = viewName()
   for (const v of VIEWS) $(`view-${v}`).hidden = v !== now
   for (const a of $('view-toggle').querySelectorAll('a')) {
     const on = a.getAttribute('href') === `#${now}`
@@ -1420,6 +1438,13 @@ function showView() {
     if (on) a.setAttribute('aria-current', 'page')
     else a.removeAttribute('aria-current')
   }
+}
+
+// The band and the five cards can fill a phone screen, so a view that starts below it is brought to the top when it
+// is chosen. Only on a hash change, never on a poll, so nothing moves under the visitor while they read.
+function revealView() {
+  const el = $(`view-${viewName()}`)
+  if (el.getBoundingClientRect().top >= document.documentElement.clientHeight) el.scrollIntoView({ block: 'start' })
 }
 
 async function render() {
@@ -1444,12 +1469,13 @@ async function render() {
     <section class="col" data-col="${s.key}">
       <div class="col-head">
         <div class="col-top"><h2 class="col-title">${esc(s.label)}</h2><span class="col-badge">${byStage[s.key].length}</span></div>
-        <span class="who">${esc(s.who)}</span>
+        <span class="who" title="${esc(s.who)}">${esc(s.who)}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   // Worked out once and shared, so the cards and the Cost & LOE view can never disagree.
   const figs = overviewFigures(pasts)
+  lastProblems = problems
   renderBand()
   put('banner', problems.map((p) => `<div class="banner">${esc(p)}</div>`).join(''))
   put('kpi-cards', kpiCards(figs))
@@ -1468,12 +1494,17 @@ async function poll() {
     streamState = 'active'
     streamError = null
     lastOk = Date.now()
+    await render()
   } catch (err) {
-    // The last good data stays on screen; the pill, the Live Stream view and Last update say the read failed.
+    // Only what reports the failure is drawn again: the pill, and the Live Stream view's status line and Last update.
+    // The banner, the cards, the board, the graph and the Cost & LOE view keep their last good markup, because this
+    // poll learned nothing new about the jobs, and redrawing from a failed read would move cards between columns and
+    // raise problems that the job files do not say.
     streamState = 'error'
     streamError = err.message
+    renderBand()
+    put('view-stream', streamView(lastProblems))
   }
-  await render()
 }
 
 // Each orchestrator session writes only its own jobs/<id>/job.json.
@@ -1484,7 +1515,15 @@ async function loadJobs() {
     .filter((h) => h.endsWith('/'))
     .map((h) => h.slice(0, -1))
     .sort()
-  return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+  return Promise.all(ids.map(async (id) => {
+    const job = JSON.parse(await fetchText(`jobs/${id}/job.json`))
+    // Anything that is not a JSON object is not a job. It counts as a failed read, so the last good board stays on
+    // screen and the pill says the stream is in error, rather than the page failing part-way through a render.
+    if (job === null || typeof job !== 'object' || Array.isArray(job)) {
+      throw new Error(`jobs/${id}/job.json is not a job object`)
+    }
+    return job
+  }))
 }
 
 // A missing or broken prices.json makes full prices unknown and says why in a banner; the board still renders.
@@ -1517,26 +1556,29 @@ const ENGAGEMENT_KEYS = {
   traditional_usd_per_point: [(v) => Number.isFinite(v) && v > 0, 'an amount in dollars above zero'],
 }
 
+// Nothing is assigned until the read is over, so a folder listing that fails leaves the last good engagement on the
+// band while the poll reports the failure.
 async function loadEngagement() {
-  engagement = {}
-  engagementProblems = []
-  if (!(await listLinks('./')).includes('engagement.json')) return
-  let e
-  try {
-    e = JSON.parse(await fetchText('engagement.json'))
-  } catch (err) {
-    engagementProblems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint, budget and AI cost efficiency show -`)
-    return
+  const next = {}
+  const problems = []
+  if ((await listLinks('./')).includes('engagement.json')) {
+    try {
+      const e = JSON.parse(await fetchText('engagement.json'))
+      if (e === null || typeof e !== 'object' || Array.isArray(e)) {
+        problems.push('engagement.json is not a JSON object, so client, stage, sprint, budget and AI cost efficiency show -')
+      } else {
+        for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
+          if (!isSet(e[k])) continue
+          if (ok(e[k])) next[k] = e[k]
+          else problems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
+        }
+      }
+    } catch (err) {
+      problems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint, budget and AI cost efficiency show -`)
+    }
   }
-  if (e === null || typeof e !== 'object' || Array.isArray(e)) {
-    engagementProblems.push('engagement.json is not a JSON object, so client, stage, sprint, budget and AI cost efficiency show -')
-    return
-  }
-  for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
-    if (!isSet(e[k])) continue
-    if (ok(e[k])) engagement[k] = e[k]
-    else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
-  }
+  engagement = next
+  engagementProblems = problems
 }
 
 // ---- Drawer --------------------------------------------------------------
@@ -1883,7 +1925,10 @@ function markdown(src) {
   return html
 }
 
-window.addEventListener('hashchange', showView)
+window.addEventListener('hashchange', () => {
+  showView()
+  revealView()
+})
 showView()
 poll()
 setInterval(poll, POLL_MS)
