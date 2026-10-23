@@ -370,7 +370,7 @@ Agent Evaluation page as unconfirmed.
 `LLMBudgetNearlyUsed` (`docs/runbooks.md`). The owner chose to let that
 endpoint answer without a key, so no key has to be put in
 `monitoring/prometheus.yml` (`require_auth_for_metrics_endpoint: false` in
-`instraclustr/litellm-config.yaml`). The cost of that choice: any container on
+`instraclustr/litellm-config.yaml`). That choice has a cost. Any container on
 `nas-network` can read the gateway's metrics, which include key aliases, key
 hashes and spend and budget figures, though no prompt, response or key.
 Nothing outside this machine can reach it: the gateway's host port is

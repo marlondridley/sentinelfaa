@@ -37,7 +37,7 @@ litellm_settings:
   # stack's Prometheus (job nas-litellm): the sentinel-app key's remaining and
   # maximum budget feed the LLMBudgetNearlyUsed alert.
   callbacks: ["prometheus"]
-  # The owner's choice: /metrics answers without a key, so no key is put in
+  # The owner chose to let /metrics answer without a key, so no key is put in
   # prometheus.yml. Any container on nas-network can then read key aliases, key
   # hashes and spend figures (not prompts, responses or keys); the host port is
   # loopback only, so nothing off this machine can. Set it to true to require a
