@@ -1901,10 +1901,11 @@ document.addEventListener('keydown', (e) => {
   }
 })
 // m opens the live event stream, as the header bar's (m) says. Not while typing in a field, with Ctrl, Meta or Alt held,
-// or on a held key's repeats.
+// on a held key's repeats, or while the briefing hides the bar.
 document.addEventListener('keydown', (e) => {
   if ((e.key !== 'm' && e.key !== 'M') || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
   if (e.target.matches('input, textarea, select') || e.target.isContentEditable) return
+  if (document.body.classList.contains('briefing')) return
   location.hash = '#stream'
 })
 
