@@ -415,8 +415,8 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
       `Files:` from the piece, the notes from its `Notes:` line, an empty
       `Grooming proposal:` section, and `Rank:` after the existing ideas, so
       each piece is 10 higher than the one before. Commit each one alone, with
-      its one path, as **/factory idea** does. The running-job cap does not
-      apply: ideas take no slot. Check first, before writing any: if the main
+      its one path, as **/factory idea** does. The running-job
+      cap does not apply: ideas take no slot. Check first, before writing any: if the main
       checkout is not on `main`, or any piece's slug already exists in
       `factory/backlog/` (or two pieces give the same slug), stop before
       writing or cancelling anything and tell the owner which.
