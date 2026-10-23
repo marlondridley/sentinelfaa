@@ -362,6 +362,12 @@
   #overview .tip .line { display: block; overflow-wrap: anywhere; }
   #overview .tip .line + .line { margin-top: 6px; }
 
+  /* Executive Financial Pulse: one plain .kpi tile in a single-column row, with the same gutter as #overview so the
+     two headings line up. The id keeps the row at one column under the @media rules for .kpis. */
+  #pulse { padding: 20px 32px 0; }
+  #pulse .col-head { padding-left: 0; }
+  #pulse .kpis { grid-template-columns: minmax(0, 1fr); padding: 0; }
+
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
@@ -377,6 +383,7 @@
     /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
     #overview { padding-left: 16px; padding-right: 16px; }
     #overview .kpis { grid-template-columns: minmax(0, 1fr); }
+    #pulse { padding-left: 16px; padding-right: 16px; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
@@ -404,6 +411,10 @@
   <div id="stream-body"></div>
 </details>
 <div class="strip" id="strip"></div>
+<section id="pulse" aria-labelledby="pulse-title">
+  <div class="col-head"><h2 id="pulse-title">Executive Financial Pulse</h2><span class="who">this calendar month (UTC), from the job files</span></div>
+  <div class="kpis" id="pulse-tiles"></div>
+</section>
 <section id="overview" aria-labelledby="overview-title">
   <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
   <div class="kpis" id="overview-tiles"></div>
@@ -995,6 +1006,43 @@ function strip() {
     ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
 }
 
+// The Executive Financial Pulse tile: this UTC calendar month's spend at list price against the owner's monthly budget.
+// The usage log has no dates, so each job's whole full price is placed in one month by one date: a merged job in the
+// month of its merged_at, a job not yet merged in this month, as its work is being paid for now. A merged job with no
+// readable merged_at cannot be placed, and a counted job with an unknown price makes the spend unknown: either shows
+// "-" with the first such job named, never a short total. The month is UTC because merged_at is stored in UTC.
+function pulse() {
+  const now = new Date(Date.now())
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)
+  const month = new Date(start).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  let spent = 0
+  let counted = 0
+  let gap = null
+  for (const job of jobs) {
+    const at = job.stage === 'merged' ? mergedAt(job) : start
+    if (at === null) {
+      gap = gap || `no merged_at on job ${job.id}`
+      continue
+    }
+    if (at < start || at >= end) continue
+    counted++
+    const price = costOf(job).total.usd
+    if (price === null) gap = gap || `unknown price on job ${job.id}`
+    else spent += price
+  }
+  const budget = isSet(engagement.monthly_budget_usd) ? engagement.monthly_budget_usd : null
+  const value = gap ? '-' : `${usd(spent)} / ${budget === null ? '-' : usd(budget)} (${budget === null ? '-' : percent(spent, budget)})`
+  const subs = [
+    `${month} (UTC) · this calendar month only; the strip above is all jobs, all time`,
+    `list price, not paid · ${counted} ${counted === 1 ? 'job' : 'jobs'} this month`,
+    ...(gap ? [gap] : []),
+    ...(budget === null ? ['set monthly_budget_usd in factory/engagement.json'] : []),
+  ]
+  return `<div class="kpi"><div class="k">Spend this month (UTC calendar month, list price)</div>` +
+    `<div class="v">${esc(value)}</div>${subs.map((s) => `<div class="sub">${esc(s)}</div>`).join('')}</div>`
+}
+
 // Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
 // means the owner sent the job back. Limit: once such a file exists, the page cannot tell a later reviewer-requested
 // fix from an owner rework, so the job shows in Rework for any later time in build.
@@ -1120,14 +1168,16 @@ async function render() {
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const stripHtml = strip()
+  const pulseHtml = pulse()
   const overviewHtml = overviewPanel(pasts)
   const kpiHtml = kpis()
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
-  if (html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner
+  if (html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + banner
     $('board').innerHTML = html
     $('strip').innerHTML = stripHtml
+    $('pulse-tiles').innerHTML = pulseHtml
     $('overview-tiles').innerHTML = overviewHtml
     $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
