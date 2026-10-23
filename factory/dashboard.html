@@ -562,6 +562,13 @@
   #exec-bar .btn-header:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   #exec-bar .btn-header[aria-current="page"] { border-color: var(--active); color: var(--active); }
   #exec-bar .shortcut-tag { color: #818CF8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  /* The export button is a <button>, which does not inherit the bar's font as the stream link does. [hidden] needs its
+     own rule because .btn-header sets display; the script unhides the button only once exportBriefing exists. With two
+     buttons the right group is wider than a phone, so it wraps too. */
+  #exec-bar .header-right { flex-wrap: wrap; }
+  #exec-bar .btn-export { font-family: inherit; }
+  #exec-bar .btn-export[hidden] { display: none; }
+  #exec-bar .btn-icon { stroke: #94A3B8; }
   @media (max-width: 640px) {
     #exec-bar { padding-left: 16px; padding-right: 16px; }
     #exec-bar .header-center { white-space: normal; }
@@ -580,6 +587,14 @@
   <div class="header-left" id="exec-left"></div>
   <div class="header-center" id="exec-centre"></div>
   <div class="header-right">
+    <button type="button" class="btn-header btn-export" id="btn-export-briefing" hidden>
+      <svg class="btn-icon" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      EXPORT EXECUTIVE BRIEFING
+    </button>
     <a href="#stream" class="btn-header btn-stream" id="btn-stream-trigger" aria-keyshortcuts="m"><span class="shortcut-tag">(m)</span> LIVE EVENT STREAM</a>
   </div>
 </div>
@@ -2273,8 +2288,8 @@ function drawBriefing() {
   if (briefing) $('b-body').innerHTML = briefingHtml(briefing, $('b-period').value)
 }
 
-// The briefing's entry point. No control on the page calls it yet; the header's export button will (job 031). It
-// resolves once the briefing is drawn, or once a later call or a close has taken over.
+// The briefing's entry point; the header bar's Export button calls it. It resolves once the briefing is drawn, or once
+// a later call or a close has taken over.
 async function exportBriefing() {
   const run = ++briefingRun
   // A second call while the briefing is open would see its own heading focused, so the first call's element is kept.
@@ -2310,6 +2325,11 @@ $('b-period').addEventListener('change', drawBriefing)
 $('b-print').addEventListener('click', () => window.print())
 $('b-close').addEventListener('click', closeBriefing)
 window.exportBriefing = exportBriefing
+// The header bar's Export button is shown only when there is a briefing to open, so it is never a dead button.
+if (typeof window.exportBriefing === 'function') {
+  $('btn-export-briefing').addEventListener('click', () => window.exportBriefing())
+  $('btn-export-briefing').hidden = false
+}
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 

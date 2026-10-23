@@ -98,8 +98,9 @@ The dashboard has four views, picked by the links under its title and kept in
 the address's hash, so Back and Forward work and a poll never changes the view.
 Every view has the header bar under those links: the client and sprint from
 `engagement.json`, the Executive Financial Pulse line (this month's spend
-against the monthly budget) and the Live Event Stream link, also opened by the
-`m` key. `#board` (the default, and for an empty or unknown hash) shows the
+against the monthly budget), the Export Executive Briefing button and the Live
+Event Stream link, also opened by the `m` key. `#board` (the default, and for an
+empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel, Pass rate and the six lanes, each with its card count. `#git`
 shows the strip and the branch graph. `#cost` shows the strip, the cost per
@@ -119,7 +120,8 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
 The dashboard page has a `window.exportBriefing()` function that opens a
 print-ready snapshot of the jobs merged in a chosen period, read from
 `job.json`, `build.md` and `decision.md`, that the owner saves as PDF from the
-browser's print dialog. No button calls it yet.
+browser's print dialog. The header bar's Export Executive Briefing button
+calls it.
 
 ### job.json
 
