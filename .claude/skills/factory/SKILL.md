@@ -70,7 +70,7 @@ state that never lands in a commit.
 ```
 <repo>/factory/backlog.md                      queue for /factory next
 <repo>/factory/prices.json                     list price per model, for the dashboard's full price (committed)
-<repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd for the dashboard; never created or defaulted
+<repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd, traditional_usd_per_point for the dashboard; never created or defaulted
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
