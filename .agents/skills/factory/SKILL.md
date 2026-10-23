@@ -318,8 +318,21 @@ board. The backlog has no length limit; only promotion is gated, by
 Each idea is its own small plain-text file, `factory/backlog/<slug>.md`,
 committed to git, with LF line endings. `<slug>` is 2-5 lowercase words joined
 by `-` (only `a-z`, `0-9` and `-`, no job number), unique within
-`factory/backlog/`. The file is exactly these lines, in this order; a header
-line is `Key: value` on one line:
+`factory/backlog/`: the file name matches `^[a-z0-9]+(-[a-z0-9]+){1,4}\.md$`.
+To make a slug from a title, lowercase it, turn every character other than
+`a-z` and `0-9` into a space, and join the first 4 words with `-`; a title of
+one word gets `-idea` added. A file whose name breaks the rule is never
+promoted: `/factory next` stops and asks the owner to rename it.
+
+Write an idea file with the Write tool, never with `echo` or a heredoc, so a
+title holding `$(...)`, backticks or a line break never reaches the shell. A
+title with a line break is joined into one line with single spaces, so it
+cannot forge a header or a `Grooming proposal:` line.
+In shell commands, only a slug that follows the rule goes into a path or a
+commit message, inside single quotes, with paths after `--`.
+
+The file is exactly these lines, in this order; a header line is `Key: value`
+on one line:
 
 ```
 Title: <one line, plain words; this is the feature text /factory <feature> receives>
@@ -364,8 +377,9 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
 
 1. **Create the job.** `mkdir -p factory/jobs`, then count running jobs (see
    **Parallel jobs**). At `MAX_RUNNING_JOBS` or more, stop: create no folder,
-   and tell the user the cap is reached and which jobs are running, with each
-   job's id and stage. Otherwise pick the next 3-digit number
+   and tell the user that `MAX_RUNNING_JOBS` jobs are already running, with
+   each job's id and stage, and that they approve, rework or cancel one of
+   them, then run the command again. Otherwise pick the next 3-digit number
    after the highest numbered folder in `factory/jobs/` (`001` if there are
    none) and a 2–4 word kebab-case slug of the feature: `004-blog-reading-time`.
    Claim it with `mkdir factory/jobs/<job-id>` (no `-p`). If that fails because
@@ -408,25 +422,36 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
    1. **Check the split.** `spec.md` must have a `## Split` section with at
       least two pieces, each with its `Size:`, `Files:` and `Notes:` lines. If
       not, stop, change nothing, and tell the owner the spec-writer left no
-      usable split. If a piece's `Size:` is not 1, 2 or 3, write no ideas,
-      cancel nothing, and tell the owner which piece.
-   2. **Write one idea per piece**, in order, exactly as **/factory idea**
-      does: the slug from the piece's title, `Title:` the title, `Size:` and
-      `Files:` from the piece, the notes from its `Notes:` line, an empty
-      `Grooming proposal:` section, and `Rank:` after the existing ideas, so
-      each piece is 10 higher than the one before. Commit each one alone, with
-      its one path, as **/factory idea** does. The running-job
-      cap does not apply: ideas take no slot. Check first, before writing any: if the main
-      checkout is not on `main`, or any piece's slug already exists in
-      `factory/backlog/` (or two pieces give the same slug), stop before
-      writing or cancelling anything and tell the owner which.
-   3. **Cancel the job.** Run
+      usable split: they cancel the job or send it back with a note. If a
+      piece's `Size:` is not 1, 2 or 3, write no ideas, cancel nothing, and
+      tell the owner which piece.
+   2. **Check the main checkout**, before writing anything. Make each piece's
+      slug from its title (see **The backlog**). If the main checkout is not
+      on `main`, stop, change nothing, and tell the owner to switch it back to
+      `main` and then tell you to carry on. If a slug already exists in
+      `factory/backlog/`, or two pieces give the same slug, stop, change
+      nothing, and name the slug: the owner renames or removes the existing
+      idea file, or edits the piece title in `spec.md`, then tells you to
+      carry on.
+   3. **Write one idea per piece**, in order, exactly as **/factory idea**
+      does: `Title:` the piece's title, `Size:` and `Files:` from the piece,
+      the notes from its `Notes:` line, an empty `Grooming proposal:` section,
+      and `Rank:` after the existing ideas, so each piece is 10 higher than the
+      one before. Commit each one alone, with its one path, as
+      **/factory idea** does. The running-job
+      cap does not apply: ideas take no slot. If a commit fails partway, stop:
+      do not cancel the job. Tell the owner which ideas are committed, which
+      one is written but not committed (they commit that one path or delete
+      the file), and which were not written, and that nothing was started.
+   4. **Cancel the job.** Run
       `/factory cancel <job-id> too big, split into <count> ideas`, with
       `<count>` the number of ideas written. The ideas are written first, so a
       failure here leaves them and the spec in place.
-   4. **Report**, in plain words: each idea created (its path, title and size),
-      that the job was cancelled as too big, and that nothing was promoted or
-      started: the owner promotes the ideas with `/factory next` when ready.
+   5. **Report**, in plain words: each idea created (its path, title and size,
+      the size the spec-writer gave), that the job was cancelled as too big,
+      and that nothing was started. `/factory next` takes the idea with the
+      lowest `Rank:` first, so the pieces run in the order listed unless the
+      owner edits `Rank:` to change it; they run `/factory next` when ready.
 4. **Build.** Set `stage: "build"` and append a `stage_log` entry and a
    `stage_changed` event. Append `agent_started` for `builder`, round 1, then
    spawn `builder` **with the name
@@ -656,15 +681,21 @@ Promotes the next idea in the backlog (see **The backlog**) to a job and runs
 it. Run commands from `<repo>`.
 
 1. **Cap.** Count running jobs (see **Parallel jobs**). At `MAX_RUNNING_JOBS`
-   or more, stop: promote nothing, and tell the user the cap is reached and
-   which jobs are running, with each job's id and stage.
-2. **Pick.** Read the `Rank:` line of every `factory/backlog/*.md` (the files
-   directly in the folder, not `done/`) and take the idea with the lowest
-   `Rank`; on a tie, the file name that comes first alphabetically. If there
-   is none, say the backlog is empty and stop.
+   or more, stop and change nothing. Tell the user that `MAX_RUNNING_JOBS`
+   jobs are already running, with each job's id and stage, and that they
+   approve, rework or cancel one of them, then run `/factory next` again.
+2. **Pick.** List the files directly in `factory/backlog/` (not `done/`).
+   Every one must be named by the slug rule,
+   `^[a-z0-9]+(-[a-z0-9]+){1,4}\.md$` (see **The backlog**); if any is not,
+   stop before claiming anything and tell the owner, in plain words, which
+   file to rename (2-5 lowercase words joined by `-`, ending `.md`) and to
+   commit the rename, then run `/factory next` again. Otherwise read the
+   `Rank:` line of each and take the idea with the lowest `Rank`; on a tie,
+   the file name that comes first alphabetically. `<slug>` is its file name
+   without `.md`. If there is none, say the backlog is empty and stop.
 3. **Check the main checkout.** Promotion commits on `main` there, so
    `git branch --show-current` must print `main`, and
-   `git status --porcelain -- factory/backlog/<file>` must print nothing. If
+   `git status --porcelain -- 'factory/backlog/<slug>.md'` must print nothing. If
    either fails, stop before claiming anything and tell the owner which: switch
    the main checkout back to `main`, or commit or discard their edit to that
    idea file. Then they run `/factory next` again.
@@ -675,7 +706,7 @@ it. Run commands from `<repo>`.
 5. **Claim the idea** by moving it:
    ```bash
    mkdir -p factory/backlog/done
-   git mv factory/backlog/<file> factory/backlog/done/<job-id>.md
+   git mv -- 'factory/backlog/<slug>.md' 'factory/backlog/done/<job-id>.md'
    ```
    If `git mv` fails because the file is gone, another session promoted it:
    remove the folder you just made (`rmdir factory/jobs/<job-id>`, still
@@ -683,23 +714,26 @@ it. Run commands from `<repo>`.
    say so and stop. If it fails any other way, remove the folder too, then
    stop and quote what git printed.
 6. **Commit the promotion.** Add the line `Job: <job-id>` directly after the
-   `Files:` line of the moved file, then commit only the two paths, so the
-   owner's other uncommitted files are never staged or touched:
+   `Files:` line of the moved file (with the Edit tool), then commit only the
+   two paths, so the owner's other uncommitted files are never staged or
+   touched:
    ```bash
-   git add -- factory/backlog/done/<job-id>.md
-   git commit -m "Promote <slug> to <job-id>" -- factory/backlog/<file> factory/backlog/done/<job-id>.md
+   git add -- 'factory/backlog/done/<job-id>.md'
+   git commit -m 'Promote <slug> to <job-id>' -- 'factory/backlog/<slug>.md' 'factory/backlog/done/<job-id>.md'
    ```
    The old path needs no `git add`: `git mv` already staged its removal, and
    `git add` on it fails. If `git commit` fails (for example a leftover
    `index.lock`), try again up to three times, a few seconds apart. If it
    still fails, never leave the file half-moved: put it back as it was
-   committed, remove the job folder, then stop and tell the owner what git
-   printed:
+   committed and remove the job folder:
    ```bash
-   git mv factory/backlog/done/<job-id>.md factory/backlog/<file>
-   git restore --source=HEAD --staged --worktree -- factory/backlog/<file>
+   git mv -- 'factory/backlog/done/<job-id>.md' 'factory/backlog/<slug>.md'
+   git restore --source=HEAD --staged --worktree -- 'factory/backlog/<slug>.md'
    rmdir factory/jobs/<job-id>
    ```
+   Then stop and tell the owner what git printed, that the idea is back where
+   it was and nothing was started, and that they run `/factory next` again
+   once the cause is fixed.
 7. **Run it.** Carry on as `/factory <feature>`, with the feature text the
    idea's `Title`, followed by its notes when they are not empty, and the job
    id already made: finish step 1 from writing `job.json` (no new count, number
@@ -711,13 +745,18 @@ it. Run commands from `<repo>`.
 Adds one idea to the backlog (see **The backlog**). It is not blocked by
 `MAX_RUNNING_JOBS`: an idea takes no slot. Run commands from `<repo>`.
 
-1. **Refuse**, changing nothing and saying which, when the main checkout is
-   not on `main` (`git branch --show-current`), or when
-   `factory/backlog/<slug>.md` already exists. `<slug>` is 2-5 lowercase words
-   from the title (see **The backlog**).
-2. **Rank** is the highest `Rank:` among the files directly in
+1. **Make the slug** from the title by the rule in **The backlog** (the first
+   4 words, lowercased, joined by `-`).
+2. **Refuse**, changing nothing, when:
+   - the main checkout is not on `main` (`git branch --show-current`): tell
+     the owner to switch it back to `main`, then run the command again;
+   - `factory/backlog/<slug>.md` already exists: name it, and tell the owner
+     to start the title with different words, or edit the existing idea file
+     instead.
+3. **Rank** is the highest `Rank:` among the files directly in
    `factory/backlog/` plus 10, or 10 when there are none.
-3. **Write** `factory/backlog/<slug>.md` with LF line endings, exactly:
+4. **Write** `factory/backlog/<slug>.md` with the Write tool (never `echo` or
+   a heredoc), LF line endings, exactly:
    ```
    Title: <title>
    Size: unknown
@@ -728,17 +767,17 @@ Adds one idea to the backlog (see **The backlog**). It is not blocked by
 
    Grooming proposal:
    ```
-4. **Commit** only that path:
+5. **Commit** only that path:
    ```bash
-   git add -- factory/backlog/<slug>.md
-   git commit -m "Add idea <slug>" -- factory/backlog/<slug>.md
+   git add -- 'factory/backlog/<slug>.md'
+   git commit -m 'Add idea <slug>' -- 'factory/backlog/<slug>.md'
    ```
    If the commit fails, tell the owner what git printed: the file is written
    but not committed, and they commit that one path.
-5. **Tell the owner**, in plain words: the file's path; that they can edit
+6. **Tell the owner**, in plain words: the file's path; that they can edit
    `Size:`, `Files:` and the notes by hand (and `Rank:` to reorder); and that
-   it has no job id yet: `/factory next` promotes it when it is the
-   lowest-ranked idea and a slot is free.
+   it has no job id yet: `/factory next` turns it into a job when it has the
+   lowest `Rank:` and fewer than `MAX_RUNNING_JOBS` jobs are running.
 
 ## /factory approve <job-id>
 
