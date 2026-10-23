@@ -639,16 +639,10 @@ function velocity() {
   }
 }
 
-// ---- Cost per point and AI cost efficiency ----------------------------------
+// ---- Cost per point ---------------------------------------------------------
 
-// Both figures use the full price at list price, not paid_usd, so they match every other price on the page. paid_usd is
+// It uses the full price at list price, not paid_usd, so it matches every other price on the page. paid_usd is
 // set by hand, for some jobs only, so a per-point figure built on it would not compare like with like across jobs.
-const SET_RATE = 'set traditional_usd_per_point in factory/engagement.json'
-
-// The owner's cost to have a traditional developer deliver one story point, from engagement.json, or null when unset
-// or unreadable. Only the owner knows that cost, so it is never defaulted or guessed, and without it every AI cost
-// efficiency figure shows "-".
-const traditionalRate = () => (isSet(engagement.traditional_usd_per_point) ? engagement.traditional_usd_per_point : null)
 
 // A job's full price at list price and its story points, and gap: the first of them that is unknown, or null.
 function moneyOf(job, cost) {
@@ -668,46 +662,17 @@ function leftOutText(gaps) {
   return ` · ${gaps.length} left out (${reasons.join(', ')})`
 }
 
-// The card's cost per point and saving, for figures().
+// The card's cost per point, for figures().
 function moneyParts(job, cost) {
   const m = moneyOf(job, cost)
-  const rate = traditionalRate()
-  const traditional = m.gap || rate === null ? null : rate * m.points
-  return [
-    `cost/point ${m.gap ? '-' : perPointText(m.price, m.points)}`,
-    `saving ${traditional === null ? '-' : percent(traditional - m.price, traditional)}`,
-  ]
+  return [`cost/point ${m.gap ? '-' : perPointText(m.price, m.points)}`]
 }
 
-// The drawer's lines under the cost table: cost per point from its Total, then AI cost efficiency. A "-" says why.
+// The drawer's line under the cost table: cost per point from its Total. A "-" says why.
 function moneyLines(job, cost) {
   const m = moneyOf(job, cost)
-  const rate = traditionalRate()
   const perPoint = m.gap ? `- (${m.gap})` : `${perPointText(m.price, m.points)} (Total ${usd(m.price)} / ${pointsText(m.points)})`
-  let efficiency = `- (${rate === null ? SET_RATE : m.gap})`
-  if (rate !== null && !m.gap) {
-    const traditional = rate * m.points
-    efficiency = `${usd(m.price)} vs ${usd(traditional)} (${pointsText(m.points)} × ${usd(rate)}/pt), ` +
-      `saving ${percent(traditional - m.price, traditional)}`
-  }
-  return `<div class="figures">${esc(`cost/point ${perPoint}`)}</div>` +
-    `<div class="figures">${esc(`AI cost efficiency, list price vs traditional: ${efficiency}`)}</div>`
-}
-
-// The AI COST EFFICIENCY tile: merged jobs' summed list price against the same jobs' summed traditional cost.
-function efficiency() {
-  const rate = traditionalRate()
-  if (rate === null) return { value: '-', sub: SET_RATE }
-  const all = jobs.filter((j) => j.stage === 'merged').map((job) => moneyOf(job, costOf(job)))
-  const counted = all.filter((m) => !m.gap)
-  const build = counted.reduce((s, m) => s + m.price, 0)
-  const traditional = rate * counted.reduce((s, m) => s + m.points, 0)
-  const left = leftOutText(all.map((m) => m.gap).filter(Boolean))
-  return {
-    value: counted.length ? `${percent(traditional - build, traditional)} saving` : '-',
-    sub: `list price vs traditional at ${usd(rate)}/pt: ${counted.length ? `${usd(build)} vs ${usd(traditional)}` : '-'}` +
-      ` · ${jobsText(counted.length)} counted${left}`,
-  }
+  return `<div class="figures">${esc(`cost/point ${perPoint}`)}</div>`
 }
 
 // The COST / POINT tile and its learning curve. A merged job whose points, full price or merged_at is unknown is left
@@ -916,10 +881,8 @@ const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 // The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
 function kpis() {
   const merged = jobs.filter((j) => j.stage === 'merged')
-  const e = efficiency()
   return [
     ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
-    ['AI cost efficiency', e.value, e.sub],
   ].map(([k, value, sub]) =>
     `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('') +
     costPerPointTile()
@@ -1121,11 +1084,7 @@ async function loadPrices() {
 }
 
 // engagement.json, beside prices.json, is optional and written only by the owner; the factory never creates it:
-//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0>,
-//     "traditional_usd_per_point": <your rate, a number > 0> }
-// traditional_usd_per_point is the owner's all-in cost to have a traditional developer deliver one story point; AI
-// cost efficiency compares it, times a job's points, with the job's list price. It is the owner's own figure and the
-// page never supplies one, so until it is set every AI cost efficiency figure shows "-".
+//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0> }
 // Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. A file that is
 // not valid JSON, or a key of the wrong type, shows "-" for what it cannot read and says so in a banner.
 // The folder index is read first so a missing file is not fetched, which would log a 404 on every poll.
@@ -1134,7 +1093,6 @@ const ENGAGEMENT_KEYS = {
   stage: [(v) => typeof v === 'string', 'text'],
   sprint: [(v) => Number.isInteger(v) && v >= 0, 'a whole number'],
   monthly_budget_usd: [(v) => Number.isFinite(v) && v >= 0, 'an amount in dollars'],
-  traditional_usd_per_point: [(v) => Number.isFinite(v) && v > 0, 'an amount in dollars above zero'],
 }
 
 async function loadEngagement() {
@@ -1145,11 +1103,11 @@ async function loadEngagement() {
   try {
     e = JSON.parse(await fetchText('engagement.json'))
   } catch (err) {
-    engagementProblems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint, budget and AI cost efficiency show -`)
+    engagementProblems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint and budget show -`)
     return
   }
   if (e === null || typeof e !== 'object' || Array.isArray(e)) {
-    engagementProblems.push('engagement.json is not a JSON object, so client, stage, sprint, budget and AI cost efficiency show -')
+    engagementProblems.push('engagement.json is not a JSON object, so client, stage, sprint and budget show -')
     return
   }
   for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
