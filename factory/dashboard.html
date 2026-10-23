@@ -621,7 +621,7 @@ function velocity() {
 const SET_RATE = 'set traditional_usd_per_point in factory/engagement.json'
 
 // The owner's cost to have a traditional developer deliver one story point, from engagement.json, or null when unset
-// or unreadable. Only the owner knows that cost, so it is never defaulted or guessed: without it every AI cost
+// or unreadable. Only the owner knows that cost, so it is never defaulted or guessed, and without it every AI cost
 // efficiency figure shows "-".
 const traditionalRate = () => (isSet(engagement.traditional_usd_per_point) ? engagement.traditional_usd_per_point : null)
 
@@ -701,12 +701,14 @@ function costPerPointTile() {
     leftOutText(all.map((x) => x.gap).filter(Boolean))
   // Each bar is scaled to the largest cost per point, so a later job's shorter bar means it cost less per point.
   const top = Math.max(0, ...counted.map((x) => x.price / x.points))
-  const rows = counted.map((x) => `<li><span class="id">${esc(x.id)}</span>` +
+  // The id column cuts a long id with an ellipsis, so the title keeps the whole id readable on hover.
+  const rows = counted.map((x) => `<li><span class="id" title="${esc(x.id)}">${esc(x.id)}</span>` +
     `<span class="usd">${esc(perPointText(x.price, x.points))}</span>` +
     `<span class="bar"><span style="width: ${top ? (x.price / x.points / top * 100).toFixed(1) : 0}%"></span></span></li>`)
+  // role="list" because Safari drops the list role of an <ol> styled with list-style: none.
   const curve = counted.length
     ? '<div class="k curve-k" id="curve-title">Cost per point of each merged job, oldest merge first</div>' +
-      `<ol class="sub curve" aria-labelledby="curve-title">${rows.join('')}</ol>`
+      `<ol class="sub curve" role="list" aria-labelledby="curve-title">${rows.join('')}</ol>`
     : ''
   return `<div class="kpi wide"><div class="k">Cost / point</div>` +
     `<div class="v">${esc(counted.length ? perPointText(price, points) : '-')}</div>` +
@@ -1010,8 +1012,8 @@ async function loadPrices() {
 //   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0>,
 //     "traditional_usd_per_point": <your rate, a number > 0> }
 // traditional_usd_per_point is the owner's all-in cost to have a traditional developer deliver one story point; AI
-// cost efficiency compares it, times a job's points, with the job's list price. It is the owner's own figure, so the
-// page never supplies one: until it is set, every AI cost efficiency figure shows "-".
+// cost efficiency compares it, times a job's points, with the job's list price. It is the owner's own figure and the
+// page never supplies one, so until it is set every AI cost efficiency figure shows "-".
 // Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. A file that is
 // not valid JSON, or a key of the wrong type, shows "-" for what it cannot read and says so in a banner.
 // The folder index is read first so a missing file is not fetched, which would log a 404 on every poll.
