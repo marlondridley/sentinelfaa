@@ -49,6 +49,27 @@
     border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
   }
 
+  /* Engagement strip and KPI tiles */
+  .strip {
+    display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  .strip .k, .kpi .k { color: var(--faint); }
+  .strip .m { color: var(--muted); }
+  .kpis {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
+    padding: 14px 32px 0;
+  }
+  .kpi {
+    min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .kpi .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .kpi .v { font-family: var(--mono); font-size: 18px; margin: 2px 0; }
+  .kpi .sub {
+    font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere;
+  }
+
   /* Board */
   .board {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;
@@ -59,17 +80,19 @@
     display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
     border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
   }
-  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
   .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count {
     margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
   }
+  /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
   .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
     content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
   }
   .col.human .col-head { border-bottom-color: color-mix(in srgb, var(--human) 55%, transparent); }
   .col.human h2 { color: var(--human); }
   .col.merged-col h2 { color: var(--merged); }
+  .col.rework-col h2 { color: var(--changes); }
   .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
@@ -259,10 +282,12 @@
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
+    .strip, .kpis { padding-left: 16px; padding-right: 16px; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
@@ -282,12 +307,11 @@
 <body>
 <header>
   <h1>Software factory</h1>
-  <div>
-    <div class="status" id="status">connecting…</div>
-    <div class="status" id="velocity"></div>
-  </div>
+  <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
+<div class="strip" id="strip"></div>
+<div class="kpis" id="kpis"></div>
 <main class="board" id="board"></main>
 <section class="graph">
   <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
@@ -320,13 +344,16 @@
 
 <script>
 const POLL_MS = 2000
+// The board's six columns and the job stages each holds. Review & audit holds approve too: the approver is the
+// last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
+// signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
 const STAGES = [
-  { key: 'spec', label: 'Spec', who: 'spec-writer · opus' },
-  { key: 'build', label: 'Build', who: 'builder · opus' },
-  { key: 'review', label: 'Review', who: 'sec · ux · ui · code' },
-  { key: 'approve', label: 'Approve', who: 'approver · opus' },
-  { key: 'merged', label: 'Merged', who: 'main', cls: 'merged-col' },
-  { key: 'needs-human', label: 'Needs human', who: 'approve · rework', cls: 'human' },
+  { key: 'spec', label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
+  { key: 'build', label: 'Build', who: 'builder · opus', stages: ['build'] },
+  { key: 'review', label: 'Review & audit', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
+  { key: 'needs-human', label: 'Client approval', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
+  { key: 'merged', label: 'Merged to main', who: 'main', cls: 'merged-col', stages: ['merged'] },
+  { key: 'rework', label: 'Rework', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
@@ -343,6 +370,9 @@ let prices = null // prices.json, or null when it could not be read
 let pricesError = null
 let lastRender = ''
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
+const reworkCache = new Map() // merged job id -> its number of rework-<k>.md files; a merged job's folder is final
+let engagement = {} // engagement.json, or {} when the owner has not written one
+let engagementProblems = []
 let openJobId = null
 let openPath = null
 let openText = null
@@ -351,6 +381,12 @@ async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return res.text()
+}
+
+// The link names in a python -m http.server directory index.
+async function listLinks(dir) {
+  const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
+  return [...doc.querySelectorAll('a')].map((a) => decodeURIComponent(a.getAttribute('href')))
 }
 
 // ---- Board ---------------------------------------------------------------
@@ -506,9 +542,10 @@ function loeText(s) {
   return ok(s.tokens) && ok(s.seconds) ? (s.seconds / 60 / s.tokens * 100000).toFixed(1) : '-'
 }
 
-function figures(job, cost) {
+function figures(job, cost, rework) {
   const t = cost.total
   const parts = [
+    ...(rework ? [`rework ${rework}`] : []),
     `points ${POINTS.includes(job.points) ? job.points : '-'}`,
     `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
     `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
@@ -532,11 +569,67 @@ function velocity() {
   const leftText = left
     ? ` · ${left} merged ${left === 1 ? 'job' : 'jobs'} left out (no points or no merged_at)`
     : ''
-  return `velocity ${perDay(0, 7).toFixed(2)} points/day in the last 7 days, ` +
-    `${perDay(7, 14).toFixed(2)} in the 7 days before${leftText}`
+  return {
+    value: `${perDay(0, 7).toFixed(2)} pts/day`,
+    sub: `last 7 days · ${perDay(7, 14).toFixed(2)} in the 7 days before${leftText}`,
+  }
 }
 
-function card(job, past, cost) {
+const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
+
+// The KPI tiles. Each figure comes from the job files; one with no source shows "-".
+function kpis(reworks) {
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const reached = jobs.map((j, i) => [j, reworks[i]]).filter(([j]) => Number.isInteger(j.round) && j.round >= 1)
+  // An unreadable folder listing leaves the rework count unknown, so the rate is "-" rather than a guess.
+  const reworkRate = reached.some(([, r]) => r.error)
+    ? '-'
+    : percent(reached.filter(([, r]) => r.count > 0).length, reached.length)
+  const v = velocity()
+  return [
+    ['Velocity', v.value, v.sub],
+    ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
+    ['Rework rate', reworkRate, 'jobs sent back to the builder'],
+    // Margin savings compares the list price with what the work would cost at the owner's traditional bill rate.
+    // No file holds that rate yet, so nothing is read and the tile stays "-".
+    ['Margin savings', '-', "needs the owner's traditional bill rate (later job)"],
+  ].map(([k, value, sub]) =>
+    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('')
+}
+
+// The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
+// Spend is every job's full price at list price: the usage log has no dates, so it cannot be cut to this month.
+function strip() {
+  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
+  const costs = jobs.map(costOf)
+  // Null as soon as one job's total is unknown, as sums() does, so spend is never shown short.
+  const spent = costs.some((c) => c.recorded)
+    ? costs.reduce((s, c) => (s === null || c.total.usd === null ? null : s + c.total.usd), 0)
+    : null
+  const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
+  const item = (k, v) => `<span><span class="k">${k}</span> ${esc(v)}</span>`
+  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint')) +
+    `<span><span class="k">SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}` +
+    ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
+}
+
+// Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
+// means the owner sent the job back. Limit: once such a file exists, the page cannot tell a later reviewer-requested
+// fix from an owner rework, so the job shows in Rework for any later time in build.
+// Returns { count, error }; count is 0 for a job that needs no lookup or whose listing could not be read.
+async function reworkOf(job) {
+  if (job.stage !== 'build' && !(Number.isInteger(job.round) && job.round >= 1)) return { count: 0, error: null }
+  if (reworkCache.has(job.id)) return { count: reworkCache.get(job.id), error: null }
+  try {
+    const count = (await listLinks(`jobs/${job.id}/`)).filter((h) => /^rework-\d+\.md$/.test(h)).length
+    if (job.stage === 'merged') reworkCache.set(job.id, count)
+    return { count, error: null }
+  } catch (err) {
+    return { count: 0, error: err.message }
+  }
+}
+
+function card(job, past, cost, rework) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
   const rows = past.map((v, i) => chips(i + 1, v, false))
@@ -553,7 +646,7 @@ function card(job, past, cost) {
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
-      ${figures(job, cost)}
+      ${figures(job, cost, rework)}
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>
       <div class="approve">
@@ -619,28 +712,39 @@ function graph() {
 
 async function render() {
   const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
+  problems.push(...engagementProblems)
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
   const pasts = await Promise.all(jobs.map(pastRounds))
+  const reworks = await Promise.all(jobs.map(reworkOf))
   jobs.forEach((job, i) => {
     const cost = costOf(job)
     problems.push(...jobProblems(job, cost))
-    if (!byStage[job.stage]) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
-    else byStage[job.stage].push(card(job, pasts[i], cost))
+    const r = reworks[i]
+    if (r.error) problems.push(`Could not read the folder of job ${job.id} (${r.error}), so it is counted as not sent back`)
+    const col = job.stage === 'build' && r.count > 0
+      ? 'rework'
+      : (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
+    if (!col) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
+    else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0))
   })
   // Newest first within a column.
   const html = STAGES.map((s) => `
     <section class="col ${s.cls || ''}">
       <div class="col-head">
-        <h2>${s.label}</h2><span class="who">${s.who}</span>
+        <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
         <span class="count">${byStage[s.key].length || ''}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
+  const stripHtml = strip()
+  const kpiHtml = kpis(reworks)
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
-  if (html + graphHtml + banner !== lastRender) {
-    lastRender = html + graphHtml + banner
+  if (html + stripHtml + kpiHtml + graphHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + kpiHtml + graphHtml + banner
     $('board').innerHTML = html
+    $('strip').innerHTML = stripHtml
+    $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
     $('banner').innerHTML = banner
   }
@@ -651,15 +755,14 @@ async function poll() {
   try {
     jobs = await loadJobs()
     await loadPrices()
+    await loadEngagement()
     await render()
     if (openJobId) await refreshDrawer()
     status.className = 'status'
     status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
-    $('velocity').textContent = velocity()
   } catch (err) {
     status.className = 'status error'
     status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
-    $('velocity').textContent = ''
   }
 }
 
@@ -684,6 +787,40 @@ async function loadPrices() {
   } catch (err) {
     prices = null
     pricesError = err.message
+  }
+}
+
+// engagement.json, beside prices.json, is optional and written only by the owner; the factory never creates it:
+//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0> }
+// Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. A file that is
+// not valid JSON, or a key of the wrong type, shows "-" for what it cannot read and says so in a banner.
+// The folder index is read first so a missing file is not fetched, which would log a 404 on every poll.
+const ENGAGEMENT_KEYS = {
+  client: [(v) => typeof v === 'string', 'text'],
+  stage: [(v) => typeof v === 'string', 'text'],
+  sprint: [(v) => Number.isInteger(v) && v >= 0, 'a whole number'],
+  monthly_budget_usd: [(v) => Number.isFinite(v) && v >= 0, 'an amount in dollars'],
+}
+
+async function loadEngagement() {
+  engagement = {}
+  engagementProblems = []
+  if (!(await listLinks('./')).includes('engagement.json')) return
+  let e
+  try {
+    e = JSON.parse(await fetchText('engagement.json'))
+  } catch (err) {
+    engagementProblems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint and budget show -`)
+    return
+  }
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) {
+    engagementProblems.push('engagement.json is not a JSON object, so client, stage, sprint and budget show -')
+    return
+  }
+  for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
+    if (!isSet(e[k])) continue
+    if (ok(e[k])) engagement[k] = e[k]
+    else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
   }
 }
 
