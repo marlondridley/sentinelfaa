@@ -96,6 +96,16 @@ copyleft (GPL), ISO 27001, SOC 2 and FedRAMP rows are placeholders that always
 read `not run`, until a job builds that check. Status is only ever `passed`,
 `failed` or `not run`.
 
+The dashboard has four views, picked by the URL hash: `#board` (the lanes, also
+shown for an empty or unknown hash), `#git` (the branch graph), `#cost` (cost
+and LOE per job, and the all-time spend) and `#stream` (the Live Stream). Its
+header figures come from these files: SPEND for the month is `usage` priced by
+`prices.json`, dated by `merged_at`, with jobs not merged yet counted in the
+current month; ACTIVE JOBS counts jobs whose `stage` is `spec`, `build`,
+`review` or `approve`; the Live Stream lists the `stage_log` entries; the
+identity line (client, stage, sprint) and the monthly budget come from
+`engagement.json`.
+
 ### job.json
 
 ```json

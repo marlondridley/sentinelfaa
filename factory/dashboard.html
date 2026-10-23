@@ -31,12 +31,32 @@
   }
   button { font: inherit; color: inherit; }
 
-  /* Header */
+  /* Header band: the identity line, the Live Stream pill, spend and active jobs, the view toggle, then the poll status. */
   header {
-    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px 16px;
     flex-wrap: wrap; padding: 28px 32px 8px;
   }
   h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .identity, .identity-values, .spend {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  .identity h1 { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  header .k { color: var(--faint); }
+  header .m { color: var(--muted); }
+  .pill, .toggle a {
+    font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap;
+  }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; }
+  .pill[aria-current="page"] { border-color: var(--active); color: var(--active); }
+  .toggle { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .toggle a { padding: 4px 12px; }
+  .toggle a + a { border-left: 1px solid var(--line); }
+  .pill:hover, .toggle a:hover { color: var(--text); }
+  .toggle a[aria-current="page"] { background: var(--card-hover); color: var(--active); }
+  .pill:focus-visible, .toggle a:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  /* One view at a time; the class rules below set display, so hidden needs the weight to win over them. */
+  .view[hidden] { display: none; }
   .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .status .dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -49,13 +69,8 @@
     border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
   }
 
-  /* Engagement strip and KPI tiles */
-  .strip {
-    display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
-    font-family: var(--mono); font-size: 12px; color: var(--text);
-  }
-  .strip .k, .kpi .k { color: var(--faint); }
-  .strip .m { color: var(--muted); }
+  /* KPI tiles */
+  .kpi .k { color: var(--faint); }
   .kpis {
     display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
     padding: 14px 32px 0;
@@ -95,8 +110,10 @@
   .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count {
     margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    min-width: 22px; padding: 0 6px; text-align: center; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--card);
   }
-  /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
+  /* No arrow after MERGED or REWORK: Rework is a side lane the owner sends a job to, not the step after merging. */
   .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
     content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
   }
@@ -174,7 +191,7 @@
   .approve-msg { font-size: 11px; line-height: 1.4; color: var(--muted); }
 
   /* Branch graph */
-  .graph { padding: 0 32px 40px; min-width: 0; }
+  .graph { padding: 20px 32px 40px; min-width: 0; }
   .g-row, .g-main { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
   .g-row {
     cursor: pointer; border-radius: 8px; padding-right: 10px; transition: background .15s;
@@ -203,6 +220,28 @@
     font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere;
   }
   .g-meta .k { color: var(--muted); }
+
+  /* Cost & LOE and Live Stream views */
+  .cost, .stream { padding: 20px 32px 40px; min-width: 0; }
+  .cost .kpis { padding: 14px 0 0; }
+  .alltime { font-family: var(--mono); font-size: 12px; }
+  .alltime .k { color: var(--faint); }
+  /* The table scrolls inside its own box on a narrow screen, so the page does not. */
+  .jobs-table { margin-top: 20px; overflow-x: auto; }
+  .jobs-table table { border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  .jobs-table th, .jobs-table td {
+    border: 1px solid var(--line); padding: 5px 9px; text-align: left; white-space: nowrap;
+  }
+  .jobs-table th { color: var(--muted); font-weight: 600; }
+  .s-list { list-style: none; margin: 0; padding: 0; }
+  .s-row {
+    display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere;
+  }
+  .s-row:hover { background: var(--card); }
+  .s-row:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .s-row .at { color: var(--muted); }
+  .stream .note { margin: 0 0 10px; }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -308,13 +347,12 @@
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
-  /* Executive Overview Panel: four headline tiles in the .kpi look, with a larger figure. The section carries the page
-     gutter, so its grid has none of its own and the heading's left edge lines up with the first tile's. align-items:
-     start lets each tile keep its own height; flow efficiency is the tall one, with its caption. The column rules are
-     written under #overview in the @media blocks too, because the id outranks the plain .kpis rules there. */
+  /* The five KPI cards under the header band, in every view: the .kpi look, with a larger figure. The section carries
+     the page gutter, so its grid has none of its own. align-items: start lets each tile keep its own height; flow
+     efficiency is the tall one, with its caption. The column rules are written under #overview in the @media blocks
+     too, because the id outranks the plain .kpis rules there. */
   #overview { padding: 20px 32px 0; }
-  #overview .col-head { padding-left: 0; }
-  #overview .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; padding: 0; }
+  #overview .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: start; padding: 0; }
   #overview .kpi .k { font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text); }
   #overview .kpi .v { font-family: inherit; font-size: 24px; line-height: 1.3; margin: 6px 0 4px; }
   #overview .v .num { font-family: inherit; font-size: inherit; font-weight: 600; color: var(--active); }
@@ -334,12 +372,13 @@
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
-    .strip, .kpis { padding-left: 16px; padding-right: 16px; }
+    .kpis { padding-left: 16px; padding-right: 16px; }
+    .cost, .stream { padding: 16px 16px 32px; }
     /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
     #overview { padding-left: 16px; padding-right: 16px; }
     #overview .kpis { grid-template-columns: minmax(0, 1fr); }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
-    .graph { padding: 0 16px 32px; }
+    .graph { padding: 16px 16px 32px; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
@@ -355,22 +394,42 @@
 </style>
 </head>
 <body>
+<!-- The view links are plain hash links, so Back and Forward step through the views. No element has the id board,
+     git, cost or stream, so following one never scrolls the page. -->
 <header>
-  <h1>Software factory</h1>
+  <div class="identity"><h1>Software factory</h1><span class="identity-values" id="identity"></span></div>
+  <a class="pill" href="#stream" data-view-link="stream">Live Stream</a>
+  <div class="spend" id="spend"></div>
+  <nav class="toggle" aria-label="Views">
+    <a href="#board" data-view-link="board">Board</a>
+    <a href="#git" data-view-link="git">Git Graph</a>
+    <a href="#cost" data-view-link="cost">Cost &amp; LOE</a>
+  </nav>
   <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
-<div class="strip" id="strip"></div>
-<section id="overview" aria-labelledby="overview-title">
-  <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
-  <div class="kpis" id="overview-tiles"></div>
+<section id="overview" aria-label="Key figures, all jobs on the board, from the job files">
+  <div class="kpis" id="kpi-cards"></div>
 </section>
-<div class="kpis" id="kpis"></div>
-<main class="board" id="board"></main>
-<section class="graph">
-  <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
-  <div id="graph"></div>
-</section>
+<main>
+  <section class="view" id="view-board" aria-label="Board">
+    <div class="board" id="lanes"></div>
+  </section>
+  <section class="graph view" id="view-git" hidden>
+    <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
+    <div id="graph"></div>
+  </section>
+  <section class="cost view" id="view-cost" hidden>
+    <div class="col-head"><h2>Cost &amp; LOE</h2><span class="who">list price and level of effort (LOE) per job, from the job files</span></div>
+    <div class="alltime" id="alltime"></div>
+    <div class="kpis" id="cost-tiles"></div>
+    <div class="jobs-table" id="cost-table"></div>
+  </section>
+  <section class="stream view" id="view-stream" hidden>
+    <div class="col-head"><h2>Live Stream</h2><span class="who">stage changes of every job, newest first, from stage_log</span></div>
+    <div id="stream-list"></div>
+  </section>
+</main>
 <footer>
   <span>/factory &lt;feature&gt;</span>
   <span>/factory next</span>
@@ -399,17 +458,21 @@
 
 <script>
 const POLL_MS = 2000
-// The board's six columns and the job stages each holds. Review & audit holds approve too: the approver is the
-// last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
-// signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
+// The board's six columns and the job stages each holds. REVIEW & AUDIT holds approve too: the approver is the
+// last audit step, and the card's chips show which step a job is at. CLIENT APPROVAL is needs-human, where the owner
+// signs off. REWORK is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
 const STAGES = [
-  { key: 'spec', label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
-  { key: 'build', label: 'Build', who: 'builder · opus', stages: ['build'] },
-  { key: 'review', label: 'Review & audit', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
-  { key: 'needs-human', label: 'Client approval', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
-  { key: 'merged', label: 'Merged to main', who: 'main', cls: 'merged-col', stages: ['merged'] },
-  { key: 'rework', label: 'Rework', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
+  { key: 'spec', label: 'SPEC', who: 'spec-writer · opus', stages: ['spec'] },
+  { key: 'build', label: 'BUILD', who: 'builder · opus', stages: ['build'] },
+  { key: 'review', label: 'REVIEW & AUDIT', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
+  { key: 'needs-human', label: 'CLIENT APPROVAL', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
+  { key: 'merged', label: 'MERGED', who: 'main', cls: 'merged-col', stages: ['merged'] },
+  { key: 'rework', label: 'REWORK', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
+// The four views, picked by the URL hash; an empty or unknown hash shows the first.
+const VIEWS = ['board', 'git', 'cost', 'stream']
+const STREAM_MAX = 50
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
 const POINTS = [1, 2, 3, 5, 8, 13]
@@ -605,16 +668,23 @@ function loeText(s) {
   return ok(s.tokens) && ok(s.seconds) ? (s.seconds / 60 / s.tokens * 100000).toFixed(1) : '-'
 }
 
-function figures(job, cost, rework) {
+// A job's points, tokens, time, LOE, full price and paid, as [label, text]; the card and the Cost & LOE table show them.
+function jobFigures(job, cost) {
   const t = cost.total
+  return [
+    ['points', POINTS.includes(job.points) ? String(job.points) : '-'],
+    ['tokens', cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'],
+    ['time', cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'],
+    ['LOE', cost.recorded ? loeText(t) : '-'],
+    ['full price', priceText(cost, t.usd)],
+    ['paid', isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'],
+  ]
+}
+
+function figures(job, cost, rework) {
   const parts = [
     ...(rework ? [`rework ${rework}`] : []),
-    `points ${POINTS.includes(job.points) ? job.points : '-'}`,
-    `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
-    `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
-    `LOE ${cost.recorded ? loeText(t) : '-'}`,
-    `full price ${priceText(cost, t.usd)}`,
-    `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
+    ...jobFigures(job, cost).map(([k, v]) => `${k} ${v}`),
     ...moneyParts(job, cost),
   ]
   // Non-breaking spaces keep each label on one line with its value when the card wraps.
@@ -820,7 +890,7 @@ function timing(pasts) {
   }
 }
 
-// ---- Executive Overview Panel -----------------------------------------------
+// ---- KPI cards ----------------------------------------------------------------
 
 // How flow efficiency is really worked out, in plain words, shown under the figure.
 const FLOW_CAPTION = 'Active is time in spec, build, review and approve; waiting is time in Client approval, where ' +
@@ -896,49 +966,105 @@ function overviewFigures(pasts) {
   return [value, cycle, flow, rework]
 }
 
-// The panel's tiles from overviewFigures(). Only the figure's parts are wrapped, for colour, so each .v reads exactly as
-// its figure. The flow class keeps that tile left-aligned; the others centre their figure and sub-lines.
-function overviewPanel(pasts) {
+// The five KPI cards: the four tiles from overviewFigures(), then Pass rate. Only the figure's parts are wrapped, for
+// colour, so each .v reads exactly as its figure. The flow class keeps that tile left-aligned; the others centre their
+// figure and sub-lines. The Cycle Time card also shows the velocity figure, with no label for what counts as fast.
+function kpis(pasts) {
   const [value, cycle, flow, rework] = overviewFigures(pasts)
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const pass = percent(merged.filter((j) => j.round === 1).length, merged.length)
   const num = (s) => `<span class="num">${esc(s)}</span>`
-  const subs = (tile) => tile.sub.map((s) => `<div class="sub">${esc(s)}</div>`).join('')
-  const kpi = (tile, v, rest, cls = 'kpi') =>
-    `<div class="${cls}"><div class="k">${esc(tile.title)}</div><div class="v">${v}</div>${rest}</div>`
-  return kpi(value, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), subs(value)) +
-    kpi(cycle, num(cycle.figure), subs(cycle)) +
-    kpi(flow, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>` +
+  const sub = (s) => `<div class="sub">${esc(s)}</div>`
+  const subs = (tile) => tile.sub.map(sub).join('')
+  const kpi = (title, v, rest, cls = 'kpi') =>
+    `<div class="${cls}"><div class="k">${esc(title)}</div><div class="v">${v}</div>${rest}</div>`
+  return kpi(value.title, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), subs(value)) +
+    kpi(cycle.title, num(cycle.figure), subs(cycle) + sub(`velocity ${velocity().value}, points merged per day over the last 7 days`)) +
+    kpi(flow.title, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>` +
       `${subs(flow)}<p class="cap">${esc(flow.caption)}</p><p class="ref">${esc(flow.reference)}</p>`, 'kpi flow') +
-    kpi(rework, num(rework.figure), subs(rework))
+    kpi(rework.title, num(rework.figure), subs(rework)) +
+    kpi('Pass rate', num(pass), sub('merged on the first review round'))
 }
 
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
-// The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
-function kpis() {
-  const merged = jobs.filter((j) => j.stage === 'merged')
+// The money tiles of the Cost & LOE view. Each figure comes from the job files; one with no source shows "-".
+function costTiles() {
   const e = efficiency()
-  return [
-    ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
-    ['AI cost efficiency', e.value, e.sub],
-  ].map(([k, value, sub]) =>
-    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('') +
+  return `<div class="kpi"><div class="k">AI cost efficiency</div><div class="v">${esc(e.value)}</div><div class="sub">${esc(e.sub)}</div></div>` +
     costPerPointTile()
 }
 
-// The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
-// Spend is every job's full price at list price: the usage log has no dates, so it cannot be cut to this month.
-function strip() {
-  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
-  const costs = jobs.map(costOf)
-  // Null as soon as one job's total is unknown, as sums() does, so spend is never shown short.
-  const spent = costs.some((c) => c.recorded)
+// Summed full price at list price of the given jobs. Null as soon as one job's total is unknown, as sums() does, and
+// when none of them has any usage recorded, so spend is never shown short.
+function spendOf(list) {
+  const costs = list.map(costOf)
+  return costs.some((c) => c.recorded)
     ? costs.reduce((s, c) => (s === null || c.total.usd === null ? null : s + c.total.usd), 0)
     : null
-  const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
+}
+
+// The identity line. Client, stage and sprint come only from the owner's engagement.json, never a default.
+function identity() {
+  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
   const item = (k, v) => `<span><span class="k">${k}</span> ${esc(v)}</span>`
-  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint')) +
-    `<span><span class="k">SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}` +
-    ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
+  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint'))
+}
+
+// SPEND for the current UTC month, and ACTIVE JOBS. The usage log has no dates, so merged_at is the only date there
+// is: a merged job counts in the month it merged, and a job not merged yet counts in the current month. A merged job
+// with no readable merged_at cannot be placed in a month, so the figure is "-" rather than a guess. The budget comes
+// only from engagement.json.
+function spend() {
+  const now = new Date()
+  const inMonth = (t) => new Date(t).getUTCFullYear() === now.getUTCFullYear() && new Date(t).getUTCMonth() === now.getUTCMonth()
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const spent = merged.some((j) => mergedAt(j) === null)
+    ? null
+    : spendOf(jobs.filter((j) => j.stage !== 'merged' || inMonth(mergedAt(j))))
+  const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
+  const title = 'Full price of the jobs merged this month, by merged_at, and of every job not merged yet. ' +
+    'Usage has no dates of its own.'
+  return `<span title="${esc(title)}"><span class="k">SPEND (${MONTHS[now.getUTCMonth()]} ${now.getUTCFullYear()})</span>` +
+    ` ${esc(spent === null ? '-' : usd(spent))} / ${esc(budget)} <span class="m">monthly budget</span></span>` +
+    `<span><span class="k">ACTIVE JOBS</span> ${jobs.filter((j) => LIVE.has(j.stage)).length}</span>`
+}
+
+// The Cost & LOE view's all-time line: every job's full price at list price, whenever it ran.
+function allTime() {
+  const spent = spendOf(jobs)
+  return `<span class="k">ALL-TIME SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}`
+}
+
+// One row per job with the figures its card shows, in the board's job order.
+function jobsTable() {
+  if (!jobs.length) return '<div class="empty">—</div>'
+  const head = ['Job', 'Points', 'Tokens', 'Time', 'LOE', 'Full price', 'Paid']
+  const rows = jobs.map((job) => `<tr><td>${esc(job.id)}</td>` +
+    jobFigures(job, costOf(job)).map(([, v]) => `<td>${esc(v)}</td>`).join('') + '</tr>')
+  return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`
+}
+
+// The Live Stream: every job's stage changes from stage_log, newest first, capped at STREAM_MAX. A job whose
+// stage_log cannot be read, or that has none, adds no lines (see stageLog) and is counted in the note.
+function stream() {
+  const entries = []
+  let left = 0
+  for (const job of jobs) {
+    const log = stageLog(job).log
+    if (!log) left++
+    else entries.push(...log.map((e, i) => ({ id: job.id, stage: e.stage, t: e.t, i })))
+  }
+  // Changes in the same second sort by job id, and within one job keep their log order, the later one first.
+  entries.sort((a, b) => b.t - a.t || a.id.localeCompare(b.id) || b.i - a.i)
+  const notes = []
+  if (left) notes.push(`${left} ${left === 1 ? 'job is' : 'jobs are'} left out: no readable stage_log.`)
+  if (entries.length > STREAM_MAX) notes.push(`Showing the ${STREAM_MAX} newest of ${entries.length} stage changes.`)
+  const at = (t) => new Date(t).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC')
+  const rows = entries.slice(0, STREAM_MAX).map((e) => `<li><div class="s-row" role="button" tabindex="0" data-job="${esc(e.id)}">` +
+    `<span class="at">${esc(at(e.t))}</span><span>${esc(e.id)}</span><span>entered ${esc(e.stage)}</span></div></li>`)
+  return notes.map((n) => `<p class="note">${esc(n)}</p>`).join('') +
+    (rows.length ? `<ol class="s-list" role="list">${rows.join('')}</ol>` : '<div class="empty">—</div>')
 }
 
 // Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
@@ -1060,23 +1186,39 @@ async function render() {
     <section class="col ${s.cls || ''}">
       <div class="col-head">
         <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
-        <span class="count">${byStage[s.key].length || ''}</span>
+        <span class="count">${byStage[s.key].length}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
-  const stripHtml = strip()
-  const overviewHtml = overviewPanel(pasts)
-  const kpiHtml = kpis()
-  const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
-  const graphHtml = graph()
-  if (html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner
-    $('board').innerHTML = html
-    $('strip').innerHTML = stripHtml
-    $('overview-tiles').innerHTML = overviewHtml
-    $('kpis').innerHTML = kpiHtml
-    $('graph').innerHTML = graphHtml
-    $('banner').innerHTML = banner
+  // Element id -> its new content. Only content is written, never which view shows, so a poll leaves the view alone.
+  const parts = {
+    lanes: html,
+    identity: identity(),
+    spend: spend(),
+    'kpi-cards': kpis(pasts),
+    graph: graph(),
+    alltime: allTime(),
+    'cost-tiles': costTiles(),
+    'cost-table': jobsTable(),
+    'stream-list': stream(),
+    banner: problems.map((p) => `<div class="banner">${esc(p)}</div>`).join(''),
+  }
+  const all = Object.values(parts).join('')
+  if (all !== lastRender) {
+    lastRender = all
+    for (const [id, part] of Object.entries(parts)) $(id).innerHTML = part
+  }
+}
+
+// Shows the view the hash names, or the board for an empty or unknown hash, and marks its link as the current page.
+// On #stream that is the Live Stream pill, so no toggle entry is marked.
+function route() {
+  const hash = location.hash.slice(1)
+  const view = VIEWS.includes(hash) ? hash : 'board'
+  for (const v of VIEWS) $(`view-${v}`).hidden = v !== view
+  for (const a of document.querySelectorAll('[data-view-link]')) {
+    if (a.dataset.viewLink === view) a.setAttribute('aria-current', 'page')
+    else a.removeAttribute('aria-current')
   }
 }
 
@@ -1285,8 +1427,9 @@ document.addEventListener('click', (e) => {
 })
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') return closeDrawer()
-  // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
+  // Only when the card, graph row or stream line itself has focus; Enter on the Approve button inside a card is that
+  // button's own click.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job], .s-row[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
     openDrawer(e.target.dataset.job)
   }
@@ -1503,6 +1646,8 @@ function markdown(src) {
   return html
 }
 
+window.addEventListener('hashchange', route)
+route()
 poll()
 setInterval(poll, POLL_MS)
 </script>
