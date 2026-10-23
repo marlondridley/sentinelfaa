@@ -163,8 +163,8 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
   entry in the same rewrite, even when the stage is the one the job already
   had. Never edit, reorder or remove an entry. The `merged` entry has the same
   time as `merged_at`. The dashboard works out from it the time from spec to
-  merge, how long the owner kept a job waiting in `needs-human`, and the
-  rework rate.
+  merge, what share of it was spent outside `needs-human` (flow efficiency),
+  how long the owner kept a job waiting in `needs-human`, and the rework rate.
 - `usage` is the log of agent runs, `[]` at first. Each time an agent run
   finishes, append one entry:
   `{ "agent": "<name>", "round": <N>, "model": "<model>", "tokens": <tokens>, "seconds": <seconds> }`.
