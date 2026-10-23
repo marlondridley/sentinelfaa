@@ -6,6 +6,8 @@ them through its own Vault Agent (vault-agent/litellm.hcl, policy vault-policies
 the password from the same rendered file, litellm-bootstrap reads the master key from Vault, and none of them is in
 compose's environment or set in .env.example. The seed job keeps a value Vault has, takes one from the environment
 only when Vault has none, and otherwise generates it; that rule is run here against a stand-in for the vault CLI.
+The gateway's entrypoint is run here too, against a stand-in for the image's own: it hands LiteLLM the three values
+(the password only inside DATABASE_URL) and the compose command line, and stops when a value it needs is missing.
 
 The gateway's metrics take no key (the owner's choice, docs/operations.md), so they are scraped with none and its
 host port stays loopback only; its spend record keeps no prompt or response text.
@@ -213,6 +215,85 @@ def test_the_seed_never_prints_a_value(vault):
     assert run.returncode == 0, run.stderr
     for value in old.values():
         assert value not in run.stdout + run.stderr
+
+
+# ── the gateway's entrypoint, run with its paths swapped for stand-ins ──────────
+
+# Stands in for the image's /app/docker/prod_entrypoint.sh: prints the command line it was given, then the
+# environment it was started with.
+PROD_ENTRYPOINT_STUB = r"""#!/bin/sh
+printf 'ARG=%s\n' "$@"
+env | sed 's/^/ENV:/'
+"""
+GATEWAY_VALUES = {"ANTHROPIC_API_KEY": "sk-ant-test", "LITELLM_MASTER_KEY": "sk-test-master",
+                  "LITELLM_DB_PASSWORD": "0123abcd"}
+
+
+@pytest.fixture
+def entrypoint(tmp_path):
+    secrets = tmp_path / "litellm.env"
+    prod = tmp_path / "prod_entrypoint.sh"
+    prod.write_text(PROD_ENTRYPOINT_STUB, encoding="utf-8", newline="\n")
+    prod.chmod(prod.stat().st_mode | stat.S_IXUSR)
+    script = tmp_path / "litellm-entrypoint.sh"
+    text = (INFRA / "litellm-entrypoint.sh").read_text(encoding="utf-8")
+    assert text.count("/vault/secrets/litellm.env") == 1 and text.count("/app/docker/prod_entrypoint.sh") == 1
+    script.write_text(text.replace("/vault/secrets/litellm.env", secrets.as_posix())
+                      .replace("/app/docker/prod_entrypoint.sh", prod.as_posix()), encoding="utf-8", newline="\n")
+
+    def run(rendered: str) -> subprocess.CompletedProcess:
+        secrets.write_text(rendered, encoding="utf-8", newline="\n")
+        # Only PATH from the caller, so nothing named like a gateway secret leaks in from the test's own environment.
+        return subprocess.run(["sh", str(script), "--config", "/app/config.yaml", "--port", "4000"],
+                              env={"PATH": os.environ["PATH"]}, capture_output=True, text=True, timeout=30)
+
+    return run
+
+
+def _child(run: subprocess.CompletedProcess) -> tuple[list[str], dict[str, str]]:
+    lines = run.stdout.splitlines()
+    args = [line[len("ARG="):] for line in lines if line.startswith("ARG=")]
+    env = dict(line[len("ENV:"):].split("=", 1) for line in lines if line.startswith("ENV:") and "=" in line)
+    return args, env
+
+
+@pytest.mark.parametrize("trailing_newline", [True, False])
+def test_the_entrypoint_hands_the_rendered_values_and_the_compose_command_to_litellm(entrypoint, trailing_newline):
+    rendered = "\n".join(f"{k}={v}" for k, v in GATEWAY_VALUES.items()) + ("\n" if trailing_newline else "")
+    run = entrypoint(rendered)
+
+    assert run.returncode == 0, run.stderr
+    args, env = _child(run)
+    assert args == ["--config", "/app/config.yaml", "--port", "4000"]
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+    assert env["LITELLM_MASTER_KEY"] == "sk-test-master"
+    assert env["DATABASE_URL"] == "postgresql://litellm:0123abcd@postgres:5432/litellm"
+    assert "LITELLM_DB_PASSWORD" not in env, "the password reaches LiteLLM only inside DATABASE_URL"
+
+
+def test_the_entrypoint_exports_only_the_three_gateway_values(entrypoint):
+    run = entrypoint("".join(f"{k}={v}\n" for k, v in GATEWAY_VALUES.items()) + "PATH=/nowhere\nOTHER=x\n")
+
+    assert run.returncode == 0, run.stderr
+    _, env = _child(run)
+    assert "OTHER" not in env and env["PATH"] != "/nowhere"
+
+
+@pytest.mark.parametrize("missing", ["LITELLM_MASTER_KEY", "LITELLM_DB_PASSWORD"])
+def test_the_entrypoint_stops_without_the_master_key_or_the_password(entrypoint, missing):
+    run = entrypoint("".join(f"{k}={'' if k == missing else v}\n" for k, v in GATEWAY_VALUES.items()))
+
+    assert run.returncode != 0
+    assert f"has no {missing}" in run.stderr
+    assert "ARG=" not in run.stdout, "LiteLLM is not started"
+
+
+def test_the_entrypoint_starts_with_an_empty_provider_key_and_says_so(entrypoint):
+    run = entrypoint("".join(f"{k}={'' if k == 'ANTHROPIC_API_KEY' else v}\n" for k, v in GATEWAY_VALUES.items()))
+
+    assert run.returncode == 0, run.stderr
+    assert "WARNING: ANTHROPIC_API_KEY is empty" in run.stderr
+    assert _child(run)[1]["ANTHROPIC_API_KEY"] == ""
 
 
 # ── spend record and metrics ───────────────────────────────────────────────────

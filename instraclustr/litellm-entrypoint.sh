@@ -16,8 +16,9 @@ until [ -s "$SECRETS" ]; do
     sleep 2
 done
 
-# KEY=value lines, read literally: a value is never evaluated by the shell.
-while IFS= read -r line; do
+# KEY=value lines, read literally: a value is never evaluated by the shell. The
+# `|| [ -n "$line" ]` keeps a last line that has no newline.
+while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
         ANTHROPIC_API_KEY=*|LITELLM_MASTER_KEY=*|LITELLM_DB_PASSWORD=*) export "$line" ;;
     esac
