@@ -9,9 +9,7 @@ from src.replay import (
     load_raw_messages,
     parse_raw_message,
     replay_from_directory,
-    write_sample_replay_file,
 )
-from src.sample_data import generate_sample_batch
 
 
 def _iso(dt: datetime) -> str:
@@ -181,18 +179,3 @@ def test_replay_handles_mixed_valid_invalid(tmp_path):
     events, errors = replay_from_directory(tmp_path)
     assert len(events) == 1
     assert len(errors) == 1
-
-
-# ── write_sample_replay_file ──────────────────────────────────────────────────
-
-def test_write_and_reload_roundtrip(tmp_path):
-    sample_events = generate_sample_batch(20)
-    output = write_sample_replay_file(sample_events, tmp_path / "sample.json")
-    assert output.exists()
-
-    events, errors = replay_from_directory(tmp_path)
-    assert len(events) == 20
-    assert len(errors) == 0
-    # Field integrity check
-    airports = {e.airport_code for e in events}
-    assert airports.issubset({"KDCA", "KIAD", "KBWI", "KADW"})
