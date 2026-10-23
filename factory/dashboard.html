@@ -107,10 +107,10 @@
     transition: border-color .15s;
   }
   .kpi-card:hover { border-color: var(--kpi-hover); }
-  .kpi-top { display: flex; align-items: baseline; gap: 12px; }
+  /* The corner drops under the label rather than squeezing it, so neither is ever cut short on a narrow card. */
+  .kpi-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .kpi-label {
-    min-width: 0; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--label);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: none; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--label); white-space: nowrap;
   }
   .kpi-corner { flex: none; margin-left: auto; font-size: 12px; white-space: nowrap; }
   .kpi-value {
