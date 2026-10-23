@@ -49,6 +49,27 @@
     border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
   }
 
+  /* Engagement strip and KPI tiles */
+  .strip {
+    display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  .strip .k, .kpi .k { color: var(--faint); }
+  .strip .m { color: var(--muted); }
+  .kpis {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+    padding: 14px 32px 0;
+  }
+  .kpi {
+    min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .kpi .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .kpi .v { font-family: var(--mono); font-size: 18px; margin: 2px 0; }
+  .kpi .sub {
+    font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere;
+  }
+
   /* Board */
   .board {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;
@@ -59,17 +80,19 @@
     display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
     border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
   }
-  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
   .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count {
     margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
   }
+  /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
   .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
     content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
   }
   .col.human .col-head { border-bottom-color: color-mix(in srgb, var(--human) 55%, transparent); }
   .col.human h2 { color: var(--human); }
   .col.merged-col h2 { color: var(--merged); }
+  .col.rework-col h2 { color: var(--changes); }
   .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
@@ -192,6 +215,24 @@
   .d-head h3 { margin: 4px 40px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
   .d-head .md { margin-top: 10px; }
   .d-head .md table { margin: 0; }
+  /* Compliance matrix. contain stops the table's width from widening the drawer on a narrow screen, and the height
+     cap keeps the file list and document in view: the table scrolls both ways instead. */
+  .d-head .matrix { max-width: none; contain: inline-size; }
+  .matrix .m-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
+  }
+  .matrix table { max-height: 30vh; overflow-y: auto; }
+  /* Gate and Check get set shares, so a long Evidence text (an escalation reason) cannot squeeze them. */
+  .matrix thead th:nth-child(1) { width: 22%; }
+  .matrix thead th:nth-child(2) { width: 25%; }
+  .matrix tbody th { background: var(--card); color: var(--muted); font-weight: 600; }
+  .matrix .st { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .matrix .passed .st { color: var(--pass); }
+  .matrix .failed .st { color: var(--human); }
+  /* A check that did not run is grey and italic, so it cannot be read as a pass. */
+  .matrix .not-run td { color: var(--muted); }
+  .matrix .not-run .st { font-style: italic; }
+  @media (max-width: 640px) { .matrix table { max-height: 20vh; } }
   .close {
     position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
@@ -259,10 +300,12 @@
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
+    .strip, .kpis { padding-left: 16px; padding-right: 16px; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
@@ -282,12 +325,11 @@
 <body>
 <header>
   <h1>Software factory</h1>
-  <div>
-    <div class="status" id="status">connecting…</div>
-    <div class="status" id="velocity"></div>
-  </div>
+  <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
+<div class="strip" id="strip"></div>
+<div class="kpis" id="kpis"></div>
 <main class="board" id="board"></main>
 <section class="graph">
   <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
@@ -309,6 +351,7 @@
       <h3 id="d-title"></h3>
       <div class="branch" id="d-branch"></div>
       <div class="md" id="d-cost"></div>
+      <div class="md matrix" id="d-compliance"></div>
       <button class="close" data-close aria-label="Close">×</button>
     </div>
     <div class="d-body">
@@ -320,13 +363,16 @@
 
 <script>
 const POLL_MS = 2000
+// The board's six columns and the job stages each holds. Review & audit holds approve too: the approver is the
+// last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
+// signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
 const STAGES = [
-  { key: 'spec', label: 'Spec', who: 'spec-writer · opus' },
-  { key: 'build', label: 'Build', who: 'builder · opus' },
-  { key: 'review', label: 'Review', who: 'sec · ux · ui · code' },
-  { key: 'approve', label: 'Approve', who: 'approver · opus' },
-  { key: 'merged', label: 'Merged', who: 'main', cls: 'merged-col' },
-  { key: 'needs-human', label: 'Needs human', who: 'approve · rework', cls: 'human' },
+  { key: 'spec', label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
+  { key: 'build', label: 'Build', who: 'builder · opus', stages: ['build'] },
+  { key: 'review', label: 'Review & audit', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
+  { key: 'needs-human', label: 'Client approval', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
+  { key: 'merged', label: 'Merged to main', who: 'main', cls: 'merged-col', stages: ['merged'] },
+  { key: 'rework', label: 'Rework', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
@@ -343,6 +389,9 @@ let prices = null // prices.json, or null when it could not be read
 let pricesError = null
 let lastRender = ''
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
+const reworkCache = new Map() // merged job id -> its number of rework-<k>.md files; a merged job's folder is final
+let engagement = {} // engagement.json, or {} when the owner has not written one
+let engagementProblems = []
 let openJobId = null
 let openPath = null
 let openText = null
@@ -351,6 +400,12 @@ async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return res.text()
+}
+
+// The link names in a python -m http.server directory index.
+async function listLinks(dir) {
+  const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
+  return [...doc.querySelectorAll('a')].map((a) => decodeURIComponent(a.getAttribute('href')))
 }
 
 // ---- Board ---------------------------------------------------------------
@@ -408,11 +463,15 @@ function usageEntryOk(u) {
     typeof u.model === 'string' && isFigure(u.tokens) && isFigure(u.seconds)
 }
 
-function mergedAt(job) {
-  const ok = typeof job.merged_at === 'string' &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(job.merged_at)
-  const t = ok ? Date.parse(job.merged_at) : NaN
+// Milliseconds of a UTC time written as ISO 8601 with Z, or null for anything else.
+function utcMs(v) {
+  const ok = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)
+  const t = ok ? Date.parse(v) : NaN
   return Number.isNaN(t) ? null : t
+}
+
+function mergedAt(job) {
+  return utcMs(job.merged_at)
 }
 
 // List price of one usage entry, or null when its tokens or its model's price are unknown.
@@ -458,12 +517,34 @@ function jobProblems(job, cost) {
   if (isSet(job.commit) && commitOf(job) === null) {
     out.push(`Job ${job.id} has commit ${JSON.stringify(job.commit)}, not a git id`)
   }
+  if (isSet(job.behind) && behindOf(job) === null) {
+    out.push(`Job ${job.id} has behind ${JSON.stringify(job.behind)}, not a count of commits`)
+  }
+  if (isSet(job.base) && baseOf(job) === null) {
+    out.push(`Job ${job.id} has base ${JSON.stringify(job.base)}, not a git id`)
+  }
+  const fault = stageLog(job).fault
+  if (fault) {
+    out.push(`Job ${job.id} has a stage_log the dashboard cannot read (${fault}), so it is left out of mean time to delivery, approval wait and rework rate`)
+  }
   return out
 }
 
+const isGitId = (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v)
+
 // The job's short git id: the branch tip, or the merge commit on main once merged. Null when unset or unreadable.
 function commitOf(job) {
-  return typeof job.commit === 'string' && /^[0-9a-f]{7,40}$/.test(job.commit) ? job.commit : null
+  return isGitId(job.commit) ? job.commit : null
+}
+
+// How many commits on main the branch does not have. Null when unset or unreadable.
+function behindOf(job) {
+  return Number.isInteger(job.behind) && job.behind >= 0 ? job.behind : null
+}
+
+// The short git id of the main commit the branch last synced to. Null when unset or unreadable.
+function baseOf(job) {
+  return isGitId(job.base) ? job.base : null
 }
 
 const usd = (v) => `$${v.toFixed(2)}`
@@ -488,9 +569,10 @@ function loeText(s) {
   return ok(s.tokens) && ok(s.seconds) ? (s.seconds / 60 / s.tokens * 100000).toFixed(1) : '-'
 }
 
-function figures(job, cost) {
+function figures(job, cost, rework) {
   const t = cost.total
   const parts = [
+    ...(rework ? [`rework ${rework}`] : []),
     `points ${POINTS.includes(job.points) ? job.points : '-'}`,
     `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
     `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
@@ -514,11 +596,145 @@ function velocity() {
   const leftText = left
     ? ` · ${left} merged ${left === 1 ? 'job' : 'jobs'} left out (no points or no merged_at)`
     : ''
-  return `velocity ${perDay(0, 7).toFixed(2)} points/day in the last 7 days, ` +
-    `${perDay(7, 14).toFixed(2)} in the 7 days before${leftText}`
+  return {
+    value: `${perDay(0, 7).toFixed(2)} pts/day`,
+    sub: `last 7 days · ${perDay(7, 14).toFixed(2)} in the 7 days before${leftText}`,
+  }
 }
 
-function card(job, past, cost) {
+// ---- Stage times ------------------------------------------------------------
+
+const STAGE_NAMES = ['spec', 'build', 'review', 'approve', 'merged', 'needs-human']
+
+// The orchestrator appends { stage, at } to stage_log each time it sets stage. Returns { log, fault }: log is
+// [{ stage, t }] oldest first, or null; fault says why a stage_log that is there cannot be read.
+// A bad log counts as none, never partly: the entries that do read could skip a wait or a whole round, and the
+// figures would show times that never happened.
+// Jobs from before stage_log have none and show "-". Their times are never back-filled or guessed from file dates,
+// which say when a file was last written, not when a stage began.
+function stageLog(job) {
+  if (!isSet(job.stage_log)) return { log: null, fault: null }
+  if (!Array.isArray(job.stage_log)) return { log: null, fault: 'it is not a list' }
+  const log = []
+  for (const [i, e] of job.stage_log.entries()) {
+    if (e === null || typeof e !== 'object' || !('stage' in e) || !('at' in e)) {
+      return { log: null, fault: `entry ${i + 1} is not { stage, at }` }
+    }
+    if (!STAGE_NAMES.includes(e.stage)) {
+      return { log: null, fault: `entry ${i + 1} has unknown stage ${JSON.stringify(e.stage)}` }
+    }
+    const t = utcMs(e.at)
+    if (t === null) {
+      return { log: null, fault: `entry ${i + 1} has at ${JSON.stringify(e.at)}, not a UTC time like 2026-10-21T14:05:00Z` }
+    }
+    if (log.length && t < log[log.length - 1].t) {
+      return { log: null, fault: `entry ${i + 1} is earlier than entry ${i}` }
+    }
+    log.push({ stage: e.stage, t })
+  }
+  // A log that does not start at spec was begun mid-job, by a job already running when stage_log was added. Its start
+  // is unknown, so it counts as none; that is expected, not a fault.
+  return { log: log.length && log[0].stage === 'spec' ? log : null, fault: null }
+}
+
+// Mean time to delivery, approval wait and rework rate. Only jobs with a readable stage_log count, in all three, so
+// every timing figure comes from the same jobs. pasts holds each job's earlier-round verdicts, from pastRounds.
+function timing(pasts) {
+  const timed = jobs.map((job, i) => ({ job, log: stageLog(job).log, past: pasts[i] })).filter((x) => x.log)
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const sum = (ms) => ms.reduce((s, x) => s + x, 0)
+  const mean = (ms) => (ms.length ? duration(sum(ms) / ms.length / 1000) : '-')
+
+  // Delivery: from the spec entry that opens the log to the merged entry.
+  const deliveries = timed
+    .filter(({ job, log }) => job.stage === 'merged' && log.some((e) => e.stage === 'merged'))
+    .map(({ log }) => log.find((e) => e.stage === 'merged').t - log[0].t)
+
+  // The owner's wait is time in needs-human only: there the job waits for /factory approve or /factory rework. The
+  // approve stage is the approver agent running, not the owner. A wait runs from a needs-human entry to the next
+  // entry, whatever its stage; after /factory approve that is merged, so the wait includes the merge and its re-test.
+  // A job still in needs-human has an open wait with no end yet. It is left out until it ends, because averaging a
+  // wait that is still growing would understate it.
+  const waits = timed
+    .map(({ log }) => log.slice(0, -1).flatMap((e, k) => (e.stage === 'needs-human' ? [log[k + 1].t - e.t] : [])))
+    .filter((w) => w.length)
+    .map(sum)
+
+  // Rework: a reviewed job that went to the owner, or got a CHANGES review in any round. A job the owner sent back
+  // always went to needs-human first, so the rework-<k>.md files add no job this rule misses.
+  const reviewed = timed.filter(({ job }) => Number.isInteger(job.round) && job.round >= 1)
+  const reworked = reviewed.filter(({ job, log, past }) => log.some((e) => e.stage === 'needs-human') ||
+    [...past, job.reviews].flatMap(Object.values).includes('CHANGES'))
+  // A missing or unreadable earlier review could have been a CHANGES, so the rate is "-" rather than a guess.
+  const unknown = reviewed.some((x) => !reworked.includes(x) &&
+    x.past.flatMap(Object.values).some((v) => v !== 'PASS' && v !== 'CHANGES'))
+
+  return {
+    delivery: { value: mean(deliveries), sub: `spec to merge · ${count(deliveries.length, 'merged job', 'merged jobs')} timed` },
+    wait: { value: mean(waits), sub: `mean time in Client approval · ${count(waits.length, 'job', 'jobs')} the owner waited on` },
+    rework: unknown
+      ? { value: '-', sub: 'unknown: a review file of an earlier round is missing or unreadable' }
+      : {
+          value: percent(reworked.length, reviewed.length),
+          sub: `${reworked.length} of ${count(reviewed.length, 'reviewed job', 'reviewed jobs')} with stage times ` +
+            'went to Client approval or got a CHANGES review',
+        },
+  }
+}
+
+const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
+
+// The KPI tiles. Each figure comes from the job files; one with no source shows "-".
+function kpis(pasts) {
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const v = velocity()
+  const t = timing(pasts)
+  return [
+    ['Velocity', v.value, v.sub],
+    ['Mean time to delivery', t.delivery.value, t.delivery.sub],
+    ['Approval wait', t.wait.value, t.wait.sub],
+    ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
+    ['Rework rate', t.rework.value, t.rework.sub],
+    // Margin savings compares the list price with what the work would cost at the owner's traditional bill rate.
+    // No file holds that rate yet, so nothing is read and the tile stays "-".
+    ['Margin savings', '-', "needs the owner's traditional bill rate (later job)"],
+  ].map(([k, value, sub]) =>
+    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('')
+}
+
+// The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
+// Spend is every job's full price at list price: the usage log has no dates, so it cannot be cut to this month.
+function strip() {
+  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
+  const costs = jobs.map(costOf)
+  // Null as soon as one job's total is unknown, as sums() does, so spend is never shown short.
+  const spent = costs.some((c) => c.recorded)
+    ? costs.reduce((s, c) => (s === null || c.total.usd === null ? null : s + c.total.usd), 0)
+    : null
+  const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
+  const item = (k, v) => `<span><span class="k">${k}</span> ${esc(v)}</span>`
+  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint')) +
+    `<span><span class="k">SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}` +
+    ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
+}
+
+// Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
+// means the owner sent the job back. Limit: once such a file exists, the page cannot tell a later reviewer-requested
+// fix from an owner rework, so the job shows in Rework for any later time in build.
+// Returns { count, error }; count is 0 for a job that needs no lookup or whose listing could not be read.
+async function reworkOf(job) {
+  if (job.stage !== 'build' && !(Number.isInteger(job.round) && job.round >= 1)) return { count: 0, error: null }
+  if (reworkCache.has(job.id)) return { count: reworkCache.get(job.id), error: null }
+  try {
+    const count = (await listLinks(`jobs/${job.id}/`)).filter((h) => /^rework-\d+\.md$/.test(h)).length
+    if (job.stage === 'merged') reworkCache.set(job.id, count)
+    return { count, error: null }
+  } catch (err) {
+    return { count: 0, error: err.message }
+  }
+}
+
+function card(job, past, cost, rework) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
   const rows = past.map((v, i) => chips(i + 1, v, false))
@@ -535,7 +751,7 @@ function card(job, past, cost) {
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
-      ${figures(job, cost)}
+      ${figures(job, cost, rework)}
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>
       <div class="approve">
@@ -572,6 +788,11 @@ function graphRow(job) {
       '<circle class="node" cx="34" cy="28" r="4"/><circle class="node" cx="12" cy="52" r="5"/>'
     : '<path class="br" d="M12 4 C12 16 34 12 34 24"/><circle class="tip" cx="34" cy="28" r="4.5"/>'
   const commit = commitOf(job)
+  const behind = behindOf(job)
+  // Drift is counted when job.json was last written, so a merged job, whose branch is gone, has none to show.
+  const drift = merged ? '' : `
+        <div class="g-meta"><span class="k">behind main</span> ${behind === null ? '-' : behind}` +
+    ` <span class="k">synced to</span> ${esc(baseOf(job) || '-')}${behind > 0 ? ' <span class="flag">out of date</span>' : ''}</div>`
   const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
   return `
     <div class="g-row ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}"
@@ -582,7 +803,7 @@ function graphRow(job) {
         <div class="num">${esc(job.id)} · ${esc(state)}</div>
         <p class="feature">${esc(job.feature)}</p>
         <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
-        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>
+        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
         <div class="g-meta"><span class="k">worktree</span> ${esc(job.worktree)}${merged ? ' <span class="k">removed</span>' : ''}</div>
       </div>
     </div>`
@@ -596,28 +817,39 @@ function graph() {
 
 async function render() {
   const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
+  problems.push(...engagementProblems)
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
   const pasts = await Promise.all(jobs.map(pastRounds))
+  const reworks = await Promise.all(jobs.map(reworkOf))
   jobs.forEach((job, i) => {
     const cost = costOf(job)
     problems.push(...jobProblems(job, cost))
-    if (!byStage[job.stage]) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
-    else byStage[job.stage].push(card(job, pasts[i], cost))
+    const r = reworks[i]
+    if (r.error) problems.push(`Could not read the folder of job ${job.id} (${r.error}), so it is counted as not sent back`)
+    const col = job.stage === 'build' && r.count > 0
+      ? 'rework'
+      : (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
+    if (!col) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
+    else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0))
   })
   // Newest first within a column.
   const html = STAGES.map((s) => `
     <section class="col ${s.cls || ''}">
       <div class="col-head">
-        <h2>${s.label}</h2><span class="who">${s.who}</span>
+        <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
         <span class="count">${byStage[s.key].length || ''}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
+  const stripHtml = strip()
+  const kpiHtml = kpis(pasts)
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
-  if (html + graphHtml + banner !== lastRender) {
-    lastRender = html + graphHtml + banner
+  if (html + stripHtml + kpiHtml + graphHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + kpiHtml + graphHtml + banner
     $('board').innerHTML = html
+    $('strip').innerHTML = stripHtml
+    $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
     $('banner').innerHTML = banner
   }
@@ -628,15 +860,14 @@ async function poll() {
   try {
     jobs = await loadJobs()
     await loadPrices()
+    await loadEngagement()
     await render()
     if (openJobId) await refreshDrawer()
     status.className = 'status'
     status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
-    $('velocity').textContent = velocity()
   } catch (err) {
     status.className = 'status error'
     status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
-    $('velocity').textContent = ''
   }
 }
 
@@ -661,6 +892,40 @@ async function loadPrices() {
   } catch (err) {
     prices = null
     pricesError = err.message
+  }
+}
+
+// engagement.json, beside prices.json, is optional and written only by the owner; the factory never creates it:
+//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0> }
+// Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. A file that is
+// not valid JSON, or a key of the wrong type, shows "-" for what it cannot read and says so in a banner.
+// The folder index is read first so a missing file is not fetched, which would log a 404 on every poll.
+const ENGAGEMENT_KEYS = {
+  client: [(v) => typeof v === 'string', 'text'],
+  stage: [(v) => typeof v === 'string', 'text'],
+  sprint: [(v) => Number.isInteger(v) && v >= 0, 'a whole number'],
+  monthly_budget_usd: [(v) => Number.isFinite(v) && v >= 0, 'an amount in dollars'],
+}
+
+async function loadEngagement() {
+  engagement = {}
+  engagementProblems = []
+  if (!(await listLinks('./')).includes('engagement.json')) return
+  let e
+  try {
+    e = JSON.parse(await fetchText('engagement.json'))
+  } catch (err) {
+    engagementProblems.push(`Could not read engagement.json (${err.message}), so client, stage, sprint and budget show -`)
+    return
+  }
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) {
+    engagementProblems.push('engagement.json is not a JSON object, so client, stage, sprint and budget show -')
+    return
+  }
+  for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
+    if (!isSet(e[k])) continue
+    if (ok(e[k])) engagement[k] = e[k]
+    else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
   }
 }
 
@@ -730,7 +995,8 @@ async function refreshDrawer() {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
-  await Promise.all(files.filter((f) => !firstLines.has(base + f)).map(async (f) => {
+  // A file that cannot be read gets no first line and is tried again on the next poll; the compliance matrix says so.
+  await Promise.allSettled(files.filter((f) => !firstLines.has(base + f)).map(async (f) => {
     firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
   }))
 
@@ -752,6 +1018,7 @@ async function refreshDrawer() {
     openText = text
     $('d-doc').innerHTML = text === null ? '<p class="note">The spec-writer hasn’t written anything yet.</p>' : markdown(text)
   }
+  await refreshMatrix(base, files, openPath === 'decision.md' ? text : null)
 }
 
 async function openDrawer(id) {
@@ -793,6 +1060,140 @@ document.addEventListener('keydown', (e) => {
     openDrawer(e.target.dataset.job)
   }
 })
+
+// ---- Compliance matrix ----------------------------------------------------
+
+// The one list of compliance gates, in display order; the drawer's matrix and the executive briefing both read it.
+// kind says where a row's status comes from: review:<key> is that reviewer's verdict (keys as in REVIEWERS), decision
+// and escalation come from decision.md, and placeholder is a check the factory has not built: always "not run".
+const COMPLIANCE_ROWS = [
+  { group: 'Security and Static Analysis', rows: [
+    { id: 'sast', gate: 'SAST scan', check: 'Code scanned for security flaws', kind: 'placeholder' },
+    { id: 'dast', gate: 'DAST scan', check: 'Running app probed for flaws', kind: 'placeholder' },
+    { id: 'dependencies', gate: 'Dependency vulnerability check', check: 'Known flaws in dependencies', kind: 'placeholder' },
+    { id: 'credentials', gate: 'Credential leak prevention (Vault integration status)',
+      check: 'Secrets kept out of code, in Vault', kind: 'placeholder' },
+    { id: 'security-review', gate: 'Security review', check: 'Verdict in review-security.md', kind: 'review:security' },
+  ] },
+  { group: 'IP and Licensing Guardrails', rows: [
+    { id: 'license', gate: 'License compatibility', check: 'Dependency licenses allow this use', kind: 'placeholder' },
+    { id: 'copyleft', gate: 'No copyleft (GPL) contamination', check: 'No copyleft-licensed code', kind: 'placeholder' },
+  ] },
+  { group: 'Regulatory and Policy Alignment', rows: [
+    { id: 'iso27001', gate: 'ISO 27001', check: 'Information security controls', kind: 'placeholder' },
+    { id: 'soc2', gate: 'SOC 2', check: 'Trust services criteria', kind: 'placeholder' },
+    { id: 'fedramp', gate: 'FedRAMP tags', check: 'US federal cloud control tags', kind: 'placeholder' },
+  ] },
+  { group: 'Factory reviews and decision', rows: [
+    { id: 'ux-review', gate: 'UX review', check: 'Verdict in review-ux.md', kind: 'review:ux' },
+    { id: 'ui-review', gate: 'UI review', check: 'Verdict in review-ui.md', kind: 'review:ui' },
+    { id: 'code-review', gate: 'Code review', check: 'Verdict in review-code.md', kind: 'review:code' },
+    { id: 'decision', gate: 'Approver decision', check: 'Line 1 of decision.md', kind: 'decision' },
+    { id: 'escalation', gate: 'Escalation reason', check: 'Why section of decision.md', kind: 'escalation' },
+  ] },
+]
+const WHY_CHARS = 300
+
+// The first paragraph under "## Why" in a decision.md, on one line; null when there is none.
+function whyOf(text) {
+  const lines = text.replace(/\r/g, '').split('\n')
+  const at = lines.findIndex((l) => /^##\s+Why\s*$/.test(l))
+  const para = []
+  for (const l of at < 0 ? [] : lines.slice(at + 1)) {
+    if (!l.trim()) {
+      if (para.length) break
+      continue
+    }
+    if (l.startsWith('#')) break
+    para.push(l.trim())
+  }
+  return para.length ? para.join(' ') : null
+}
+
+// One job's matrix as rows { id, group, gate, check, status, evidence }, in COMPLIANCE_ROWS order. files are the
+// paths listFiles(base) gives, firstLines the drawer's cache (keyed base + path; a listed file with no entry could not
+// be read), and decision the text of decision.md when its line 1 is ESCALATE, or null. Status is only ever passed,
+// failed or not run. It touches no DOM and fetches nothing, so the executive briefing can reuse it.
+function complianceRows(base, files, firstLines, decision) {
+  const line = (f) => firstLines.get(base + f)
+  const reviews = files
+    .map((f) => f.match(/^round-(\d+)\/review-(\w+)\.md$/))
+    .filter((m) => m && REVIEWERS.some(([k]) => k === m[2]))
+    .map(([f, n, key]) => ({ f, n: Number(n), key }))
+    .sort((a, b) => a.n - b.n)
+  // The latest round is the highest with any review file; a reviewer with no file in it has not run yet.
+  const latest = Math.max(0, ...reviews.map((r) => r.n))
+  const verdict = (f) => {
+    if (line(f) === undefined) return ['not run', `could not read ${f}`]
+    const v = verdictOf(line(f))
+    return v === 'PASS' ? ['passed'] : v === 'CHANGES' ? ['failed'] : ['not run', 'verdict line not valid']
+  }
+  // Status of the latest round, then every round this reviewer has a file for, oldest first: "R1 failed, R2 passed".
+  const review = (key) => {
+    const mine = reviews.filter((r) => r.key === key)
+    const now = mine.find((r) => r.n === latest)
+    const [status, note] = now ? verdict(now.f) : ['not run', 'no verdict yet']
+    const shown = latest ? `round ${latest}${note ? `: ${note}` : ''}` : note
+    const history = mine.map((r) => `R${r.n} ${verdict(r.f)[0]}`).join(', ')
+    return [status, history ? `${shown} · ${history}` : shown]
+  }
+  // null: there is no decision.md; undefined: it is listed but could not be read.
+  const first = files.includes('decision.md') ? line('decision.md') : null
+  const decided = () => {
+    if (first === null) return ['not run', 'no decision yet']
+    if (first === undefined) return ['not run', 'could not read decision.md']
+    if (first === 'APPROVE') return ['passed', 'decision.md line 1: APPROVE']
+    if (first === 'ESCALATE') return ['failed', 'decision.md line 1: ESCALATE, sent to a human']
+    return ['not run', 'decision line not valid']
+  }
+  const escalation = () => {
+    if (first === 'APPROVE') return ['not run', 'no escalation']
+    if (first !== 'ESCALATE') return decided()
+    if (decision === null) return ['not run', 'could not read decision.md']
+    const why = whyOf(decision)
+    if (why === null) return ['failed', 'no Why section in decision.md']
+    return ['failed', why.length > WHY_CHARS ? `${why.slice(0, WHY_CHARS).replace(/\s+\S*$/, '')}…` : why]
+  }
+  const statusOf = (kind) => {
+    if (kind === 'placeholder') return ['not run', 'check not built in the factory']
+    if (kind === 'decision') return decided()
+    if (kind === 'escalation') return escalation()
+    return review(kind.replace(/^review:/, ''))
+  }
+  return COMPLIANCE_ROWS.flatMap(({ group, rows }) => rows.map(({ id, gate, check, kind }) => {
+    const [status, evidence] = statusOf(kind)
+    return { id, group, gate, check, status, evidence }
+  }))
+}
+
+// The drawer's table, built from complianceRows() alone: one body per group, headed by the group's name.
+function complianceTable(rows) {
+  const groups = [...new Set(rows.map((r) => r.group))]
+  const body = groups.map((g) => `<tbody><tr><th colspan="4" scope="rowgroup">${esc(g)}</th></tr>` +
+    rows.filter((r) => r.group === g).map((r) => `<tr class="${esc(r.status.replace(' ', '-'))}">` +
+      `<td>${esc(r.gate)}</td><td>${esc(r.check)}</td><td class="st">${esc(r.status)}</td><td>${esc(r.evidence)}</td></tr>`)
+      .join('') + '</tbody>').join('')
+  return '<div class="m-title" id="d-matrix-title">Compliance matrix</div>' +
+    '<table id="d-matrix" aria-labelledby="d-matrix-title"><thead><tr>' +
+    `<th>Gate</th><th>Check</th><th>Status</th><th>Evidence</th></tr></thead>${body}</table>`
+}
+
+let matrixHtml = null
+
+// Runs at the end of every refreshDrawer(). Only an ESCALATE decision needs decision.md's text, for its Why: the open
+// file's text when decision.md is open, else one fetch, which leaves it null when it fails ("could not read").
+// The table is replaced only when it changed, so its scroll position survives the poll.
+async function refreshMatrix(base, files, openDecision) {
+  let decision = null
+  if (files.includes('decision.md') && firstLines.get(base + 'decision.md') === 'ESCALATE') {
+    decision = openDecision !== null ? openDecision : await fetchText(base + 'decision.md').catch(() => null)
+  }
+  const html = complianceTable(complianceRows(base, files, firstLines, decision))
+  if (html !== matrixHtml) {
+    matrixHtml = html
+    $('d-compliance').innerHTML = html
+  }
+}
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 
