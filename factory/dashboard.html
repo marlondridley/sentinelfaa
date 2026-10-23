@@ -634,6 +634,7 @@ function moneyOf(job, cost) {
 
 const perPointText = (price, points) => `${usd(price / points)}/pt`
 const jobsText = (n) => `${n} merged ${n === 1 ? 'job' : 'jobs'}`
+const pointsText = (n) => `${n} ${n === 1 ? 'point' : 'points'}`
 
 // " · 6 left out (5 no points, 1 unknown price)" from the gaps of the jobs left out, or "" when none is.
 function leftOutText(gaps) {
@@ -657,11 +658,11 @@ function moneyParts(job, cost) {
 function moneyLines(job, cost) {
   const m = moneyOf(job, cost)
   const rate = traditionalRate()
-  const perPoint = m.gap ? `- (${m.gap})` : `${perPointText(m.price, m.points)} (Total ${usd(m.price)} / ${m.points} points)`
+  const perPoint = m.gap ? `- (${m.gap})` : `${perPointText(m.price, m.points)} (Total ${usd(m.price)} / ${pointsText(m.points)})`
   let efficiency = `- (${rate === null ? SET_RATE : m.gap})`
   if (rate !== null && !m.gap) {
     const traditional = rate * m.points
-    efficiency = `${usd(m.price)} vs ${usd(traditional)} (${m.points} points × ${usd(rate)}/pt), ` +
+    efficiency = `${usd(m.price)} vs ${usd(traditional)} (${pointsText(m.points)} × ${usd(rate)}/pt), ` +
       `saving ${percent(traditional - m.price, traditional)}`
   }
   return `<div class="figures">${esc(`cost/point ${perPoint}`)}</div>` +
