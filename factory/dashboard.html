@@ -843,7 +843,8 @@ function costPerPointTile() {
 // The Cost & LOE view's table: one row per job in every stage, by job id, with the same price and per-point figures
 // as the cards. Named apart from costTable(), the drawer's per-round table.
 function costLoeTable() {
-  const head = '<thead><tr><th>Job</th><th>Stage</th><th>Points</th><th>Full price</th><th>Cost per point</th></tr></thead>'
+  const cols = ['Job', 'Stage', 'Points', 'Full price', 'Cost per point']
+  const head = `<thead><tr>${cols.map((c) => `<th scope="col">${c}</th>`).join('')}</tr></thead>`
   const rows = [...jobs].sort((a, b) => a.id.localeCompare(b.id)).map((job) => {
     const cost = costOf(job)
     const m = moneyOf(job, cost)
@@ -1959,6 +1960,10 @@ function showView() {
   }
   if (view === 'stream') $('stream').open = true
   scrollTo(0, 0)
+  // A hash set in the address bar or by location.hash makes the browser scroll to its element during the layout of the
+  // next frame, once the element is shown. A frame callback runs before that layout, so the second one, a frame later,
+  // runs after the scroll.
+  requestAnimationFrame(() => requestAnimationFrame(() => scrollTo(0, 0)))
 }
 
 window.addEventListener('hashchange', showView)
