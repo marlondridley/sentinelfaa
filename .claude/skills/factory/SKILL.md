@@ -87,6 +87,15 @@ The builder, `reviewer-ux` and `reviewer-ui` each create their own
 run, the job's last round plus one) and name its files in their report. It is
 the one place an agent writes besides its one file; you never create it.
 
+The dashboard's job drawer has a compliance matrix, read from these same files.
+Only the rows the factory really runs show a result: the four review verdicts of
+the latest round (with each reviewer's earlier rounds), the approver's decision
+and, on `ESCALATE`, the reason from the `## Why` section of `decision.md`. The
+SAST, DAST, dependency vulnerability, credential leak (Vault), license,
+copyleft (GPL), ISO 27001, SOC 2 and FedRAMP rows are placeholders that always
+read `not run`, until a job builds that check. Status is only ever `passed`,
+`failed` or `not run`.
+
 ### job.json
 
 ```json

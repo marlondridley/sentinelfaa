@@ -215,6 +215,24 @@
   .d-head h3 { margin: 4px 40px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
   .d-head .md { margin-top: 10px; }
   .d-head .md table { margin: 0; }
+  /* Compliance matrix. contain stops the table's width from widening the drawer on a narrow screen, and the height
+     cap keeps the file list and document in view: the table scrolls both ways instead. */
+  .d-head .matrix { max-width: none; contain: inline-size; }
+  .matrix .m-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
+  }
+  .matrix table { max-height: 30vh; overflow-y: auto; }
+  /* Gate and Check get set shares, so a long Evidence text (an escalation reason) cannot squeeze them. */
+  .matrix thead th:nth-child(1) { width: 22%; }
+  .matrix thead th:nth-child(2) { width: 25%; }
+  .matrix tbody th { background: var(--card); color: var(--muted); font-weight: 600; }
+  .matrix .st { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .matrix .passed .st { color: var(--pass); }
+  .matrix .failed .st { color: var(--human); }
+  /* A check that did not run is grey and italic, so it cannot be read as a pass. */
+  .matrix .not-run td { color: var(--muted); }
+  .matrix .not-run .st { font-style: italic; }
+  @media (max-width: 640px) { .matrix table { max-height: 20vh; } }
   .close {
     position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
@@ -333,6 +351,7 @@
       <h3 id="d-title"></h3>
       <div class="branch" id="d-branch"></div>
       <div class="md" id="d-cost"></div>
+      <div class="md matrix" id="d-compliance"></div>
       <button class="close" data-close aria-label="Close">×</button>
     </div>
     <div class="d-body">
@@ -976,7 +995,8 @@ async function refreshDrawer() {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
-  await Promise.all(files.filter((f) => !firstLines.has(base + f)).map(async (f) => {
+  // A file that cannot be read gets no first line and is tried again on the next poll; the compliance matrix says so.
+  await Promise.allSettled(files.filter((f) => !firstLines.has(base + f)).map(async (f) => {
     firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
   }))
 
@@ -998,6 +1018,7 @@ async function refreshDrawer() {
     openText = text
     $('d-doc').innerHTML = text === null ? '<p class="note">The spec-writer hasn’t written anything yet.</p>' : markdown(text)
   }
+  await refreshMatrix(base, files, openPath === 'decision.md' ? text : null)
 }
 
 async function openDrawer(id) {
@@ -1039,6 +1060,140 @@ document.addEventListener('keydown', (e) => {
     openDrawer(e.target.dataset.job)
   }
 })
+
+// ---- Compliance matrix ----------------------------------------------------
+
+// The one list of compliance gates, in display order; the drawer's matrix and the executive briefing both read it.
+// kind says where a row's status comes from: review:<key> is that reviewer's verdict (keys as in REVIEWERS), decision
+// and escalation come from decision.md, and placeholder is a check the factory has not built: always "not run".
+const COMPLIANCE_ROWS = [
+  { group: 'Security and Static Analysis', rows: [
+    { id: 'sast', gate: 'SAST scan', check: 'Code scanned for security flaws', kind: 'placeholder' },
+    { id: 'dast', gate: 'DAST scan', check: 'Running app probed for flaws', kind: 'placeholder' },
+    { id: 'dependencies', gate: 'Dependency vulnerability check', check: 'Known flaws in dependencies', kind: 'placeholder' },
+    { id: 'credentials', gate: 'Credential leak prevention (Vault integration status)',
+      check: 'Secrets kept out of code, in Vault', kind: 'placeholder' },
+    { id: 'security-review', gate: 'Security review', check: 'Verdict in review-security.md', kind: 'review:security' },
+  ] },
+  { group: 'IP and Licensing Guardrails', rows: [
+    { id: 'license', gate: 'License compatibility', check: 'Dependency licenses allow this use', kind: 'placeholder' },
+    { id: 'copyleft', gate: 'No copyleft (GPL) contamination', check: 'No copyleft-licensed code', kind: 'placeholder' },
+  ] },
+  { group: 'Regulatory and Policy Alignment', rows: [
+    { id: 'iso27001', gate: 'ISO 27001', check: 'Information security controls', kind: 'placeholder' },
+    { id: 'soc2', gate: 'SOC 2', check: 'Trust services criteria', kind: 'placeholder' },
+    { id: 'fedramp', gate: 'FedRAMP tags', check: 'US federal cloud control tags', kind: 'placeholder' },
+  ] },
+  { group: 'Factory reviews and decision', rows: [
+    { id: 'ux-review', gate: 'UX review', check: 'Verdict in review-ux.md', kind: 'review:ux' },
+    { id: 'ui-review', gate: 'UI review', check: 'Verdict in review-ui.md', kind: 'review:ui' },
+    { id: 'code-review', gate: 'Code review', check: 'Verdict in review-code.md', kind: 'review:code' },
+    { id: 'decision', gate: 'Approver decision', check: 'Line 1 of decision.md', kind: 'decision' },
+    { id: 'escalation', gate: 'Escalation reason', check: 'Why section of decision.md', kind: 'escalation' },
+  ] },
+]
+const WHY_CHARS = 300
+
+// The first paragraph under "## Why" in a decision.md, on one line; null when there is none.
+function whyOf(text) {
+  const lines = text.replace(/\r/g, '').split('\n')
+  const at = lines.findIndex((l) => /^##\s+Why\s*$/.test(l))
+  const para = []
+  for (const l of at < 0 ? [] : lines.slice(at + 1)) {
+    if (!l.trim()) {
+      if (para.length) break
+      continue
+    }
+    if (l.startsWith('#')) break
+    para.push(l.trim())
+  }
+  return para.length ? para.join(' ') : null
+}
+
+// One job's matrix as rows { id, group, gate, check, status, evidence }, in COMPLIANCE_ROWS order. files are the
+// paths listFiles(base) gives, firstLines the drawer's cache (keyed base + path; a listed file with no entry could not
+// be read), and decision the text of decision.md when its line 1 is ESCALATE, or null. Status is only ever passed,
+// failed or not run. It touches no DOM and fetches nothing, so the executive briefing can reuse it.
+function complianceRows(base, files, firstLines, decision) {
+  const line = (f) => firstLines.get(base + f)
+  const reviews = files
+    .map((f) => f.match(/^round-(\d+)\/review-(\w+)\.md$/))
+    .filter((m) => m && REVIEWERS.some(([k]) => k === m[2]))
+    .map(([f, n, key]) => ({ f, n: Number(n), key }))
+    .sort((a, b) => a.n - b.n)
+  // The latest round is the highest with any review file; a reviewer with no file in it has not run yet.
+  const latest = Math.max(0, ...reviews.map((r) => r.n))
+  const verdict = (f) => {
+    if (line(f) === undefined) return ['not run', `could not read ${f}`]
+    const v = verdictOf(line(f))
+    return v === 'PASS' ? ['passed'] : v === 'CHANGES' ? ['failed'] : ['not run', 'verdict line not valid']
+  }
+  // Status of the latest round, then every round this reviewer has a file for, oldest first: "R1 failed, R2 passed".
+  const review = (key) => {
+    const mine = reviews.filter((r) => r.key === key)
+    const now = mine.find((r) => r.n === latest)
+    const [status, note] = now ? verdict(now.f) : ['not run', 'no verdict yet']
+    const shown = latest ? `round ${latest}${note ? `: ${note}` : ''}` : note
+    const history = mine.map((r) => `R${r.n} ${verdict(r.f)[0]}`).join(', ')
+    return [status, history ? `${shown} · ${history}` : shown]
+  }
+  // null: there is no decision.md; undefined: it is listed but could not be read.
+  const first = files.includes('decision.md') ? line('decision.md') : null
+  const decided = () => {
+    if (first === null) return ['not run', 'no decision yet']
+    if (first === undefined) return ['not run', 'could not read decision.md']
+    if (first === 'APPROVE') return ['passed', 'decision.md line 1: APPROVE']
+    if (first === 'ESCALATE') return ['failed', 'decision.md line 1: ESCALATE, sent to a human']
+    return ['not run', 'decision line not valid']
+  }
+  const escalation = () => {
+    if (first === 'APPROVE') return ['not run', 'no escalation']
+    if (first !== 'ESCALATE') return decided()
+    if (decision === null) return ['not run', 'could not read decision.md']
+    const why = whyOf(decision)
+    if (why === null) return ['failed', 'no Why section in decision.md']
+    return ['failed', why.length > WHY_CHARS ? `${why.slice(0, WHY_CHARS).replace(/\s+\S*$/, '')}…` : why]
+  }
+  const statusOf = (kind) => {
+    if (kind === 'placeholder') return ['not run', 'check not built in the factory']
+    if (kind === 'decision') return decided()
+    if (kind === 'escalation') return escalation()
+    return review(kind.replace(/^review:/, ''))
+  }
+  return COMPLIANCE_ROWS.flatMap(({ group, rows }) => rows.map(({ id, gate, check, kind }) => {
+    const [status, evidence] = statusOf(kind)
+    return { id, group, gate, check, status, evidence }
+  }))
+}
+
+// The drawer's table, built from complianceRows() alone: one body per group, headed by the group's name.
+function complianceTable(rows) {
+  const groups = [...new Set(rows.map((r) => r.group))]
+  const body = groups.map((g) => `<tbody><tr><th colspan="4" scope="rowgroup">${esc(g)}</th></tr>` +
+    rows.filter((r) => r.group === g).map((r) => `<tr class="${esc(r.status.replace(' ', '-'))}">` +
+      `<td>${esc(r.gate)}</td><td>${esc(r.check)}</td><td class="st">${esc(r.status)}</td><td>${esc(r.evidence)}</td></tr>`)
+      .join('') + '</tbody>').join('')
+  return '<div class="m-title" id="d-matrix-title">Compliance matrix</div>' +
+    '<table id="d-matrix" aria-labelledby="d-matrix-title"><thead><tr>' +
+    `<th>Gate</th><th>Check</th><th>Status</th><th>Evidence</th></tr></thead>${body}</table>`
+}
+
+let matrixHtml = null
+
+// Runs at the end of every refreshDrawer(). Only an ESCALATE decision needs decision.md's text, for its Why: the open
+// file's text when decision.md is open, else one fetch, which leaves it null when it fails ("could not read").
+// The table is replaced only when it changed, so its scroll position survives the poll.
+async function refreshMatrix(base, files, openDecision) {
+  let decision = null
+  if (files.includes('decision.md') && firstLines.get(base + 'decision.md') === 'ESCALATE') {
+    decision = openDecision !== null ? openDecision : await fetchText(base + 'decision.md').catch(() => null)
+  }
+  const html = complianceTable(complianceRows(base, files, firstLines, decision))
+  if (html !== matrixHtml) {
+    matrixHtml = html
+    $('d-compliance').innerHTML = html
+  }
+}
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 
