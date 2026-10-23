@@ -70,7 +70,7 @@ state that never lands in a commit.
 ```
 <repo>/factory/backlog.md                      queue for /factory next
 <repo>/factory/prices.json                     list price per model, for the dashboard's full price (committed)
-<repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd for the dashboard; never created or defaulted
+<repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd, owner (the name shown in the pulse label) for the dashboard; never created or defaulted
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
 <repo>/factory/jobs/<job-id>/events.jsonl      the job's event log (you append to it, only the dashboard's live event stream reads it)
 <repo>/factory/jobs/<job-id>/spec.md
@@ -97,8 +97,9 @@ reads "Filter applied passed"), as the `evidence-driven-testing` skill says.
 The dashboard has four views, picked by the links under its title and kept in
 the address's hash, so Back and Forward work and a poll never changes the view.
 Every view has the header bar under those links: the client and sprint from
-`engagement.json`, the Executive Financial Pulse line (this month's spend
-against the monthly budget), the Export Executive Briefing button and the Live
+`engagement.json`, the Executive Financial Pulse (this month's spend at
+list price against the monthly budget, leaving out jobs with no date or price
+and saying how many), the Export Executive Briefing button and the Live
 Event Stream link, also opened by the `m` key. `#board` (the default, and for an
 empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
