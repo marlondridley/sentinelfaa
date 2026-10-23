@@ -256,6 +256,8 @@
   .drawer [hidden] { display: none; }
   .d-upper .md { padding: 0 24px 14px; }
   .d-upper .md table { margin: 0; }
+  /* The cancel summary is plain text with one long Reason line, so it wraps rather than scroll sideways. */
+  #d-cancelled pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .d-files { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-bottom: 0; }
   /* Compliance matrix. contain stops the table's width from widening the drawer on a narrow screen: a wide table
      scrolls sideways instead. */
@@ -511,6 +513,11 @@
   #cost { padding: 20px 32px 40px; }
   #cost .col-head { padding-left: 0; }
   #cost .kpis { padding: 0 0 14px; }
+  #cost .note { margin: 0 0 10px; }
+  /* Each row opens its job's drawer, as a card does. A cancelled job's row is dimmed as a merged card is. */
+  #cost-table tr[data-job] { cursor: pointer; }
+  #cost-table tr[data-job]:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+  #cost-table tr.cancelled { opacity: .72; }
   /* Alone in their view, the graph and the stream lose the gaps the board gave them. */
   body[data-view="git"] .graph { padding-top: 20px; }
   body[data-view="stream"] .stream { margin-bottom: 40px; }
@@ -631,6 +638,7 @@
 <section id="cost" aria-labelledby="cost-title">
   <div class="col-head"><h2 id="cost-title">Cost &amp; LOE</h2><span class="who">every job, at list price, from the job files</span></div>
   <div class="kpis" id="cost-kpis"></div>
+  <p class="note" id="cost-cancelled"></p>
   <div class="md"><table id="cost-table"></table></div>
 </section>
 <footer>
@@ -650,6 +658,11 @@
         <h3 id="d-title"></h3>
         <div class="branch" id="d-branch"></div>
         <button class="close" data-close aria-label="Close">×</button>
+      </div>
+      <div class="d-sec" id="d-cancelled-sec" hidden>
+        <h4 class="d-sh"><button type="button" data-section="cancelled" aria-expanded="true" aria-controls="d-cancelled">
+          <span class="chev" aria-hidden="true">▾</span>Cancelled</button></h4>
+        <div class="md" id="d-cancelled"></div>
       </div>
       <div class="d-sec">
         <h4 class="d-sh"><button type="button" data-section="cost" aria-expanded="true" aria-controls="d-cost">
@@ -709,6 +722,9 @@ const STAGES = [
   { key: 'rework', label: 'REWORK', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
+// A cancelled job (/factory cancel) is in no lane: it is not an error, and it delivered nothing. It shows only in the
+// Cost & LOE table and the drawer; its spend stays in the pulse and the strip, as its tokens were spent.
+const isCancelled = (job) => job.stage === 'cancelled'
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
 const POINTS = [1, 2, 3, 5, 8, 13]
 const USAGE_KEYS = ['agent', 'round', 'model', 'tokens', 'seconds']
@@ -1025,23 +1041,38 @@ function costPerPointTile() {
     `<div class="sub">${esc(sub)}</div>${curve}</div>`
 }
 
-// The Cost & LOE view's table: one row per job in every stage, by job id, with the same price and per-point figures
-// as the cards. Named apart from costTable(), the drawer's per-round table.
+// The Cost & LOE view's table: one row per job in every stage, cancelled too, by job id, with the same price and
+// per-point figures as the cards. Each row opens the job's drawer; for a cancelled job it is the only way there.
+// Named apart from costTable(), the drawer's per-round table.
 function costLoeTable() {
   const cols = ['Job', 'Stage', 'Points', 'Full price', 'Cost per point']
   const head = `<thead><tr>${cols.map((c) => `<th scope="col">${c}</th>`).join('')}</tr></thead>`
   const rows = [...jobs].sort((a, b) => a.id.localeCompare(b.id)).map((job) => {
     const cost = costOf(job)
     const m = moneyOf(job, cost)
-    return `<tr><td>${esc(idTitle(job))}</td><td>${esc(job.stage)}</td><td>${m.points === null ? '-' : m.points}</td>` +
+    return `<tr${isCancelled(job) ? ' class="cancelled"' : ''} tabindex="0" data-job="${esc(job.id)}">` +
+      `<td>${esc(idTitle(job))}</td><td>${esc(job.stage)}</td><td>${m.points === null ? '-' : m.points}</td>` +
       `<td>${esc(priceText(cost, cost.total.usd))}</td><td>${esc(m.gap ? '-' : perPointText(m.price, m.points))}</td></tr>`
   })
   return `${head}<tbody>${rows.join('') || '<tr><td colspan="5">No jobs in factory/jobs/ yet.</td></tr>'}</tbody>`
 }
 
+// What the cancelled jobs cost at list price, as "$1.23 · 2 cancelled jobs · 1 left out (unknown price)". It is part
+// of the pulse and the strip, not taken from them. As in pulse(), a cancelled job with an unknown price is left out
+// and counted, never added in part. The Cost & LOE view and the pulse tooltip both show this text.
+function cancelledSpend() {
+  const cancelled = jobs.filter(isCancelled)
+  if (!cancelled.length) return `${usd(0)} · no cancelled jobs`
+  const totals = cancelled.map((job) => costOf(job).total.usd)
+  const left = totals.filter((p) => p === null).length
+  const spent = totals.reduce((s, p) => (p === null ? s : s + p), 0)
+  return `${usd(spent)} · ${cancelled.length} cancelled ${cancelled.length === 1 ? 'job' : 'jobs'}` +
+    (left ? ` · ${left} left out (unknown price)` : '')
+}
+
 // ---- Stage times ------------------------------------------------------------
 
-const STAGE_NAMES = ['spec', 'build', 'review', 'approve', 'merged', 'needs-human']
+const STAGE_NAMES = ['spec', 'build', 'review', 'approve', 'merged', 'needs-human', 'cancelled']
 
 // The orchestrator appends { stage, at } to stage_log each time it sets stage. Returns { log, fault }: log is
 // [{ stage, t }] oldest first, or null; fault says why a stage_log that is there cannot be read.
@@ -1077,9 +1108,11 @@ function stageLog(job) {
 // Cycle time, flow efficiency and rework rate, as counts and seconds; overviewFigures() writes them out. Only jobs with
 // a readable stage_log count, in all three, so every timing figure comes from the same jobs. A bad log reads as none
 // (see stageLog), so its job is left out whole rather than timed in part. pasts holds each job's earlier-round
-// verdicts, from pastRounds.
+// verdicts, from pastRounds. A cancelled job is left out of all three: it delivered nothing, so its reviews and waits
+// are not part of the flow.
 function timing(pasts) {
-  const timed = jobs.map((job, i) => ({ job, log: stageLog(job).log, past: pasts[i] })).filter((x) => x.log)
+  const timed = jobs.map((job, i) => ({ job, log: stageLog(job).log, past: pasts[i] }))
+    .filter((x) => x.log && !isCancelled(x.job))
 
   // Delivery: from the spec entry that opens the log to the first merged entry. A job that has not merged is left
   // out: it has delivered nothing yet, and its time so far would keep growing from one poll to the next.
@@ -1140,12 +1173,14 @@ function overviewFigures(pasts) {
   const timedText = `${t.timed} of ${count(t.merged, 'merged job', 'merged jobs')} timed`
 
   // Job files hold no sprint or date range, so the share is merged points over the sized points of every job on the
-  // board, in any stage. Points count only when they are one of POINTS. Unlike velocity, merged_at is not needed.
-  const sized = jobs.filter((j) => POINTS.includes(j.points))
+  // board, in any stage. Points count only when they are one of POINTS. Unlike velocity, merged_at is not needed. A
+  // cancelled job is not on the board and will never deliver, so its points are not in the share.
+  const board = jobs.filter((j) => !isCancelled(j))
+  const sized = board.filter((j) => POINTS.includes(j.points))
   const points = (list) => list.reduce((s, j) => s + j.points, 0)
   const mergedPoints = points(sized.filter((j) => j.stage === 'merged'))
   const sizedPoints = points(sized)
-  const left = jobs.length - sized.length
+  const left = board.length - sized.length
   const pct = percent(mergedPoints, sizedPoints)
   // num, rest and of are the figure's three parts, for the panel to colour; joined, they are the figure.
   const parts = sizedPoints
@@ -1153,10 +1188,10 @@ function overviewFigures(pasts) {
     : { num: '-', rest: '', of: '' }
   const value = {
     title: 'Value Delivery (points)', figure: parts.num + parts.rest + parts.of, ...parts,
-    mergedPoints, sizedPoints, pct, left, jobs: jobs.length,
+    mergedPoints, sizedPoints, pct, left, jobs: board.length,
     sub: [
       'merged points of all sized points' + (left
-        ? ` · ${left} of ${count(jobs.length, 'job', 'jobs')} ${left === 1 ? 'has' : 'have'} no points and ${left === 1 ? 'is' : 'are'} left out`
+        ? ` · ${left} of ${count(board.length, 'job', 'jobs')} ${left === 1 ? 'has' : 'have'} no points and ${left === 1 ? 'is' : 'are'} left out`
         : ''),
       `velocity ${v.value} · ${v.sub}`,
     ],
@@ -1334,6 +1369,8 @@ function execBar() {
     `Spend (${p.month}): ${none ? '-' : money(p.spent)} / ${p.budget === null ? '-' : money(p.budget)} monthly budget (${pct})`,
     'this calendar month only, in your time zone; the strip is all jobs, all time',
     `list price, not paid · ${p.counted} ${p.counted === 1 ? 'job' : 'jobs'} this month`,
+    // A cancelled job is not merged, so pulse() places it in this month: its spend is inside the figure above.
+    `of which spent on cancelled work (list price): ${cancelledSpend()}`,
     ...reasons,
   ].join('\n')
   return { left, centre, title }
@@ -1539,10 +1576,13 @@ function graphRow(job) {
     </div>`
 }
 
+// A cancelled job's branch is not an active lane, so it has no row. Cancelled jobs move to the Backlog drawer once it
+// exists (factory jobs 3 and 4 of the backlog design); until then they show only in the Cost & LOE table and the drawer.
 function graph() {
-  if (!jobs.length) return '<div class="empty">—</div>'
+  const lanes = jobs.filter((j) => !isCancelled(j))
+  if (!lanes.length) return '<div class="empty">—</div>'
   return '<div class="g-main"><div class="g-lane"></div><span class="num">main</span></div>' +
-    jobs.map(graphRow).join('')
+    lanes.map(graphRow).join('')
 }
 
 async function render() {
@@ -1558,6 +1598,8 @@ async function render() {
     problems.push(...jobProblems(job, cost))
     const r = reworks[i]
     if (r.error) problems.push(`Could not read the folder of job ${job.id} (${r.error}), so it is counted as not sent back`)
+    // No card and no banner for a cancelled job; it moves to the Backlog drawer once that exists (backlog jobs 3 and 4).
+    if (isCancelled(job)) return
     const col = job.stage === 'build' && r.count > 0
       ? 'rework'
       : (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
@@ -1581,7 +1623,8 @@ async function render() {
   const graphHtml = graph()
   const costTileHtml = costPerPointTile()
   const costTableHtml = costLoeTable()
-  const costHtml = costTileHtml + costTableHtml
+  const cancelledText = `Spent on cancelled work (list price): ${cancelledSpend()}`
+  const costHtml = costTileHtml + cancelledText + costTableHtml
   const barHtml = bar.left + bar.centre + bar.title
   if (html + stripHtml + barHtml + overviewHtml + graphHtml + costHtml + banner !== lastRender) {
     lastRender = html + stripHtml + barHtml + overviewHtml + graphHtml + costHtml + banner
@@ -1593,6 +1636,7 @@ async function render() {
     $('overview-tiles').innerHTML = overviewHtml
     $('graph').innerHTML = graphHtml
     $('cost-kpis').innerHTML = costTileHtml
+    $('cost-cancelled').textContent = cancelledText
     $('cost-table').innerHTML = costTableHtml
     $('banner').innerHTML = banner
   }
@@ -1856,6 +1900,27 @@ function costTable(cost) {
     row('Total', cost.total) + '</table>'
 }
 
+let cancelHtml = null // the drawer's Cancelled section as last drawn, so a poll does not redraw it unchanged
+
+// The drawer's Cancelled section: the summary /factory cancel wrote to factory/cancelled/<id>.md, as plain escaped
+// text, and how to bring the job back. The folder indexes are read first so a missing summary is not fetched, which
+// would log a 404 on every poll; a missing or unreadable summary is said in the section, not in a banner.
+async function cancelSummary(job) {
+  let text = null
+  try {
+    if ((await listLinks('./')).includes('cancelled/') && (await listLinks('cancelled/')).includes(`${job.id}.md`)) {
+      text = await fetchText(`cancelled/${job.id}.md`)
+    }
+  } catch {
+    text = null
+  }
+  const body = text === null
+    ? `<p class="note">${esc(`No cancel summary found in factory/cancelled/${job.id}.md.`)}</p>`
+    : `<pre>${esc(text)}</pre>`
+  return body + `<p class="note">To bring this job back: <code>/factory revive ${esc(job.id)} spec</code> or ` +
+    `<code>/factory revive ${esc(job.id)} build</code>.</p>`
+}
+
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
@@ -1864,6 +1929,14 @@ async function refreshDrawer() {
   $('d-branch').textContent = job.branch
   const cost = costOf(job)
   $('d-cost').innerHTML = costTable(cost) + moneyLines(job, cost)
+  $('d-cancelled-sec').hidden = !isCancelled(job)
+  if (isCancelled(job)) {
+    const summary = await cancelSummary(job)
+    if (summary !== cancelHtml) {
+      cancelHtml = summary
+      $('d-cancelled').innerHTML = summary
+    }
+  }
   // Replaced only when it changed, so the images do not flicker and the section keeps its scroll position.
   const shots = shotsSection(job, await shotsOf(job, false))
   if (shots !== shotsHtml) {
@@ -1908,8 +1981,9 @@ async function refreshDrawer() {
 
 // The drawer's accordion: which sections are open, keyed as each header's data-section. Only a header click changes
 // it, and openDrawer() resets it; the headers live in the static markup, so the poll's redraws leave them and their
-// focus alone. The matrix and screenshots start closed because they are the tall ones.
-const SECTIONS_DEFAULT = { cost: true, matrix: false, shots: false, files: true }
+// focus alone. The matrix and screenshots start closed because they are the tall ones. The Cancelled section shows only
+// for a cancelled job.
+const SECTIONS_DEFAULT = { cancelled: true, cost: true, matrix: false, shots: false, files: true }
 let openSections = { ...SECTIONS_DEFAULT }
 
 function drawSections() {
@@ -1926,6 +2000,7 @@ async function openDrawer(id) {
   openText = undefined
   openShotRound = null
   shotsHtml = null
+  cancelHtml = null
   openSections = { ...SECTIONS_DEFAULT }
   drawSections()
   document.body.classList.add('open')
@@ -1977,8 +2052,9 @@ document.addEventListener('keydown', (e) => {
     closeTips()
     return document.body.classList.contains('briefing') ? closeBriefing() : closeDrawer()
   }
-  // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
+  // Only when the card, graph row or Cost & LOE row itself has focus; Enter on the Approve button inside a card is that
+  // button's own click.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job], tr[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
     openDrawer(e.target.dataset.job)
   }
@@ -2366,7 +2442,8 @@ async function exportBriefing() {
   const snapshot = {
     now: Date.now(),
     merged: jobs.filter((j) => j.stage === 'merged').map(briefingJob),
-    inFlight: jobs.filter((j) => j.stage !== 'merged').map((j) => ({ id: j.id, stage: String(j.stage) })),
+    // A cancelled job is not in flight: it stopped and will not merge.
+    inFlight: jobs.filter((j) => j.stage !== 'merged' && !isCancelled(j)).map((j) => ({ id: j.id, stage: String(j.stage) })),
   }
   briefing = null
   $('b-period').value = '7'
