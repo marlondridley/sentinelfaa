@@ -308,15 +308,36 @@
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
+  /* Executive Overview Panel: four headline tiles in the .kpi look, with a larger figure. The section carries the page
+     gutter, so its grid has none of its own and the heading's left edge lines up with the first tile's. align-items:
+     start lets each tile keep its own height; flow efficiency is the tall one, with its caption. The column rules are
+     written under #overview in the @media blocks too, because the id outranks the plain .kpis rules there. */
+  #overview { padding: 20px 32px 0; }
+  #overview .col-head { padding-left: 0; }
+  #overview .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; padding: 0; }
+  #overview .kpi .k { font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text); }
+  #overview .kpi .v { font-family: inherit; font-size: 24px; line-height: 1.3; margin: 6px 0 4px; }
+  #overview .v .num { font-family: inherit; font-size: inherit; font-weight: 600; color: var(--active); }
+  #overview .v .of { color: var(--muted); }
+  #overview .kpi:not(.flow) .v, #overview .kpi:not(.flow) .sub { text-align: center; }
+  #overview .times { font-size: 13px; color: var(--active); }
+  #overview .times .sep { color: var(--muted); }
+  #overview .cap, #overview .ref { margin: 0; font-size: 12px; color: var(--muted); }
+  #overview .cap { margin-top: 6px; }
+
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
     .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #overview .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
     .strip, .kpis { padding-left: 16px; padding-right: 16px; }
+    /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
+    #overview { padding-left: 16px; padding-right: 16px; }
+    #overview .kpis { grid-template-columns: minmax(0, 1fr); }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
@@ -340,6 +361,10 @@
 </header>
 <div id="banner"></div>
 <div class="strip" id="strip"></div>
+<section id="overview" aria-labelledby="overview-title">
+  <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
+  <div class="kpis" id="overview-tiles"></div>
+</section>
 <div class="kpis" id="kpis"></div>
 <main class="board" id="board"></main>
 <section class="graph">
@@ -536,7 +561,7 @@ function jobProblems(job, cost) {
   }
   const fault = stageLog(job).fault
   if (fault) {
-    out.push(`Job ${job.id} has a stage_log the dashboard cannot read (${fault}), so it is left out of mean time to delivery, approval wait and rework rate`)
+    out.push(`Job ${job.id} has a stage_log the dashboard cannot read (${fault}), so it is left out of cycle time, flow efficiency and rework rate`)
   }
   return out
 }
@@ -750,28 +775,29 @@ function stageLog(job) {
   return { log: log.length && log[0].stage === 'spec' ? log : null, fault: null }
 }
 
-// Mean time to delivery, approval wait and rework rate. Only jobs with a readable stage_log count, in all three, so
-// every timing figure comes from the same jobs. pasts holds each job's earlier-round verdicts, from pastRounds.
+// Cycle time, flow efficiency and rework rate, as counts and seconds; overviewFigures() writes them out. Only jobs with
+// a readable stage_log count, in all three, so every timing figure comes from the same jobs. A bad log reads as none
+// (see stageLog), so its job is left out whole rather than timed in part. pasts holds each job's earlier-round
+// verdicts, from pastRounds.
 function timing(pasts) {
   const timed = jobs.map((job, i) => ({ job, log: stageLog(job).log, past: pasts[i] })).filter((x) => x.log)
-  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
-  const sum = (ms) => ms.reduce((s, x) => s + x, 0)
-  const mean = (ms) => (ms.length ? duration(sum(ms) / ms.length / 1000) : '-')
 
-  // Delivery: from the spec entry that opens the log to the merged entry.
-  const deliveries = timed
+  // Delivery: from the spec entry that opens the log to the first merged entry. A job that has not merged is left
+  // out: it has delivered nothing yet, and its time so far would keep growing from one poll to the next.
+  const delivered = timed
     .filter(({ job, log }) => job.stage === 'merged' && log.some((e) => e.stage === 'merged'))
-    .map(({ log }) => log.find((e) => e.stage === 'merged').t - log[0].t)
+    .map(({ log }) => log.slice(0, log.findIndex((e) => e.stage === 'merged') + 1))
 
-  // The owner's wait is time in needs-human only: there the job waits for /factory approve or /factory rework. The
-  // approve stage is the approver agent running, not the owner. A wait runs from a needs-human entry to the next
-  // entry, whatever its stage; after /factory approve that is merged, so the wait includes the merge and its re-test.
-  // A job still in needs-human has an open wait with no end yet. It is left out until it ends, because averaging a
-  // wait that is still growing would understate it.
-  const waits = timed
-    .map(({ log }) => log.slice(0, -1).flatMap((e, k) => (e.stage === 'needs-human' ? [log[k + 1].t - e.t] : [])))
-    .filter((w) => w.length)
-    .map(sum)
+  // Each stretch from one entry to the next belongs to the stage of the earlier entry, so a job's active and waiting
+  // time add up to its time from spec to merge. The owner's wait is time in needs-human only: there the job waits for
+  // /factory approve or /factory rework. spec, build, review and approve are agents at work (approve is the approver
+  // agent running, not the owner), so they count as active. A wait runs to the next entry, whatever its stage; after
+  // /factory approve that is merged, so the wait includes the merge and its re-test.
+  const splits = delivered.map((log) => log.slice(0, -1).reduce((s, e, k) => {
+    const ms = log[k + 1].t - e.t
+    return e.stage === 'needs-human' ? { ...s, waiting: s.waiting + ms } : { ...s, active: s.active + ms }
+  }, { active: 0, waiting: 0 }))
+  const seconds = (key) => splits.reduce((s, x) => s + x[key], 0) / 1000
 
   // Rework: a reviewed job that went to the owner, or got a CHANGES review in any round. A job the owner sent back
   // always went to needs-human first, so the rework-<k>.md files add no job this rule misses.
@@ -783,32 +809,116 @@ function timing(pasts) {
     x.past.flatMap(Object.values).some((v) => v !== 'PASS' && v !== 'CHANGES'))
 
   return {
-    delivery: { value: mean(deliveries), sub: `spec to merge · ${count(deliveries.length, 'merged job', 'merged jobs')} timed` },
-    wait: { value: mean(waits), sub: `mean time in Client approval · ${count(waits.length, 'job', 'jobs')} the owner waited on` },
-    rework: unknown
-      ? { value: '-', sub: 'unknown: a review file of an earlier round is missing or unreadable' }
-      : {
-          value: percent(reworked.length, reviewed.length),
-          sub: `${reworked.length} of ${count(reviewed.length, 'reviewed job', 'reviewed jobs')} with stage times ` +
-            'went to Client approval or got a CHANGES review',
-        },
+    merged: jobs.filter((j) => j.stage === 'merged').length,
+    timed: splits.length,
+    active: seconds('active'),
+    waiting: seconds('waiting'),
+    waited: splits.filter((x) => x.waiting > 0).length,
+    reworked: reworked.length,
+    reviewed: reviewed.length,
+    unknown,
   }
+}
+
+// ---- Executive Overview Panel -----------------------------------------------
+
+// How flow efficiency is really worked out, in plain words, shown under the figure.
+const FLOW_CAPTION = 'Active is time in spec, build, review and approve; waiting is time in Client approval, where ' +
+  'the owner decides. Both are clock time between stage changes. Idle time inside a stage, such as a job waiting for ' +
+  'a session to pick it up, is not recorded, so it counts as active. A wait runs to the next stage change, which after ' +
+  '/factory approve is the merge, so it includes the merge and its re-test. A build or merge stopped for the owner ' +
+  'also waits in Client approval.'
+// A pointer to reading, shown under the caption. It is the page's only citation and stays on this one line.
+const FLOW_REFERENCE = 'Further reading: Kersten, M. (2018), Project to Product. This page works the figure out only as described above.'
+
+// The panel's four tiles, worked out once from the job files and pasts (each job's earlier-round verdicts, from
+// pastRounds), with no DOM access, so every view of these figures reads the same numbers. Each tile has its title, its
+// figure and sub-lines as text, and the numbers behind them; times are seconds. A figure with nothing to work from is "-".
+function overviewFigures(pasts) {
+  const t = timing(pasts)
+  const v = velocity()
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const timedText = `${t.timed} of ${count(t.merged, 'merged job', 'merged jobs')} timed`
+
+  // Job files hold no sprint or date range, so the share is merged points over the sized points of every job on the
+  // board, in any stage. Points count only when they are one of POINTS. Unlike velocity, merged_at is not needed.
+  const sized = jobs.filter((j) => POINTS.includes(j.points))
+  const points = (list) => list.reduce((s, j) => s + j.points, 0)
+  const mergedPoints = points(sized.filter((j) => j.stage === 'merged'))
+  const sizedPoints = points(sized)
+  const left = jobs.length - sized.length
+  const pct = percent(mergedPoints, sizedPoints)
+  // num, rest and of are the figure's three parts, for the panel to colour; joined, they are the figure.
+  const parts = sizedPoints
+    ? { num: String(mergedPoints), rest: ` / ${sizedPoints} pts `, of: `(${pct})` }
+    : { num: '-', rest: '', of: '' }
+  const value = {
+    title: 'Value Delivery (points)', figure: parts.num + parts.rest + parts.of, ...parts,
+    mergedPoints, sizedPoints, pct, left, jobs: jobs.length,
+    sub: [
+      'merged points of all sized points' + (left
+        ? ` · ${left} of ${count(jobs.length, 'job', 'jobs')} ${left === 1 ? 'has' : 'have'} no points and ${left === 1 ? 'is' : 'are'} left out`
+        : ''),
+      `velocity ${v.value} · ${v.sub}`,
+    ],
+  }
+
+  const n = t.timed
+  const cycleSeconds = n ? (t.active + t.waiting) / n : null
+  const cycle = {
+    title: 'Cycle Time', figure: cycleSeconds === null ? '-' : duration(cycleSeconds),
+    seconds: cycleSeconds, timed: n, merged: t.merged,
+    sub: [`mean time to delivery (MTTD), spec to merge · ${timedText}${n < t.merged ? ' · the rest have no stage times' : ''}`],
+  }
+
+  // The figure is total active time over total time, not a mean of each job's share, so a long job weighs more than a
+  // short one. The times are means per merged job, so active plus waiting is the cycle time.
+  const active = n ? t.active / n : null
+  const waiting = n ? t.waiting / n : null
+  const timeText = (s) => (s === null ? '-' : duration(s))
+  const flow = {
+    title: 'Flow Efficiency', figure: percent(t.active, t.active + t.waiting),
+    active, waiting, timed: n, merged: t.merged, waited: t.waited,
+    // The times line is these two parts joined by " | ".
+    times: [`active ${timeText(active)}`, `waiting for the owner ${timeText(waiting)}`],
+    sub: [`mean per merged job · ${timedText}${n ? ` · ${t.waited} of the ${n} waited for the owner` : ''}`],
+    caption: FLOW_CAPTION, reference: FLOW_REFERENCE,
+  }
+
+  const rework = {
+    title: 'Rework Rate', figure: t.unknown ? '-' : percent(t.reworked, t.reviewed),
+    reworked: t.reworked, reviewed: t.reviewed, unknown: t.unknown,
+    sub: [t.unknown
+      ? 'unknown: a review file of an earlier round is missing or unreadable'
+      : `${t.reworked} of ${count(t.reviewed, 'reviewed job', 'reviewed jobs')} with stage times ` +
+        'went to Client approval or got a CHANGES review'],
+  }
+  return [value, cycle, flow, rework]
+}
+
+// The panel's tiles from overviewFigures(). Only the figure's parts are wrapped, for colour, so each .v reads exactly as
+// its figure. The flow class keeps that tile left-aligned; the others centre their figure and sub-lines.
+function overviewPanel(pasts) {
+  const [value, cycle, flow, rework] = overviewFigures(pasts)
+  const num = (s) => `<span class="num">${esc(s)}</span>`
+  const subs = (tile) => tile.sub.map((s) => `<div class="sub">${esc(s)}</div>`).join('')
+  const kpi = (tile, v, rest, cls = 'kpi') =>
+    `<div class="${cls}"><div class="k">${esc(tile.title)}</div><div class="v">${v}</div>${rest}</div>`
+  return kpi(value, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), subs(value)) +
+    kpi(cycle, num(cycle.figure), subs(cycle)) +
+    kpi(flow, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>` +
+      `${subs(flow)}<p class="cap">${esc(flow.caption)}</p><p class="ref">${esc(flow.reference)}</p>`, 'kpi flow') +
+    kpi(rework, num(rework.figure), subs(rework))
 }
 
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
-// The KPI tiles. Each figure comes from the job files; one with no source shows "-".
-function kpis(pasts) {
+// The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
+function kpis() {
   const merged = jobs.filter((j) => j.stage === 'merged')
-  const v = velocity()
-  const t = timing(pasts)
   const e = efficiency()
   return [
-    ['Velocity', v.value, v.sub],
-    ['Mean time to delivery', t.delivery.value, t.delivery.sub],
-    ['Approval wait', t.wait.value, t.wait.sub],
     ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
-    ['Rework rate', t.rework.value, t.rework.sub],
     ['AI cost efficiency', e.value, e.sub],
   ].map(([k, value, sub]) =>
     `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('') +
@@ -955,13 +1065,15 @@ async function render() {
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const stripHtml = strip()
-  const kpiHtml = kpis(pasts)
+  const overviewHtml = overviewPanel(pasts)
+  const kpiHtml = kpis()
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
-  if (html + stripHtml + kpiHtml + graphHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + kpiHtml + graphHtml + banner
+  if (html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner
     $('board').innerHTML = html
     $('strip').innerHTML = stripHtml
+    $('overview-tiles').innerHTML = overviewHtml
     $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
     $('banner').innerHTML = banner
