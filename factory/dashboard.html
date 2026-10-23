@@ -49,6 +49,19 @@
     border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
   }
 
+  /* Live event stream: a native <details>, collapsed by default. Only its body is redrawn, so it stays open or shut. */
+  .stream { margin: 14px 32px 0; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .stream summary { cursor: pointer; color: var(--text); }
+  .stream summary:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .stream summary .m { color: var(--muted); }
+  .stream .ev-k { color: var(--faint); margin: 10px 0 4px; }
+  .stream .ev-run, .stream .ev-row {
+    display: grid; grid-template-columns: minmax(0, 22ch) minmax(0, 28ch) minmax(0, 1fr); gap: 10px;
+    overflow-wrap: anywhere;
+  }
+  .stream .ev-run { color: var(--active); }
+  .stream .ev-note { color: var(--changes); margin-top: 8px; }
+
   /* Engagement strip and KPI tiles */
   .strip {
     display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
@@ -358,6 +371,8 @@
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
+    .stream { margin-left: 16px; margin-right: 16px; }
+    .stream .ev-run, .stream .ev-row { grid-template-columns: minmax(0, 1fr); gap: 0; margin-bottom: 4px; }
     .strip, .kpis { padding-left: 16px; padding-right: 16px; }
     /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
     #overview { padding-left: 16px; padding-right: 16px; }
@@ -384,6 +399,10 @@
   <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
+<details class="stream" id="stream">
+  <summary>Live event stream <span class="m" id="stream-count"></span></summary>
+  <div id="stream-body"></div>
+</details>
 <div class="strip" id="strip"></div>
 <section id="overview" aria-labelledby="overview-title">
   <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
@@ -1076,6 +1095,7 @@ function graph() {
 async function render() {
   const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
   problems.push(...engagementProblems)
+  problems.push(...eventProblems)
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
   const pasts = await Promise.all(jobs.map(pastRounds))
   const reworks = await Promise.all(jobs.map(reworkOf))
@@ -1113,12 +1133,14 @@ async function render() {
     $('graph').innerHTML = graphHtml
     $('banner').innerHTML = banner
   }
+  renderStream()
 }
 
 async function poll() {
   const status = $('status')
   try {
     jobs = await loadJobs()
+    await loadEvents()
     await loadPrices()
     await loadEngagement()
     await render()
@@ -1191,6 +1213,135 @@ async function loadEngagement() {
     if (!isSet(e[k])) continue
     if (ok(e[k])) engagement[k] = e[k]
     else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
+  }
+}
+
+// ---- Live event stream ------------------------------------------------------
+
+// The orchestrator appends one JSON line to jobs/<id>/events.jsonl at each transition it makes (see the factory
+// skill's Events section). The stream is for visibility only: no figure, stage or card on the page reads it, and it
+// shows only lines that were really logged. A job with no file, every job from before the log existed, shows nothing.
+const EVENT_ROWS = 100 // newest events shown, across all jobs
+const EVENT_TAIL_BYTES = 64 * 1024 // only the end of each file is parsed, so a long log cannot grow without bound here
+const VERDICTS = ['PASS', 'CHANGES', 'READY', 'BLOCKED', 'APPROVE', 'ESCALATE']
+const isRound = (v) => Number.isInteger(v) && v >= 0
+const isAgent = (e) => typeof e.agent === 'string' && e.agent !== '' && isRound(e.round)
+// The fields each event must have; a line that fails its check is skipped and counted, never repaired.
+const EVENT_KINDS = {
+  agent_started: isAgent,
+  agent_finished: (e) => isAgent(e) && 'verdict' in e && (e.verdict === null || VERDICTS.includes(e.verdict)),
+  stage_changed: (e) => 'from' in e && (e.from === null || STAGE_NAMES.includes(e.from)) && STAGE_NAMES.includes(e.to),
+  merged: (e) => isGitId(e.commit),
+}
+
+let events = new Map() // job id -> { list: [{ ...line, ms, n }] in file order, skipped }
+let eventProblems = []
+let lastStream = ''
+
+// The last EVENT_TAIL_BYTES of a file's bytes as text. When that cuts a line, the cut line is dropped too.
+function tailText(bytes) {
+  if (bytes.length <= EVENT_TAIL_BYTES) return new TextDecoder().decode(bytes)
+  let start = bytes.length - EVENT_TAIL_BYTES
+  if (bytes[start - 1] !== 0x0a) {
+    const nl = bytes.indexOf(0x0a, start)
+    start = nl < 0 ? bytes.length : nl + 1
+  }
+  return new TextDecoder().decode(bytes.subarray(start))
+}
+
+function parseEvents(text) {
+  const list = []
+  let skipped = 0
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '')
+    if (!line.trim()) continue
+    let e
+    try {
+      e = JSON.parse(line)
+    } catch {
+      skipped++
+      continue
+    }
+    const ms = e !== null && typeof e === 'object' && !Array.isArray(e) ? utcMs(e.t) : null
+    if (ms === null || !Object.hasOwn(EVENT_KINDS, e.event) || !EVENT_KINDS[e.event](e)) {
+      skipped++
+      continue
+    }
+    list.push({ ...e, ms, n: list.length })
+  }
+  return { list, skipped }
+}
+
+// Every job's events.jsonl, in parallel. A 404 is a job with no events, not a fault; any other failure leaves that
+// job's events out and says so in one banner line.
+async function loadEvents() {
+  eventProblems = []
+  const loaded = await Promise.all(jobs.map(async (job) => {
+    try {
+      const res = await fetch(`jobs/${job.id}/events.jsonl`, { cache: 'no-store' })
+      if (res.status === 404) return [job.id, null]
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return [job.id, parseEvents(tailText(new Uint8Array(await res.arrayBuffer())))]
+    } catch (err) {
+      eventProblems.push(`Could not read the event log of job ${job.id} (${err.message}), so its events are not shown`)
+      return [job.id, null]
+    }
+  }))
+  events = new Map(loaded.filter(([, v]) => v))
+}
+
+// Agents running now: an agent_started with no later agent_finished for the same agent and round, paired in file
+// order, a finish closing the latest open start. Only in a job whose stage is live: in needs-human or merged the
+// orchestrator has stopped, so an open start there is an ordinary event, not a running agent.
+function runningNow() {
+  const out = []
+  for (const job of jobs) {
+    const log = events.get(job.id)
+    if (!log || !LIVE.has(job.stage)) continue
+    const open = []
+    for (const e of log.list) {
+      if (e.event === 'agent_started') open.push(e)
+      if (e.event !== 'agent_finished') continue
+      const k = open.findLastIndex((s) => s.agent === e.agent && s.round === e.round)
+      if (k >= 0) open.splice(k, 1)
+    }
+    out.push(...open.map((e) => ({ ...e, job: job.id })))
+  }
+  return out
+}
+
+// A plain-words phrase built only from the fields of one line.
+function eventPhrase(e) {
+  if (e.event === 'agent_started') return `${e.agent} started, round ${e.round}`
+  if (e.event === 'agent_finished') {
+    return `${e.agent} finished${e.verdict === null ? '' : `: ${e.verdict}`}, round ${e.round}`
+  }
+  if (e.event === 'stage_changed') return e.from === null ? `stage set to ${e.to}` : `stage ${e.from} -> ${e.to}`
+  return `merged as ${e.commit}`
+}
+
+function renderStream() {
+  const running = runningNow()
+  const now = Date.now()
+  const all = [...events].flatMap(([job, log]) => log.list.map((e) => ({ ...e, job })))
+  // Newest first; lines with the same time keep their file order, the later line first.
+  const rows = all.sort((a, b) => b.ms - a.ms || a.job.localeCompare(b.job) || b.n - a.n).slice(0, EVENT_ROWS)
+  const skipped = [...events.values()].reduce((s, log) => s + log.skipped, 0)
+  const row = (cls, a, b, c) => `<div class="${cls}"><span>${esc(a)}</span><span>${esc(b)}</span><span>${esc(c)}</span></div>`
+  const count = running.length ? `${running.length} running` : 'none running'
+  const html = (running.length
+    ? '<div class="ev-k">Running now</div>' + running.map((e) =>
+      row('ev-run', `running ${duration(Math.max(0, now - e.ms) / 1000)}`, e.job, `${e.agent}, round ${e.round}`)).join('')
+    : '') +
+    (rows.length
+      ? '<div class="ev-k">Newest events</div>' +
+        rows.map((e) => row('ev-row', new Date(e.ms).toLocaleString(), e.job, eventPhrase(e))).join('')
+      : '<div class="ev-k">No events logged yet.</div>') +
+    (skipped ? `<div class="ev-note">${esc(`${skipped} unreadable event ${skipped === 1 ? 'line' : 'lines'} skipped`)}</div>` : '')
+  if (count + html !== lastStream) {
+    lastStream = count + html
+    $('stream-count').textContent = `· ${count}`
+    $('stream-body').innerHTML = html
   }
 }
 
