@@ -91,6 +91,21 @@ groups:
           summary: "A pipeline pass spent its model token budget; later calls in it fell back to rules"
           description: "Raise LLM_TOKEN_BUDGET_PER_PASS only if the burst is legitimate. Search the logs for llm_pass_budget_exhausted."
 
+      - alert: LLMBudgetNearlyUsed
+        # The gateway's own figures for the application's virtual key (job nas-litellm): 80% or more of its 30-day
+        # budget (LITELLM_APP_BUDGET_USD, instraclustr/litellm-bootstrap.sh) is spent. At 100% the gateway refuses
+        # every call: the Critic falls back to rules and alerts are still staged for a person.
+        expr: |
+          max by (api_key_alias) (
+            1 - litellm_remaining_api_key_budget_metric{api_key_alias="sentinel-app"}
+              / (litellm_api_key_max_budget_metric{api_key_alias="sentinel-app"} > 0)
+          ) >= 0.8
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "The application's model key has used 80% or more of its 30-day budget"
+          description: "When it is all used the gateway refuses model calls; the Critic falls back to rules and alerts are still staged. Raise LITELLM_APP_BUDGET_USD or wait for the 30-day reset. docs/runbooks.md."
+
       # The rules below read the agent metrics the Agent Governance Toolkit
       # computes and OpenTelemetry exports (src/telemetry.py). They are the
       # same for every model provider behind the gateway.

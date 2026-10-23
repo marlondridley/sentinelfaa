@@ -88,6 +88,24 @@ and the investigations; later calls in that pass were refused and fell back to
 rules. Staging is unaffected. Search the logs for `llm_pass_budget_exhausted`
 for the pass. Raise the cap only if the burst was legitimate.
 
+### LLMBudgetNearlyUsed (warning)
+
+The application's model key (`sentinel-app`, issued by
+`instraclustr/litellm-bootstrap.sh`) has used 80% or more of its 30-day budget,
+`LITELLM_APP_BUDGET_USD`, by the gateway's own count. At 100% the gateway
+refuses every call: the Critic falls back to rules and every alert is still
+staged for a person. The supervisor decides what to do.
+1. See which agent role spent it: the gateway's spend per role
+   (`docs/operations.md`, "The gateway's spend record"). One role far above
+   the others is worth a look before anything is raised.
+2. Wait for the 30-day reset if the remaining days are few and rules-only
+   advice is acceptable until then.
+3. Or raise the budget. `LITELLM_APP_BUDGET_USD` in `instraclustr/.env` is
+   used when `litellm-bootstrap` issues the key; it keeps a key that still
+   works and does not change its budget, so for the key already issued
+   change it in the gateway's admin UI (http://localhost:4000/ui, Virtual
+   Keys, `sentinel-app`) as well.
+
 ### AgentBlockedFromDecidingOrWriting (critical)
 
 An agent tried to decide, write or stage. The tool-use policy refused it and

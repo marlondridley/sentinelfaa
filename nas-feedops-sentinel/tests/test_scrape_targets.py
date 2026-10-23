@@ -44,8 +44,13 @@ def test_the_dashboard_and_the_temporal_server_are_scrape_targets():
     assert targets["nas-temporal"] == ["temporal:8000"]
 
 
+# Scrape targets in the infrastructure stack (../instraclustr/docker-compose.yml), by container name. That file is not
+# in this image; instraclustr/tests/test_litellm_gateway.py checks the name against it.
+INFRA_TARGETS = {"nas-litellm"}
+
+
 def test_every_scrape_target_is_a_service_in_the_compose_file():
-    services = set(_compose()["services"])
+    services = set(_compose()["services"]) | INFRA_TARGETS
     for job, targets in _targets().items():
         for target in targets:
             host = target.rsplit(":", 1)[0]

@@ -33,3 +33,20 @@ router_settings:
 litellm_settings:
   request_timeout: 60
   drop_params: true
+  # Prometheus metrics on this port's /metrics, scraped by the application
+  # stack's Prometheus (job nas-litellm): the sentinel-app key's remaining and
+  # maximum budget feed the LLMBudgetNearlyUsed alert.
+  callbacks: ["prometheus"]
+  # The owner's choice: /metrics answers without a key, so no key is put in
+  # prometheus.yml. Any container on nas-network can then read key aliases, key
+  # hashes and spend figures (not prompts, responses or keys); the host port is
+  # loopback only, so nothing off this machine can. Set it to true to require a
+  # key again (docs/operations.md, "The gateway's spend record").
+  require_auth_for_metrics_endpoint: false
+
+# The gateway's own spend record (LiteLLM_SpendLogs, in its litellm database)
+# is a second log of every model call, kept by a different component than the
+# application's model_calls table. The application tags each call
+# role:<agent role> (x-litellm-tags, src/llm_client.py).
+# store_prompts_in_spend_logs is left unset (off), so that record holds no
+# prompt or response text.
