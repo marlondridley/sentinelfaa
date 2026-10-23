@@ -96,6 +96,10 @@ copyleft (GPL), ISO 27001, SOC 2 and FedRAMP rows are placeholders that always
 read `not run`, until a job builds that check. Status is only ever `passed`,
 `failed` or `not run`.
 
+The dashboard's "Export Executive Briefing" button opens a print-ready snapshot
+of the jobs merged in a chosen period, read from `job.json`, `build.md` and
+`decision.md`, that the owner saves as PDF from the browser's print dialog.
+
 ### job.json
 
 ```json
