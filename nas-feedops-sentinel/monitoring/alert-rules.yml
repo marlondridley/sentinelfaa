@@ -104,7 +104,7 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "The application's model key has used 80% or more of its 30-day budget"
-          description: "When it is all used the gateway refuses model calls; the Critic falls back to rules and alerts are still staged. Raise LITELLM_APP_BUDGET_USD or wait for the 30-day reset. docs/runbooks.md."
+          description: "When it is all used the gateway refuses model calls; the Critic falls back to rules and alerts are still staged. The supervisor decides: raise the key's budget with the command in docs/runbooks.md (changing LITELLM_APP_BUDGET_USD in .env alone does not), or wait for the 30-day reset."
 
       # The rules below read the agent metrics the Agent Governance Toolkit
       # computes and OpenTelemetry exports (src/telemetry.py). They are the

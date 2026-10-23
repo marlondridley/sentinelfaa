@@ -304,6 +304,8 @@ def test_prometheus_warns_when_the_application_key_has_used_80_percent_of_its_ga
     assert "80%" in rule["annotations"]["summary"]
     description = rule["annotations"]["description"]
     assert "LITELLM_APP_BUDGET_USD" in description and "30-day reset" in description
+    # The .env value only sets a newly issued key's budget; the runbook's command raises the one already issued.
+    assert "docs/runbooks.md" in description and "alone does not" in description
     assert "falls back to rules" in description and "still staged" in description
     jobs = {j["job_name"]: j for j in yaml.safe_load((monitoring / "prometheus.yml").read_text(encoding="utf-8"))["scrape_configs"]}
     assert jobs["nas-litellm"]["static_configs"] == [{"targets": ["nas-litellm:4000"], "labels": {"service": "litellm", "tracon": "PCT"}}]
