@@ -6,6 +6,7 @@ gets one Vault has no role for, just waits on its Vault Agent forever:
   spire-entries.yaml                 which container is which service (SPIRE)
   terraform/main.tf                  which service may log in as which role (Vault)
   nas-feedops-sentinel compose file  the service, its two sidecars, its label
+                                     (the model gateway's: instraclustr's compose file)
   nas-feedops-sentinel Dockerfile    the uid the sidecars share files with
 
 Plus what the migration away from AppRole must never regress: no credential
@@ -24,10 +25,13 @@ INFRA = Path(__file__).resolve().parent.parent
 REPO = INFRA.parent
 APP = REPO / "nas-feedops-sentinel"
 TRUST_DOMAIN = "sentinelfaa.internal"
-# Which Vault Agent config and policy each service's class uses.
-CLASS = {"migrate": "migrate", "proof": "migrate",
-         "api": "app", "dashboard": "app", "sentinel": "app", "temporal-worker": "app"}
-POLICY = {"migrate": "sentinel_migrate", "app": "sentinel_app"}
+# Which Vault Agent config and policy each service's class uses: the application stack's services, and the model
+# gateway, whose sidecars are in this stack's compose file.
+APP_CLASS = {"migrate": "migrate", "proof": "migrate",
+             "api": "app", "dashboard": "app", "sentinel": "app", "temporal-worker": "app"}
+INFRA_CLASS = {"litellm": "litellm"}
+CLASS = {**APP_CLASS, **INFRA_CLASS}
+POLICY = {"migrate": "sentinel_migrate", "app": "sentinel_app", "litellm": "litellm"}
 
 needs_app = pytest.mark.skipif(not (APP / "docker-compose.yml").is_file(),
                                reason="needs the application stack beside instraclustr/")
@@ -91,8 +95,8 @@ def test_each_service_gets_its_class_policy():
 def test_every_identity_has_its_service_and_both_sidecars():
     compose = _app_compose()
     services = compose["services"]
-    assert _labelled(compose) == {name: f"{name}-spiffe" for name in CLASS}
-    for name, cls in CLASS.items():
+    assert _labelled(compose) == {name: f"{name}-spiffe" for name in APP_CLASS}
+    for name, cls in APP_CLASS.items():
         helper, agent, app = services[f"{name}-spiffe"], services[f"{name}-vault-agent"], services[name]
         assert f"{name}-svid:/run/spiffe" in helper["volumes"]
         assert "nas-spire-agent-socket:/tmp/spire-agent/public:ro" in helper["volumes"]
@@ -115,7 +119,7 @@ def test_secret_volumes_are_memory_only_and_owned_by_the_app_uid():
     uid = re.search(r"useradd -r -u (\d+)", dockerfile)
     gid = re.search(r"groupadd -r -g (\d+)", dockerfile)
     assert uid and gid, "the app image's uid/gid must be pinned"
-    for name in CLASS:
+    for name in APP_CLASS:
         for kind in ("svid", "secrets"):
             opts = compose["volumes"][f"{name}-{kind}"]["driver_opts"]
             assert opts["type"] == "tmpfs", f"{name}-{kind} must never touch disk"
@@ -131,7 +135,7 @@ def test_no_application_container_holds_a_credential_or_a_vault_route():
     app_services = [n for n, s in compose["services"].items()
                     if s.get("image") in ("nas-feedops-sentinel:latest", "nas-feedops-sentinel:test")
                     and n != "edge-certs"]
-    assert set(CLASS) <= set(app_services)
+    assert set(APP_CLASS) <= set(app_services)
     forbidden_env = {"POSTGRES_PASSWORD", "APP_DB_PASSWORD", "LITELLM_API_KEY", "VAULT_TOKEN",
                      "VAULT_ADDR", "VAULT_APPROLE_DIR", "VAULT_ROLE_ID", "VAULT_SECRET_ID"}
     for name in app_services:
@@ -145,6 +149,59 @@ def test_env_example_holds_no_database_credential():
     text = (APP / ".env.example").read_text(encoding="utf-8")
     for key in ("POSTGRES_PASSWORD", "APP_DB_PASSWORD", "VAULT_TOKEN", "VAULT_ADDR"):
         assert not re.search(rf"^{key}=", text, re.M), key
+
+
+# -- The model gateway agrees (this stack's compose file) --------------------
+
+def _infra_compose() -> dict:
+    return yaml.safe_load((INFRA / "docker-compose.yml").read_text(encoding="utf-8"))
+
+
+def test_the_gateway_identity_has_both_sidecars_and_the_gateway_waits_for_its_file():
+    compose = _infra_compose()
+    services = compose["services"]
+    assert _labelled(compose) == {name: f"{name}-spiffe" for name in INFRA_CLASS}
+    for name, cls in INFRA_CLASS.items():
+        helper, agent, gateway = services[f"{name}-spiffe"], services[f"{name}-vault-agent"], services[name]
+        assert f"{name}-svid:/run/spiffe" in helper["volumes"]
+        assert "nas-spire-agent-socket:/tmp/spire-agent/public:ro" in helper["volumes"]
+        assert "./vault-agent:/etc/spiffe-helper:ro" in helper["volumes"]
+        assert agent["entrypoint"] == ["vault", "agent", f"-config=/vault/agent/{cls}.hcl"]
+        assert f"{name}-svid:/run/spiffe:ro" in agent["volumes"]
+        assert f"{name}-secrets:/vault/secrets" in agent["volumes"]
+        assert "./certs/trust:/certs-trust:ro" in agent["volumes"]
+        assert agent["healthcheck"]["test"] == ["CMD-SHELL", "test -s /vault/secrets/litellm.env"]
+        # The gateway and its two database jobs read the rendered file, read-only, once it exists.
+        for reader in (name, "postgres-scram", "litellm-db-init"):
+            assert f"{name}-secrets:/vault/secrets:ro" in services[reader]["volumes"], reader
+            assert services[reader]["depends_on"][f"{name}-vault-agent"]["condition"] == "service_healthy", reader
+        assert gateway["entrypoint"] == ["/bin/sh", "/scripts/litellm-entrypoint.sh"]
+        assert "./litellm-entrypoint.sh:/scripts/litellm-entrypoint.sh:ro" in gateway["volumes"]
+        # The image's own command line, which the entrypoint script hands on.
+        assert gateway["command"] == ["--config", "/app/config.yaml", "--port", "4000"]
+
+
+def test_the_gateway_secret_volumes_are_memory_only_and_owned_by_the_sidecar_uid():
+    compose = _infra_compose()
+    for name in INFRA_CLASS:
+        for kind in ("svid", "secrets"):
+            opts = compose["volumes"][f"{name}-{kind}"]["driver_opts"]
+            assert opts["type"] == "tmpfs", f"{name}-{kind} must never touch disk"
+            assert opts["o"] == "uid=999,gid=999,mode=0700"
+        for sidecar in ("spiffe", "vault-agent"):
+            assert compose["services"][f"{name}-{sidecar}"]["user"] == "999:999"
+
+
+@needs_app
+def test_the_gateway_sidecars_run_the_same_pinned_images_and_settings_as_the_application_ones():
+    app, infra = _app_compose(), _infra_compose()["services"]
+    for name in INFRA_CLASS:
+        for anchor, sidecar in (("x-spiffe-helper", "spiffe"), ("x-vault-agent", "vault-agent")):
+            for key, value in app[anchor].items():
+                actual = infra[f"{name}-{sidecar}"][key]
+                if key == "healthcheck":            # the same timings; the file it waits for is the gateway's
+                    value, actual = {**value, "test": None}, {**actual, "test": None}
+                assert actual == value, (name, sidecar, key)
 
 
 # -- Transport and rotation ------------------------------------------------
@@ -162,7 +219,7 @@ def test_vault_is_tls_only_and_every_infra_client_verifies_the_root():
 
 
 def test_vault_agents_verify_vault_and_reload_rotated_svids():
-    for cls in ("app", "migrate"):
+    for cls in ("app", "migrate", "litellm"):
         hcl = (INFRA / "vault-agent" / f"{cls}.hcl").read_text(encoding="utf-8")
         assert 'address = "https://vault:8200"' in hcl
         assert hcl.count('ca_cert     = "/certs-trust/root-ca.crt"') + hcl.count('ca_cert = "/certs-trust/root-ca.crt"') == 2

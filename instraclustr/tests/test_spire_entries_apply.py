@@ -76,7 +76,7 @@ def test_manifest_loads_dns_names_in_order(tmp_path):
 
 def test_the_real_manifest_loads():
     parent, desired = apply.load_manifest(str(INFRA / "spire-entries.yaml"))
-    assert parent == "spiffe://sentinelfaa.internal/agent/nas-host" and len(desired) == 6
+    assert parent == "spiffe://sentinelfaa.internal/agent/nas-host" and len(desired) == 7
 
 
 @pytest.mark.parametrize("live, code", [({API: ("e1", ident("api"))}, 0), ({}, 1)])
