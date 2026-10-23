@@ -608,7 +608,8 @@ is already on `main`), it is already `cancelled`, or
 `factory/jobs/.merge-lock/holder` names it (Merge is running for it; cancel
 again once it has finished). It is not blocked by `MAX_RUNNING_JOBS`. If another
 session orchestrates the job, that session stops its loop when it sees the
-stage is `cancelled`. Otherwise, in this order:
+stage is `cancelled`. If `<why>` is missing, ask the user for it once; never
+write an empty `Reason:`. Otherwise, in this order:
 
 1. **Stop its agents.** Stop the `builder-<job-id>` agent and any reviewer or
    approver still running for the job. For each one stopped, append
@@ -625,13 +626,19 @@ stage is `cancelled`. Otherwise, in this order:
    commit it on `main` with that one explicit path and a one-line message, as
    AGENTS.md says for commits. If the main checkout is not on `main`, or
    already has uncommitted changes to that exact path, commit nothing: leave
-   the file for the owner and tell them so. The stage change still stands.
+   the file and tell the owner to commit `factory/cancelled/<job-id>.md`
+   themselves once the main checkout is back on `main` with that path clean.
+   The stage change still stands.
 5. **Keep the rest.** Never delete the job folder, the branch or the worktree;
    the owner may revive the job. Never write `decision.md`: the reason lives in
    the summary file.
 
 Tell the user the job id, the stage it was cancelled from and the summary
-file's path.
+file's path, then, in plain words: its spend so far stays counted in the
+monthly and all-time figures; it no longer takes one of the
+`MAX_RUNNING_JOBS` running slots; nothing was deleted; and
+`/factory revive <job-id> spec` or `/factory revive <job-id> build` brings it
+back.
 
 The summary file is plain text, exactly these ten labelled lines, one per line,
 in this order:
@@ -648,6 +655,11 @@ Last commit: <commit>
 Tokens: <total>
 List-price spend (USD): <spend>
 ```
+
+- `Reason` is `<why>` word for word, on one line: a reason given over several
+  lines is joined with single spaces. The file is committed and the repository
+  is public, so never put secrets or personal data in it; if `<why>` holds
+  any, ask the user for a reason without them.
 
 - `Points`, `Branch` and `Last commit` are the value, or `none` when it is
   `null` or no branch exists.
@@ -678,21 +690,31 @@ whether a job is running; `stage` does.
 
 ## /factory revive <job-id> <stage>
 
-Brings a cancelled job back. `<stage>` must be `spec` or `build`, and the job
-must be `cancelled`; otherwise change nothing and tell the user why.
+Brings a cancelled job back. Otherwise change nothing and tell the user, in one
+short sentence:
+
+- the job is not cancelled: say its stage, and that only a cancelled job can be
+  revived;
+- `<stage>` is not `spec` or `build`: say those are the two stages a job can
+  go back to.
 
 1. Count running jobs (see **Parallel jobs**). At `MAX_RUNNING_JOBS` or more,
-   change nothing and tell the user which jobs are running, with each job's id
-   and stage: reviving claims a slot.
+   change nothing and tell the user there is no free slot, which jobs are
+   running, with each job's id and stage, and to approve, rework or cancel one
+   of them first: reviving claims a slot.
 2. Set `stage` to `<stage>`, and append a `stage_log` entry (only if the job
-   already has a `stage_log`) and a `stage_changed` event from `cancelled`.
-   Keep `usage`, `points`, `paid_usd` and every other field as they are, so the
-   job's cost keeps adding up.
+   already has a `stage_log`; never start one) and a `stage_changed` event
+   from `cancelled`. Keep `usage`, `points`, `paid_usd` and every other field
+   as they are, so the job's cost keeps adding up.
 3. Leave `factory/cancelled/<job-id>.md` in place, unedited, as history.
-4. Carry on from that stage's step of **/factory <feature>**, without setting
-   the stage again; first run step 2 if the worktree does not exist. For
-   `spec`, that is step 3. For `build`, it is step 4, with the builder building
-   round `N+1` (`N` the job's last round, as for a rework run) and a fresh
+4. Tell the user the job id, the stage it went back to, that its earlier spend
+   carries on adding up, and that its summary file stays as history.
+5. Carry on from that stage's step of **/factory <feature>**, without setting
+   the stage again. If the worktree is gone, recreate it first: from the
+   existing branch with `git worktree add <worktree> factory/<job-id>` (no
+   `-b`), or by step 2 if the branch does not exist either. For `spec`, carry
+   on at step 3. For `build`, it is step 4, with the builder building round
+   `N+1` (`N` the job's last round, as for a rework run) and a fresh
    `MAX_RESUMES`. Your session now orchestrates the job.
 
 ## Reporting
