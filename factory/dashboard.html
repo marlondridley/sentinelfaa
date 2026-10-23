@@ -232,6 +232,7 @@
   /* A check that did not run is grey and italic, so it cannot be read as a pass. */
   .matrix .not-run td { color: var(--muted); }
   .matrix .not-run .st { font-style: italic; }
+  @media (max-width: 640px) { .matrix table { max-height: 20vh; } }
   .close {
     position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
