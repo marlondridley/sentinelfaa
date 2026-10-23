@@ -124,7 +124,7 @@
   .card.merged { opacity: .72; }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-top .num { min-width: 0; overflow-wrap: anywhere; }
   .pulse {
     width: 7px; height: 7px; border-radius: 50%; background: var(--active);
     animation: pulse 1.6s ease-in-out infinite;
@@ -985,14 +985,13 @@ function card(job, past, cost, rework) {
   const rows = past.map((v, i) => chips(i + 1, v, false))
   if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
   const [num] = job.id.split('-')
-  // The top line cuts a long title with an ellipsis, so its title attribute keeps the whole title readable on hover.
   // A div, not a button, so the Approve button can sit inside it; the keydown listener gives it Enter and Space.
   return `
     <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
          role="button" tabindex="0" data-job="${esc(job.id)}">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
-        <span class="num" title="${esc(titleOf(job))}">${esc(num)} · ${esc(titleOf(job))}</span>
+        <span class="num">${esc(num)} · ${esc(titleOf(job))}</span>
         ${human ? '<span class="flag">your call</span>' : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
@@ -1224,7 +1223,7 @@ const firstLines = new Map()
 function costTable(cost) {
   if (!cost.recorded) return '<p class="note">No usage recorded for this job.</p>'
   const cell = (v, fmt) => (v === null ? '-' : fmt(v))
-  const row = (label, s) => `<tr><td>${esc(label)}</td><td>${cell(s.tokens, tokensText)}</td>` +
+  const row = (name, s) => `<tr><td>${esc(name)}</td><td>${cell(s.tokens, tokensText)}</td>` +
     `<td>${cell(s.seconds, duration)}</td><td>${loeText(s)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
   return `<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>${esc(label('terms', 'loe', 'LOE'))}</th><th>Full price</th></tr>` +
     cost.rounds.map(([n, s]) => row(n === 0 ? '0 (spec)' : String(n), s)).join('') +
