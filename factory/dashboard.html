@@ -323,20 +323,44 @@
 
   /* Executive Overview Panel: four headline tiles in the .kpi look, with a larger figure. The section carries the page
      gutter, so its grid has none of its own and the heading's left edge lines up with the first tile's. align-items:
-     start lets each tile keep its own height; flow efficiency is the tall one, with its caption. The column rules are
-     written under #overview in the @media blocks too, because the id outranks the plain .kpis rules there. */
+     start lets each tile keep its own height; flow efficiency is the tall one, with its times line. Each tile's
+     explanation (its sub-lines, and flow's caption and reference) sits in the tooltip of the (i) after its title. The
+     column rules are written under #overview in the @media blocks too, because the id outranks the plain .kpis rules
+     there. */
   #overview { padding: 20px 32px 0; }
   #overview .col-head { padding-left: 0; }
   #overview .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; padding: 0; }
-  #overview .kpi .k { font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text); }
+  #overview .kpi .k {
+    position: relative; font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text);
+  }
   #overview .kpi .v { font-family: inherit; font-size: 24px; line-height: 1.3; margin: 6px 0 4px; }
   #overview .v .num { font-family: inherit; font-size: inherit; font-weight: 600; color: var(--active); }
   #overview .v .of { color: var(--muted); }
-  #overview .kpi:not(.flow) .v, #overview .kpi:not(.flow) .sub { text-align: center; }
+  #overview .kpi:not(.flow) .v { text-align: center; }
   #overview .times { font-size: 13px; color: var(--active); }
   #overview .times .sep { color: var(--muted); }
-  #overview .cap, #overview .ref { margin: 0; font-size: 12px; color: var(--muted); }
-  #overview .cap { margin-top: 6px; }
+  #overview .info {
+    width: 16px; height: 16px; margin-left: 6px; padding: 0; vertical-align: 1px; cursor: help;
+    border: 1px solid var(--muted); border-radius: 50%; background: none; color: var(--muted);
+    font-size: 10px; font-weight: 600; line-height: 14px;
+  }
+  #overview .info:hover, #overview .about:focus-within .info { color: var(--text); border-color: var(--text); }
+  #overview .info:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  /* The tooltip spans the tile's full width from just under the title (the -13px is the tile's padding and border), so
+     it never runs past the tile's edges, even on the rightmost tile, and lies over the tile's figure and what follows.
+     It sits inside .about with the (i), and ::before bridges the gap between them, so the pointer can move onto it
+     without it closing. Escape adds .dismissed. */
+  #overview .tip {
+    display: none; position: absolute; top: calc(100% + 4px); left: -13px; right: -13px; z-index: 1;
+    padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, .8);
+    font-size: 12px; font-weight: normal; line-height: 1.5; color: var(--muted); text-align: left;
+  }
+  #overview .about:hover .tip, #overview .about:focus-within .tip { display: block; }
+  #overview .about.dismissed .tip { display: none; }
+  #overview .tip::before { content: ""; position: absolute; left: 0; right: 0; top: -9px; height: 8px; }
+  #overview .tip .line { display: block; overflow-wrap: anywhere; }
+  #overview .tip .line + .line { margin-top: 6px; }
 
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
@@ -841,13 +865,13 @@ function timing(pasts) {
 
 // ---- Executive Overview Panel -----------------------------------------------
 
-// How flow efficiency is really worked out, in plain words, shown under the figure.
+// How flow efficiency is really worked out, in plain words, shown in the flow tile's tooltip.
 const FLOW_CAPTION = 'Active is time in spec, build, review and approve; waiting is time in Client approval, where ' +
   'the owner decides. Both are clock time between stage changes. Idle time inside a stage, such as a job waiting for ' +
   'a session to pick it up, is not recorded, so it counts as active. A wait runs to the next stage change, which after ' +
   '/factory approve is the merge, so it includes the merge and its re-test. A build or merge stopped for the owner ' +
   'also waits in Client approval.'
-// A pointer to reading, shown under the caption. It is the page's only citation and stays on this one line.
+// A pointer to reading, shown after the caption. It is the page's only citation and stays on this one line.
 const FLOW_REFERENCE = 'Further reading: Kersten, M. (2018), Project to Product. This page works the figure out only as described above.'
 
 // The panel's four tiles, worked out once from the job files and pasts (each job's earlier-round verdicts, from
@@ -916,18 +940,29 @@ function overviewFigures(pasts) {
 }
 
 // The panel's tiles from overviewFigures(). Only the figure's parts are wrapped, for colour, so each .v reads exactly as
-// its figure. The flow class keeps that tile left-aligned; the others centre their figure and sub-lines.
+// its figure. The flow class keeps that tile left-aligned; the others centre their figure. A tile's explanation is not
+// on the tile but in the tooltip of the (i) after its title: one line per sub-line, then for flow its caption and
+// reference. id names the tooltip, for the (i)'s aria-describedby.
 function overviewPanel(pasts) {
   const [value, cycle, flow, rework] = overviewFigures(pasts)
   const num = (s) => `<span class="num">${esc(s)}</span>`
-  const subs = (tile) => tile.sub.map((s) => `<div class="sub">${esc(s)}</div>`).join('')
-  const kpi = (tile, v, rest, cls = 'kpi') =>
-    `<div class="${cls}"><div class="k">${esc(tile.title)}</div><div class="v">${v}</div>${rest}</div>`
-  return kpi(value, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), subs(value)) +
-    kpi(cycle, num(cycle.figure), subs(cycle)) +
-    kpi(flow, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>` +
-      `${subs(flow)}<p class="cap">${esc(flow.caption)}</p><p class="ref">${esc(flow.reference)}</p>`, 'kpi flow') +
-    kpi(rework, num(rework.figure), subs(rework))
+  const kpi = (id, tile, v, rest, lines, cls = 'kpi') =>
+    `<div class="${cls}"><div class="k">${esc(tile.title)}<span class="about">` +
+    `<button type="button" class="info" aria-label="About ${esc(tile.title)}" aria-describedby="${id}">i</button>` +
+    `<span class="tip" role="tooltip" id="${id}">${lines.map((s) => `<span class="line">${esc(s)}</span>`).join('')}</span></span></div>` +
+    `<div class="v">${v}</div>${rest}</div>`
+  return kpi('tip-value', value, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), '', value.sub) +
+    kpi('tip-cycle', cycle, num(cycle.figure), '', cycle.sub) +
+    kpi('tip-flow', flow, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>`,
+      [...flow.sub, flow.caption, flow.reference], 'kpi flow') +
+    kpi('tip-rework', rework, num(rework.figure), '', rework.sub)
+}
+
+// Escape closes an open overview tooltip: it takes focus off the (i), and hides the tooltip under the pointer until the
+// pointer leaves it.
+function closeTips() {
+  if (document.activeElement?.matches('#overview .info')) document.activeElement.blur()
+  document.querySelectorAll('#overview .about:hover').forEach((a) => a.classList.add('dismissed'))
 }
 
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
@@ -1434,8 +1469,16 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.closest('[data-close]')) closeDrawer()
 })
+// A dismissed overview tooltip opens again on the next hover, once the pointer has left its (i) and tooltip.
+document.addEventListener('mouseout', (e) => {
+  const about = e.target.closest?.('#overview .about.dismissed')
+  if (about && !about.contains(e.relatedTarget)) about.classList.remove('dismissed')
+})
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') return closeDrawer()
+  if (e.key === 'Escape') {
+    closeTips()
+    return closeDrawer()
+  }
   // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
