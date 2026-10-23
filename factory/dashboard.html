@@ -325,6 +325,69 @@
   #overview .cap, #overview .ref { margin: 0; font-size: 12px; color: var(--muted); }
   #overview .cap { margin-top: 6px; }
 
+  /* Executive briefing: a full-page view shown by the body's briefing class, in place of everything else. It is a light
+     panel on screen too, so the owner sees what will print. Its own variables override the dark theme inside it. */
+  .export {
+    margin-left: auto; cursor: pointer; font-size: 12px; font-weight: 600; padding: 3px 10px;
+    border-radius: 6px; border: 1px solid var(--active); background: none; color: var(--active);
+  }
+  .export:hover { background: color-mix(in srgb, var(--active) 14%, transparent); }
+  .export:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  #briefing { display: none; }
+  body.briefing > :not(#briefing) { display: none; }
+  body.briefing #briefing { display: block; }
+  #briefing {
+    --text: #111; --muted: #444; --faint: #666; --line: #999; --focus: #1a56db;
+    max-width: 1100px; margin: 24px auto; padding: 28px 32px 40px; border-radius: 10px;
+    background: #fff; color: var(--text);
+  }
+  #briefing h2 { margin: 0; font-size: 20px; font-weight: 600; }
+  #briefing h2:focus { outline: none; }
+  #briefing h3 { margin: 28px 0 8px; font-size: 15px; font-weight: 600; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  #briefing p { margin: 4px 0; }
+  #briefing .b-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 4px; }
+  #briefing .b-controls button, #briefing .b-controls select {
+    font: inherit; font-size: 13px; color: var(--text); background: #fff; cursor: pointer;
+    border: 1px solid var(--muted); border-radius: 6px; padding: 4px 10px;
+  }
+  #briefing .b-controls button:focus-visible, #briefing .b-controls select:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 2px;
+  }
+  #briefing .b-note { font-size: 12px; color: var(--muted); }
+  #briefing .b-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  #briefing .b-figs { display: flex; flex-wrap: wrap; gap: 4px 24px; font-family: var(--mono); font-size: 13px; margin: 6px 0; }
+  #briefing .b-figs .k { color: var(--muted); }
+  #briefing .b-sub { font-size: 12px; color: var(--muted); }
+  #briefing table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 8px 0; }
+  #briefing th, #briefing td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+  #briefing thead th { background: #eee; }
+  #briefing td.n { font-family: var(--mono); text-align: right; white-space: nowrap; }
+  #briefing td.id { font-family: var(--mono); white-space: nowrap; }
+  /* A verdict or status is a word in a box, so it reads on a black and white printer, never by colour alone. */
+  #briefing .b-v {
+    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600; white-space: nowrap;
+    border: 1px solid var(--text); border-radius: 4px; padding: 0 5px;
+  }
+  #briefing .b-v.CHANGES, #briefing .b-v.ESCALATE { border-width: 2px; }
+  #briefing .b-v.not-run { font-style: italic; border-style: dashed; }
+  #briefing pre {
+    margin: 4px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f6f6;
+  }
+  #briefing ul { margin: 4px 0; padding-left: 1.3em; }
+
+  @media print {
+    @page { margin: 15mm; }
+    body { background: #fff; }
+    body.briefing #briefing { margin: 0; padding: 0; max-width: none; border-radius: 0; }
+    #briefing .b-controls, #briefing .b-note { display: none; }
+    #briefing section, #briefing table, #briefing tr, #briefing pre { break-inside: avoid; }
+    #briefing thead { display: table-header-group; }
+    #briefing h3 { break-after: avoid; }
+    #briefing a { color: inherit; text-decoration: none; }
+    #briefing a::after { content: none; }
+  }
+
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
@@ -357,6 +420,7 @@
 <body>
 <header>
   <h1>Software factory</h1>
+  <button type="button" class="export" id="export">Export Executive Briefing</button>
   <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
@@ -396,6 +460,23 @@
     </div>
   </aside>
 </div>
+
+<section id="briefing" aria-labelledby="b-title">
+  <h2 id="b-title" tabindex="-1">Executive briefing</h2>
+  <div class="b-controls">
+    <label for="b-period">Period</label>
+    <select id="b-period">
+      <option value="7">last 7 days</option>
+      <option value="14">last 14 days</option>
+      <option value="30">last 30 days</option>
+      <option value="all">all time</option>
+    </select>
+    <button type="button" id="b-print">Print or save as PDF</button>
+    <button type="button" id="b-close">Close</button>
+  </div>
+  <p class="b-note">Save as PDF from the print dialog (destination: Save as PDF). A PowerPoint export would need a library and would be a separate script, not part of this page.</p>
+  <div id="b-body"></div>
+</section>
 
 <script>
 const POLL_MS = 2000
@@ -1270,6 +1351,9 @@ function closeDrawer() {
 }
 
 document.addEventListener('click', (e) => {
+  if (e.target.closest('#export')) return openBriefing()
+  if (e.target.closest('#b-print')) return window.print()
+  if (e.target.closest('#b-close')) return closeBriefing()
   const approveEl = e.target.closest('[data-approve]')
   if (approveEl) return copyApprove(approveEl)
   const cardEl = e.target.closest('[data-job]')
@@ -1284,7 +1368,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-close]')) closeDrawer()
 })
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') return closeDrawer()
+  if (e.key === 'Escape') return document.body.classList.contains('briefing') ? closeBriefing() : closeDrawer()
   // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
@@ -1425,6 +1509,273 @@ async function refreshMatrix(base, files, openDecision) {
     $('d-compliance').innerHTML = html
   }
 }
+
+// ---- Executive briefing -----------------------------------------------------
+
+// The briefing is a snapshot: openBriefing() copies the jobs and works out every per-job figure once, and the period
+// select only filters that copy. poll() never draws it, so nothing changes under the print dialog; reopening makes a
+// new snapshot. Only merged jobs are counted; the rest are listed once, as in flight.
+let briefing = null // the snapshot while the briefing is open, else null
+let briefingRun = 0 // the current openBriefing() call, so a slow one cannot draw over a later one or a closed briefing
+
+const utcDate = (ms) => new Date(ms).toISOString().slice(0, 10)
+const utcTime = (ms) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+const VERDICTS = ['PASS', 'CHANGES', 'pending']
+
+// The lines under a "## <name>" heading, up to the next "## " heading, or null when there is no such heading.
+function sectionOf(lines, name) {
+  const at = lines.findIndex((l) => l.trim() === `## ${name}`)
+  if (at < 0) return null
+  const end = lines.findIndex((l, k) => k > at && /^##\s/.test(l))
+  return lines.slice(at + 1, end < 0 ? undefined : end)
+}
+
+// build.md's ticked criteria and its ## Validation text, as the factory writes them. A part that is not there is null;
+// a file whose line 1 is not its STATUS line gives an error, so none of it is read.
+function buildFigures(text) {
+  const lines = text.replace(/\r/g, '').split('\n')
+  if (!/^STATUS:\s*(READY|BLOCKED)$/.test(lines[0].trim())) return { error: 'build.md line 1 is not STATUS: READY or BLOCKED' }
+  const criteria = (sectionOf(lines, 'Acceptance criteria') || [])
+    .map((l) => l.match(/^\d+\.\s+\[([ xX])\]/)).filter(Boolean)
+  const validation = (sectionOf(lines, 'Validation') || []).join('\n').trim()
+  return {
+    criteria: criteria.length ? { ticked: criteria.filter((m) => m[1] !== ' ').length, total: criteria.length } : null,
+    validation: validation || null,
+  }
+}
+
+// build.md and decision.md of one job. The folder index is read first so a missing file is not fetched, which would log
+// a 404. A file that is missing, unreadable or not in the factory's format gives an error, never a guessed figure.
+// Only line 1 of decision.md is read, as the drawer's compliance matrix does.
+async function briefingFiles(id) {
+  let names
+  try {
+    names = await listLinks(`jobs/${id}/`)
+  } catch (err) {
+    const error = `could not read the job folder (${err.message})`
+    return { build: { error }, decision: { error } }
+  }
+  const read = async (f) => {
+    if (!names.includes(f)) return { error: `no ${f}` }
+    try {
+      return { text: await fetchText(`jobs/${id}/${f}`) }
+    } catch (err) {
+      return { error: `could not read ${f} (${err.message})` }
+    }
+  }
+  const [b, d] = await Promise.all([read('build.md'), read('decision.md')])
+  const first = d.error ? null : d.text.replace(/\r/g, '').split('\n')[0].trim()
+  return {
+    build: b.error ? b : buildFigures(b.text),
+    decision: d.error ? d : first === 'APPROVE' || first === 'ESCALATE' ? { value: first }
+      : { error: 'decision.md line 1 is not APPROVE or ESCALATE' },
+  }
+}
+
+// One merged job's figures, worked out from job.json at the moment the briefing opens. A figure with no source is null,
+// and gaps names each one with its reason, for the Unknown figures section.
+function briefingJob(job) {
+  const cost = costOf(job)
+  const t = cost.total
+  const known = (v) => (cost.recorded ? v : null)
+  const reviews = job.reviews !== null && typeof job.reviews === 'object' ? job.reviews : {}
+  const j = {
+    id: job.id, feature: job.feature,
+    round: Number.isInteger(job.round) ? job.round : null,
+    verdicts: Object.fromEntries(REVIEWERS.map(([k]) => [k, VERDICTS.includes(reviews[k]) ? reviews[k] : null])),
+    points: POINTS.includes(job.points) ? job.points : null,
+    at: mergedAt(job), commit: commitOf(job),
+    price: known(t.usd), tokens: known(t.tokens), seconds: known(t.seconds),
+    paid: isSet(job.paid_usd) && isFigure(job.paid_usd) ? job.paid_usd : null,
+    gaps: [],
+  }
+  const gap = (figure, why) => j.gaps.push({ figure, why })
+  if (j.points === null) gap('points', isSet(job.points) ? `points ${JSON.stringify(job.points)} is not one of ${POINTS.join(', ')}` : 'no points')
+  if (j.at === null) gap('merged date', isSet(job.merged_at) ? `merged_at ${JSON.stringify(job.merged_at)} is not a UTC time` : 'no merged_at')
+  if (j.commit === null) gap('merge commit', 'no commit in job.json')
+  if (!cost.recorded) gap('tokens, time and full price', 'no usage')
+  else if (cost.bad) gap('tokens, time and full price', 'usage entry unreadable')
+  else {
+    if (t.tokens === null) gap('tokens and full price', 'a usage entry has no tokens')
+    if (t.seconds === null) gap('time', 'a usage entry has no seconds')
+    if (t.tokens !== null && t.usd === null) gap('full price', 'price unknown: prices.json has no price for a model used, or could not be read')
+  }
+  if (j.paid === null) gap('paid', 'no paid_usd')
+  if (j.round === null) gap('review rounds', 'no round in job.json')
+  for (const [k] of REVIEWERS) if (j.verdicts[k] === null) gap(`${k} verdict`, `reviews.${k} in job.json is not PASS, CHANGES or pending`)
+  return j
+}
+
+// A file's gaps, added when the briefing is drawn, after briefingFiles() has filled build and decision in.
+function fileGaps(j) {
+  const out = []
+  if (j.build.error) out.push({ figure: 'acceptance criteria and test results', why: j.build.error })
+  else {
+    if (j.build.criteria === null) out.push({ figure: 'acceptance criteria', why: 'build.md has no numbered criteria under ## Acceptance criteria' })
+    if (j.build.validation === null) out.push({ figure: 'test results', why: 'build.md has no text under ## Validation' })
+  }
+  if (j.decision.error) out.push({ figure: 'approver decision', why: j.decision.error })
+  return out
+}
+
+const dash = (v, fmt) => (v === null ? '-' : fmt(v))
+const verdictWord = (v) => (v === null ? '-' : `<span class="b-v ${esc(v)}">${esc(v)}</span>`)
+// A total of a figure over jobs: null as soon as one job's figure is unknown, as costOf does, so it is never shown short.
+const totalOf = (list, key) => (list.some((j) => j[key] === null) ? null : list.reduce((s, j) => s + j[key], 0))
+// "1 of 3 jobs have no full price", or nothing when every job has the figure.
+function missingLine(list, key, label) {
+  const n = list.filter((j) => j[key] === null).length
+  return n ? `<p class="b-sub">${n} of ${list.length} ${list.length === 1 ? 'job has' : 'jobs have'} no ${esc(label)}</p>` : ''
+}
+const NONE = '<p class="b-sub">none in this period</p>'
+const table = (head, rows) => `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` +
+  `<tbody>${rows.join('')}</tbody></table>`
+
+function briefingHtml(s, choice) {
+  const all = choice === 'all'
+  const start = all ? null : s.now - Number(choice) * DAY_MS
+  const inPeriod = s.merged.filter((j) => j.at !== null && j.at <= s.now && (all || j.at > start))
+  const first = inPeriod.length ? Math.min(...inPeriod.map((j) => j.at)) : null
+  // All time runs from the first merge, so points per day has a span to divide by; at least one day, so a merge minutes
+  // ago does not give a rate of hundreds of points per day.
+  const days = all ? (first === null ? null : Math.max(1, (s.now - first) / DAY_MS)) : Number(choice)
+  const from = all ? dash(first, utcDate) : utcDate(start)
+  const noAt = s.merged.filter((j) => j.at === null)
+  const label = $('b-period').selectedOptions[0].textContent
+  const fig = (k, v) => `<span><span class="k">${esc(k)}</span> ${esc(v)}</span>`
+  const section = (title, body) => `<section><h3>${esc(title)}</h3>${body}</section>`
+
+  const stages = [...new Set(s.inFlight.map((j) => j.stage))]
+  const inFlight = stages.map((st) => {
+    const ids = s.inFlight.filter((j) => j.stage === st).map((j) => j.id)
+    return `${st} ${ids.length} (${ids.join(', ')})`
+  }).join(' · ')
+  const head = `<p class="b-meta">Made ${esc(utcTime(s.now))} from the job files. A figure shown as - has no source; ` +
+    'Unknown figures says why.</p>' +
+    `<p class="b-meta">Period: ${esc(label)}, from ${esc(from)} to ${esc(utcDate(s.now))} (UTC dates). ` +
+    'A job counts when it merged in the period.</p>' +
+    `<p class="b-meta">In flight, not merged and not in any total: ${esc(inFlight || 'none')}</p>`
+
+  // a. Delivered. Same arithmetic as velocity(): points of the merged jobs with points and merged_at, over the days.
+  const counted = inPeriod.filter((j) => j.points !== null)
+  const left = [...inPeriod.filter((j) => j.points === null), ...noAt]
+  const points = counted.reduce((sum, j) => sum + j.points, 0)
+  const leftLine = left.length
+    ? `<p class="b-sub">${left.length} merged ${left.length === 1 ? 'job' : 'jobs'} left out of these totals (no points or ` +
+      `no merged_at): ${esc(left.map((j) => j.id).join(', '))}. See Unknown figures.</p>`
+    : ''
+  const delivered = (counted.length
+    ? `<div class="b-figs">${fig('points merged', String(points))}${fig('jobs merged', String(counted.length))}` +
+      `${fig('points per day', `${(points / days).toFixed(2)} (${points} / ${all ? days.toFixed(1) : days} days)`)}</div>` +
+      table(['Job', 'Feature', 'Points', 'Merged (UTC)', 'Merge commit'], counted.map((j) =>
+        `<tr><td class="id">${esc(j.id)}</td><td>${esc(j.feature)}</td><td class="n">${j.points}</td>` +
+        `<td class="n">${esc(utcTime(j.at))}</td><td class="id">${esc(dash(j.commit, String))}</td></tr>`))
+    : NONE) + leftLine
+
+  // b. Financial efficiency, over every job merged in the period, with or without points.
+  const price = totalOf(inPeriod, 'price')
+  const tokens = totalOf(inPeriod, 'tokens')
+  const allPoints = totalOf(inPeriod, 'points')
+  const rate = s.rate
+  const traditional = rate === null || allPoints === null ? null : rate * allPoints
+  const financial = inPeriod.length
+    ? `<div class="b-figs">${fig('full price', dash(price, usd))}${fig('paid', dash(totalOf(inPeriod, 'paid'), usd))}` +
+      `${fig('tokens', dash(tokens, tokensText))}${fig('agent time', dash(totalOf(inPeriod, 'seconds'), duration))}` +
+      `${fig('cost per point', price === null || allPoints === null ? '-' : perPointText(price, allPoints))}` +
+      `${fig('tokens per point', tokens === null || allPoints === null ? '-' : tokensText(Math.round(tokens / allPoints)))}</div>` +
+      missingLine(inPeriod, 'price', 'full price') + missingLine(inPeriod, 'paid', 'paid amount') +
+      missingLine(inPeriod, 'tokens', 'tokens') + missingLine(inPeriod, 'seconds', 'agent time') +
+      missingLine(inPeriod, 'points', 'points') +
+      // The owner's rate and comparison are job 016's: traditional_usd_per_point and its AI cost efficiency formula.
+      `<div class="b-figs">${fig('Owner bill rate:', rate === null ? '-' : `${usd(rate)} per story point`)}` +
+      `${fig('traditional cost (points × rate)', dash(traditional, usd))}` +
+      `${fig('AI cost efficiency, full price vs traditional', traditional === null || price === null ? '-'
+        : `saving ${percent(traditional - price, traditional)}`)}</div>` +
+      `<p class="b-sub">${rate === null ? `The owner's bill rate is not set: ${esc(SET_RATE)}.`
+        : 'The bill rate is the owner\'s cost for a traditional developer to deliver one story point, from engagement.json.'}</p>` +
+      table(['Job', 'Points', 'Full price', 'Paid', 'Tokens', 'Time'], inPeriod.map((j) =>
+        `<tr><td class="id">${esc(j.id)}</td><td class="n">${dash(j.points, String)}</td><td class="n">${dash(j.price, usd)}</td>` +
+        `<td class="n">${dash(j.paid, usd)}</td><td class="n">${dash(j.tokens, tokensText)}</td>` +
+        `<td class="n">${dash(j.seconds, duration)}</td></tr>`))
+    : NONE
+
+  // c. Test and review results. The verdicts are the last round's; earlier rounds show only in the round count.
+  const crit = (j) => (j.build.error || j.build.criteria === null ? '-' : `${j.build.criteria.ticked} of ${j.build.criteria.total}`)
+  const fourPass = inPeriod.filter((j) => REVIEWERS.every(([k]) => j.verdicts[k] === 'PASS')).length
+  const changes = inPeriod.filter((j) => REVIEWERS.some(([k]) => j.verdicts[k] === 'CHANGES')).length
+  const reviewHead = ['Job', 'Review rounds', ...REVIEWERS.map(([k]) => `${k} review`)]
+  const tests = inPeriod.length
+    ? `<div class="b-figs">${fig('all four reviews PASS', `${fourPass} of ${inPeriod.length} jobs`)}` +
+      `${fig('any CHANGES', `${changes} of ${inPeriod.length} jobs`)}</div>` +
+      table([...reviewHead, 'Acceptance criteria ticked'], inPeriod.map((j) =>
+        `<tr><td class="id">${esc(j.id)}</td><td class="n">${dash(j.round, String)}</td>` +
+        REVIEWERS.map(([k]) => `<td>${verdictWord(j.verdicts[k])}</td>`).join('') + `<td class="n">${esc(crit(j))}</td></tr>`)) +
+      '<p class="b-sub">Recorded test results: the ## Validation section of each build.md, as the builder wrote it.</p>' +
+      inPeriod.map((j) => `<p class="b-meta">${esc(j.id)}</p>` +
+        (j.build.error || j.build.validation === null ? '<p>-</p>' : `<pre>${esc(j.build.validation)}</pre>`)).join('')
+    : NONE
+
+  // d. Security posture. The rows the factory has not built come from the compliance matrix, so it and the briefing
+  // name the same checks; complianceRows() with no files gives each its status, which is always "not run".
+  const placeholders = new Set(COMPLIANCE_ROWS.flatMap((g) => g.rows).filter((r) => r.kind === 'placeholder').map((r) => r.id))
+  const notBuilt = complianceRows('', [], new Map(), null).filter((r) => placeholders.has(r.id))
+  const security = (inPeriod.length
+    ? table([...reviewHead.filter((h) => h !== 'Review rounds'), 'Approver decision'], inPeriod.map((j) =>
+      `<tr><td class="id">${esc(j.id)}</td>` + REVIEWERS.map(([k]) => `<td>${verdictWord(j.verdicts[k])}</td>`).join('') +
+      `<td>${j.decision.error ? '-' : verdictWord(j.decision.value)}</td></tr>`))
+    : NONE) +
+    '<p>The four reviews and the approver decision are judgement, by model agents and the owner, recorded in the job ' +
+    'files. They are not scans.</p>' +
+    '<p class="b-sub">Checks the factory has not built (from the compliance matrix):</p>' +
+    table(['Check', 'What it would check', 'Status', 'Why'], notBuilt.map((r) =>
+      `<tr><td>${esc(r.gate)}</td><td>${esc(r.check)}</td><td><span class="b-v not-run">${esc(r.status)}</span></td>` +
+      `<td>${esc(r.evidence)}</td></tr>`))
+
+  // e. Unknown figures, for every job in the period and every merged job with no merged_at, which is in no period.
+  const gaps = [...inPeriod.map((j) => [j, [...j.gaps, ...fileGaps(j)]]), ...noAt.map((j) => [j, j.gaps])]
+    .filter(([, g]) => g.length)
+  const unknown = gaps.length
+    ? `<ul>${gaps.map(([j, g]) => `<li><span class="b-meta">${esc(j.id)}</span>: ` +
+      `${esc(g.map((x) => `${x.figure} is - (${x.why})`).join('; '))}</li>`).join('')}</ul>`
+    : NONE
+
+  return head + section('Delivered', delivered) + section('Financial efficiency', financial) +
+    section('Test and review results', tests) + section('Security posture', security) + section('Unknown figures', unknown)
+}
+
+function drawBriefing() {
+  if (briefing) $('b-body').innerHTML = briefingHtml(briefing, $('b-period').value)
+}
+
+async function openBriefing() {
+  const run = ++briefingRun
+  // Everything from job.json, prices.json and engagement.json is read now, before any await, so a poll cannot mix in.
+  const snapshot = {
+    now: Date.now(),
+    rate: traditionalRate(),
+    merged: jobs.filter((j) => j.stage === 'merged').map(briefingJob),
+    inFlight: jobs.filter((j) => j.stage !== 'merged').map((j) => ({ id: j.id, stage: String(j.stage) })),
+  }
+  briefing = null
+  $('b-period').value = '7'
+  $('b-body').innerHTML = '<p class="b-meta">Reading the job files…</p>'
+  document.body.classList.add('briefing')
+  $('b-title').focus()
+  // A merged job with no merged_at is in no period, so its files are not needed.
+  await Promise.all(snapshot.merged.filter((j) => j.at !== null).map(async (j) => Object.assign(j, await briefingFiles(j.id))))
+  if (run !== briefingRun || !document.body.classList.contains('briefing')) return
+  briefing = snapshot
+  drawBriefing()
+}
+
+function closeBriefing() {
+  briefingRun++
+  briefing = null
+  document.body.classList.remove('briefing')
+  $('export').focus()
+}
+
+$('b-period').addEventListener('change', drawBriefing)
 
 // ---- Markdown (just enough for the factory's files) ---------------------
 
