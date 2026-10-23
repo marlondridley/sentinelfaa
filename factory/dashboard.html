@@ -6,12 +6,20 @@
 <title>Software Factory</title>
 <style>
   :root {
-    --bg: #14151b;
+    --bg: #0b0e14;
+    --band: #040816;
+    --band-line: #182334;
     --panel: #1a1c24;
     --card: #20222c;
     --card-hover: #252835;
     --line: #2b2e3b;
+    --rule: #1e293b;
+    --kpi-bg: #0f1522;
+    --kpi-line: #222833;
+    --kpi-hover: #292e60;
     --text: #e4e5ea;
+    --head: #f1f5f9;
+    --label: #94a3b8;
     --muted: #868ba0;
     --faint: #5b6075;
     --active: #8be9fd;
@@ -19,6 +27,12 @@
     --changes: #ffb86c;
     --human: #ff79c6;
     --merged: #bd93f9;
+    --indigo: #818cf8;
+    --sky: #38bdf8;
+    --amber: #fbbf24;
+    --pink: #f472b6;
+    --emerald: #34d399;
+    --orange: #fb923c;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -30,80 +44,125 @@
     -webkit-font-smoothing: antialiased;
   }
   button { font: inherit; color: inherit; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
 
-  /* Header */
+  /* Header band: identity, the live stream pill, then the two stats and the view toggle at the right. The band is
+     46px of content between 14px rules, so it stands 75px tall with its bottom border. */
   header {
-    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
-    flex-wrap: wrap; padding: 28px 32px 8px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 24px; background: var(--band); border-bottom: 1px solid var(--band-line);
   }
-  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .status .dot {
-    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--pass); margin-right: 6px; vertical-align: 1px;
+  h1 { margin: 0; font-size: 17px; font-weight: 700; color: var(--head); line-height: 22px; }
+  .identity { font-family: var(--mono); font-size: 11px; line-height: 15px; color: var(--label); }
+  .band-rule { flex: none; width: 1px; height: 16px; background: var(--rule); }
+  .pill {
+    flex: none; display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 12px;
+    border: 1px solid; border-radius: 999px; font-family: var(--mono); font-size: 11px; text-decoration: none;
   }
-  .status.error { color: var(--human); }
-  .status.error .dot { background: var(--human); }
+  .pill-dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse 1.6s ease-in-out infinite; }
+  .pill.live { color: var(--emerald); border-color: color-mix(in srgb, #10b981 25%, transparent); background: color-mix(in srgb, #10b981 8%, transparent); }
+  .pill.live .pill-dot { background: #10b981; }
+  .pill.err { color: var(--pink); border-color: color-mix(in srgb, var(--pink) 25%, transparent); background: color-mix(in srgb, var(--pink) 8%, transparent); }
+  .pill.err .pill-dot { background: var(--pink); }
+  .pill.wait { color: var(--label); border-color: var(--rule); background: transparent; }
+  .pill.wait .pill-dot { background: var(--label); }
+  .band-right { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin-left: auto; }
+  .stat-box {
+    display: flex; align-items: center; height: 46px; padding: 8px 12px;
+    border: 1px solid var(--rule); border-radius: 8px; background: #0c1427;
+  }
+  .stat { min-width: 0; }
+  .stat-rule { flex: none; width: 1px; height: 100%; margin: 0 16px; background: var(--rule); }
+  .stat-k { font-size: 11px; line-height: 14px; font-weight: 600; text-transform: uppercase; color: var(--label); white-space: nowrap; }
+  .stat-v { font-family: var(--mono); font-size: 12px; line-height: 16px; white-space: nowrap; }
+  #spend-v { color: var(--emerald); }
+  #active-v { color: var(--indigo); }
+  nav.toggle {
+    flex: none; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--rule);
+    border-radius: 8px; background: #0f172a;
+  }
+  nav.toggle a {
+    display: inline-flex; align-items: center; height: 24px; padding: 0 12px; border-radius: 6px;
+    font-size: 13px; font-weight: 500; color: var(--label); text-decoration: none; white-space: nowrap;
+  }
+  nav.toggle a:hover { color: var(--head); }
+  nav.toggle a.on { background: #4f46e5; color: #ffffff; }
+  .pill:focus-visible, nav.toggle a:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+
   .banner {
-    margin: 12px 32px 0; padding: 10px 14px; border: 1px solid var(--human);
+    margin: 12px 24px 0; padding: 10px 14px; border: 1px solid var(--human);
     border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
   }
 
-  /* Engagement strip and KPI tiles */
-  .strip {
-    display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
-    font-family: var(--mono); font-size: 12px; color: var(--text);
+  /* The five executive cards, in one row at 1280px and wider and fewer columns as the page narrows. */
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; padding: 24px 24px 0;
   }
-  .strip .k, .kpi .k { color: var(--faint); }
-  .strip .m { color: var(--muted); }
-  .kpis {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
-    padding: 14px 32px 0;
+  .kpi-card {
+    display: flex; flex-direction: column; min-width: 0; padding: 16px;
+    background: var(--kpi-bg); border: 1px solid var(--kpi-line); border-radius: 12px;
+    transition: border-color .15s;
   }
-  .kpi {
-    min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 12px;
+  .kpi-card:hover { border-color: var(--kpi-hover); }
+  .kpi-top { display: flex; align-items: baseline; gap: 12px; }
+  .kpi-label {
+    min-width: 0; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--label);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .kpi .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-  .kpi .v { font-family: var(--mono); font-size: 18px; margin: 2px 0; }
-  .kpi .sub {
-    font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere;
+  .kpi-corner { flex: none; margin-left: auto; font-size: 12px; white-space: nowrap; }
+  .kpi-value {
+    margin-top: 10px; font-family: var(--mono); font-size: 22px; line-height: 1.2; font-weight: 700; color: var(--head);
+    overflow-wrap: anywhere;
   }
-  /* The cost per point tile takes a whole row, for its learning curve: one bar per merged job, oldest merge first. */
-  .kpi.wide { grid-column: 1 / -1; }
-  .kpi .curve-k { margin-top: 10px; }
-  .curve { list-style: none; margin: 4px 0 0; padding: 0; max-width: 760px; }
-  .curve li {
-    display: grid; grid-template-columns: minmax(0, 28ch) 10ch minmax(40px, 1fr); gap: 10px; align-items: center;
-  }
-  .curve .id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .curve .usd { text-align: right; color: var(--text); }
-  .curve .bar { height: 6px; border-radius: 3px; background: var(--line); }
-  .curve .bar span { display: block; height: 100%; border-radius: inherit; background: var(--merged); }
+  .kpi-value.green { color: var(--emerald); }
+  .kpi-of { font-family: var(--mono); font-size: 13px; font-weight: 400; color: var(--label); }
+  .kpi-caption { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--label); }
+  .kpi-bar { margin-top: auto; height: 6px; border-radius: 3px; background: var(--rule); }
+  .kpi-bar span { display: block; height: 100%; border-radius: inherit; background: #6366f1; }
+  .kpi-bolt { fill: var(--orange); color: var(--orange); vertical-align: -1px; margin-right: 3px; }
+  .c-indigo { color: var(--indigo); font-family: var(--mono); }
+  .c-emerald { color: var(--emerald); font-family: var(--mono); }
+  .c-amber { color: var(--amber); }
+  .c-velocity { color: var(--emerald); }
+
+  /* Views: the header block stays on screen and the URL hash chooses which one of these is shown. */
+  .view[hidden] { display: none; }
 
   /* Board */
   .board {
-    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;
-    padding: 20px 32px 40px; align-items: start;
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px;
+    padding: 24px 24px 40px; align-items: start;
   }
   .col { min-width: 0; }
   .col-head {
-    display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
-    border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
+    padding: 0 2px 10px; margin-bottom: 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--st) 35%, transparent);
   }
-  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
-  .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .col-head .count {
-    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  .col-top { display: flex; align-items: center; gap: 8px; }
+  .col-title {
+    min-width: 0; margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--st);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
-  .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
-    content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
+  .col-badge {
+    flex: none; margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+    height: 20px; min-width: 22px; padding: 0 6px; border-radius: 999px;
+    font-family: var(--mono); font-size: 11px; color: var(--st);
+    background: color-mix(in srgb, var(--st) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--st) 30%, transparent);
   }
-  .col.human .col-head { border-bottom-color: color-mix(in srgb, var(--human) 55%, transparent); }
-  .col.human h2 { color: var(--human); }
-  .col.merged-col h2 { color: var(--merged); }
-  .col.rework-col h2 { color: var(--changes); }
+  .col-head .who {
+    display: block; margin-top: 4px; font-size: 11px; color: var(--faint); font-family: var(--mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .col[data-col="spec"] { --st: var(--indigo); }
+  .col[data-col="build"] { --st: var(--sky); }
+  .col[data-col="review"] { --st: var(--amber); }
+  .col[data-col="needs-human"] { --st: var(--pink); }
+  .col[data-col="merged"] { --st: var(--emerald); }
+  .col[data-col="rework"] { --st: var(--orange); }
   .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
@@ -173,40 +232,80 @@
   .approve button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .approve-msg { font-size: 11px; line-height: 1.4; color: var(--muted); }
 
-  /* Branch graph */
-  .graph { padding: 0 32px 40px; min-width: 0; }
-  .g-row, .g-main { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
-  .g-row {
-    cursor: pointer; border-radius: 8px; padding-right: 10px; transition: background .15s;
+  /* Git topology: one SVG, one lane per job off the main trunk. The box scrolls when the drawing is wider than it,
+     so a narrow page never scrolls as a whole. */
+  .git-wrap { padding: 16px 24px 40px; }
+  .git-count { font-family: var(--mono); font-size: 12px; color: var(--label); margin-bottom: 12px; }
+  .git-count.warn { color: var(--amber); }
+  .git-box { overflow-x: auto; }
+  #git-graph { display: block; color: var(--muted); }
+  .trunk { stroke: var(--muted); stroke-width: 2; }
+  .main-node { fill: var(--muted); }
+  .g-job { cursor: pointer; color: var(--muted); }
+  .g-job:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .g-job.live { color: var(--active); }
+  .g-job.merged { color: var(--merged); }
+  .g-job.human { color: var(--human); }
+  .g-hit { fill: transparent; }
+  .g-job:hover .g-hit { fill: var(--kpi-bg); }
+  .br { fill: none; stroke: currentColor; stroke-width: 2; }
+  .g-tip-node { fill: var(--bg); stroke: currentColor; stroke-width: 2; }
+  .g-node { fill: currentColor; }
+  .g-label { fill: currentColor; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .g-line { fill: var(--label); font-family: var(--mono); font-size: 12px; }
+  .g-line.tip { fill: currentColor; }
+  .g-line.drift { fill: var(--amber); }
+  .g-warn { fill: none; stroke: var(--amber); stroke-width: 1.5; stroke-linejoin: round; }
+
+  /* Cost and LOE */
+  .cost-wrap { padding: 16px 24px 40px; }
+  .engagement { font-family: var(--mono); font-size: 12px; color: var(--text); margin-bottom: 16px; }
+  .tile-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;
   }
-  .g-row:hover { background: var(--card); }
-  .g-row:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
-  .g-lane { position: relative; flex: none; width: 48px; min-height: 56px; color: var(--faint); }
-  /* main runs the whole height of every row, so the rows join into one line. */
-  .g-lane::before {
-    content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 2px; background: var(--muted);
+  .cost-table-box { overflow-x: auto; margin-bottom: 24px; }
+  #cost-table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  #cost-table th, #cost-table td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; white-space: nowrap; }
+  #cost-table th { color: var(--label); font-weight: 600; }
+  #cost-table tr.total td { color: var(--text); font-weight: 600; }
+  .job-btn {
+    background: none; border: 0; padding: 0; cursor: pointer; color: var(--active);
+    font-family: var(--mono); font-size: 12px;
   }
-  .g-lane svg { position: absolute; left: 0; top: 0; overflow: visible; }
-  .g-lane .main-node { fill: var(--muted); }
-  .g-lane .br { fill: none; stroke: currentColor; stroke-width: 2; }
-  .g-lane .tip { fill: var(--bg); stroke: currentColor; stroke-width: 2; }
-  .g-lane .node { fill: currentColor; }
-  .g-row.live .g-lane { color: var(--active); }
-  .g-row.merged .g-lane { color: var(--merged); }
-  .g-row.human .g-lane { color: var(--human); }
-  .g-main .g-lane { min-height: 28px; }
-  .g-main .g-lane::before { top: 14px; }
-  .g-main .num { align-self: center; }
-  .g-text { min-width: 0; flex: 1; padding: 8px 0 10px; }
-  .g-text .feature { margin: 2px 0 4px; overflow-wrap: anywhere; }
-  .g-meta {
-    font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere;
+  .job-btn:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .curve-title { font-size: 12px; color: var(--label); margin-bottom: 4px; }
+  .curve { list-style: none; margin: 0 0 24px; padding: 0; max-width: 760px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .curve li {
+    display: grid; grid-template-columns: minmax(0, 28ch) 10ch minmax(40px, 1fr); gap: 10px; align-items: center;
   }
-  .g-meta .k { color: var(--muted); }
+  .curve .id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .curve .usd { text-align: right; color: var(--text); }
+  .curve .bar { height: 6px; border-radius: 3px; background: var(--rule); }
+  .curve .bar span { display: block; height: 100%; border-radius: inherit; background: var(--merged); }
+  .define { font-size: 12px; color: var(--label); max-width: 760px; }
+
+  /* Live stream */
+  .stream-wrap { padding: 16px 24px 40px; }
+  .stream-wrap h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+  .stream-wrap h3 { margin: 24px 0 8px; font-size: 13px; font-weight: 600; color: var(--label); }
+  .s-status { font-family: var(--mono); font-size: 12px; margin-bottom: 16px; }
+  .s-status.live { color: var(--emerald); }
+  .s-status.err { color: var(--pink); }
+  .s-status.wait { color: var(--label); }
+  .facts { margin: 0; display: grid; gap: 8px; max-width: 760px; }
+  .facts > div { display: grid; grid-template-columns: minmax(0, 140px) minmax(0, 1fr); gap: 12px; }
+  .facts dt { font-size: 12px; color: var(--label); }
+  .facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .facts ul { margin: 4px 0 0; padding-left: 1.2em; color: var(--human); }
+  #stream-activity { border-collapse: collapse; font-size: 13px; }
+  #stream-activity th, #stream-activity td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; white-space: nowrap; }
+  #stream-activity th { color: var(--label); font-weight: 600; font-size: 12px; }
+  #stream-activity td { font-family: var(--mono); font-size: 12px; }
+  .stream-left { margin-top: 8px; font-size: 12px; color: var(--label); }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  @media (prefers-reduced-motion: reduce) { .pulse, .chip.wait { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .pill-dot, .chip.wait { animation: none; } }
 
   /* Drawer */
   .scrim {
@@ -304,42 +403,28 @@
   .note { color: var(--faint); font-size: 13px; }
 
   footer {
-    padding: 0 32px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
+    padding: 0 24px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
-  /* Executive Overview Panel: four headline tiles in the .kpi look, with a larger figure. The section carries the page
-     gutter, so its grid has none of its own and the heading's left edge lines up with the first tile's. align-items:
-     start lets each tile keep its own height; flow efficiency is the tall one, with its caption. The column rules are
-     written under #overview in the @media blocks too, because the id outranks the plain .kpis rules there. */
-  #overview { padding: 20px 32px 0; }
-  #overview .col-head { padding-left: 0; }
-  #overview .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; padding: 0; }
-  #overview .kpi .k { font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text); }
-  #overview .kpi .v { font-family: inherit; font-size: 24px; line-height: 1.3; margin: 6px 0 4px; }
-  #overview .v .num { font-family: inherit; font-size: inherit; font-weight: 600; color: var(--active); }
-  #overview .v .of { color: var(--muted); }
-  #overview .kpi:not(.flow) .v, #overview .kpi:not(.flow) .sub { text-align: center; }
-  #overview .times { font-size: 13px; color: var(--active); }
-  #overview .times .sep { color: var(--muted); }
-  #overview .cap, #overview .ref { margin: 0; font-size: 12px; color: var(--muted); }
-  #overview .cap { margin-top: 6px; }
-
+  /* The band's right-hand blocks drop under the identity block before they can overflow it. */
+  @media (max-width: 900px) {
+    .band-right { margin-left: 0; width: 100%; }
+  }
+  @media (max-width: 1279px) {
+    .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  }
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
-    .col-head::after { display: none; }
-    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    #overview .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 640px) {
-    header { padding: 20px 16px 4px; }
+    header { padding: 14px 16px; }
+    /* The identity block holds the whole first row here, so the rule beside it would separate nothing. */
+    .band-rule { display: none; }
     .banner { margin: 12px 16px 0; }
-    .strip, .kpis { padding-left: 16px; padding-right: 16px; }
-    /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
-    #overview { padding-left: 16px; padding-right: 16px; }
-    #overview .kpis { grid-template-columns: minmax(0, 1fr); }
-    .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
-    .graph { padding: 0 16px 32px; }
+    .kpi-grid { padding-left: 16px; padding-right: 16px; }
+    .board { grid-template-columns: 1fr; padding: 24px 16px 32px; }
+    .git-wrap, .cost-wrap, .stream-wrap { padding-left: 16px; padding-right: 16px; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
@@ -356,21 +441,35 @@
 </head>
 <body>
 <header>
-  <h1>Software factory</h1>
-  <div class="status" id="status">connecting…</div>
+  <div>
+    <h1>Software Factory</h1>
+    <div class="identity" id="identity">-</div>
+  </div>
+  <span class="band-rule" aria-hidden="true"></span>
+  <a class="pill wait" id="stream-pill" href="#stream"><span class="pill-dot"></span><span id="pill-text">Connecting…</span></a>
+  <div class="band-right">
+    <div class="stat-box">
+      <div class="stat" id="spend-group">
+        <div class="stat-k" id="spend-k">SPEND</div>
+        <div class="stat-v" id="spend-v">-</div>
+      </div>
+      <span class="stat-rule" aria-hidden="true"></span>
+      <div class="stat" id="active-jobs-group">
+        <div class="stat-k">ACTIVE JOBS</div>
+        <div class="stat-v" id="active-v">-</div>
+      </div>
+    </div>
+    <nav class="toggle" id="view-toggle" aria-label="Views">
+      <a href="#board">Board</a><a href="#git">Git Graph</a><a href="#cost">Cost &amp; LOE</a>
+    </nav>
+  </div>
 </header>
 <div id="banner"></div>
-<div class="strip" id="strip"></div>
-<section id="overview" aria-labelledby="overview-title">
-  <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
-  <div class="kpis" id="overview-tiles"></div>
-</section>
-<div class="kpis" id="kpis"></div>
-<main class="board" id="board"></main>
-<section class="graph">
-  <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
-  <div id="graph"></div>
-</section>
+<div class="kpi-grid" id="kpi-cards"></div>
+<main class="view board" id="view-board"></main>
+<section class="view" id="view-git" aria-label="Git topology"></section>
+<section class="view" id="view-cost" aria-label="Cost and LOE"></section>
+<section class="view" id="view-stream" aria-label="Live stream"></section>
 <footer>
   <span>/factory &lt;feature&gt;</span>
   <span>/factory next</span>
@@ -403,18 +502,21 @@ const POLL_MS = 2000
 // last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
 // signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
 const STAGES = [
-  { key: 'spec', label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
-  { key: 'build', label: 'Build', who: 'builder · opus', stages: ['build'] },
-  { key: 'review', label: 'Review & audit', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
-  { key: 'needs-human', label: 'Client approval', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
-  { key: 'merged', label: 'Merged to main', who: 'main', cls: 'merged-col', stages: ['merged'] },
-  { key: 'rework', label: 'Rework', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
+  { key: 'spec', label: 'SPEC', who: 'spec-writer · opus', stages: ['spec'] },
+  { key: 'build', label: 'BUILD', who: 'builder · opus', stages: ['build'] },
+  { key: 'review', label: 'REVIEW & AUDIT', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
+  { key: 'needs-human', label: 'CLIENT APPROVAL', who: 'owner signs off · approve · rework', stages: ['needs-human'] },
+  { key: 'merged', label: 'MERGED', who: 'main', stages: ['merged'] },
+  { key: 'rework', label: 'REWORK', who: 'owner sent back · builder', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
 const POINTS = [1, 2, 3, 5, 8, 13]
 const USAGE_KEYS = ['agent', 'round', 'model', 'tokens', 'seconds']
 const DAY_MS = 24 * 60 * 60 * 1000
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+// The Live Stream view lists the newest stage changes across all jobs; older ones stay in each job's files.
+const ACTIVITY_ROWS = 30
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
@@ -423,7 +525,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 let jobs = []
 let prices = null // prices.json, or null when it could not be read
 let pricesError = null
-let lastRender = ''
+const rendered = {} // view id -> the HTML last written into it
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 const reworkCache = new Map() // merged job id -> its number of rework-<k>.md files; a merged job's folder is final
 let engagement = {} // engagement.json, or {} when the owner has not written one
@@ -431,6 +533,10 @@ let engagementProblems = []
 let openJobId = null
 let openPath = null
 let openText = null
+// What the last poll did: the pill, the Live Stream view and Last update all read these three.
+let streamState = 'connecting' // 'active' after a poll succeeded, 'error' after one threw
+let streamError = null
+let lastOk = null // ms of the last successful poll, or null before the first one
 
 async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
@@ -442,6 +548,14 @@ async function fetchText(url) {
 async function listLinks(dir) {
   const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
   return [...doc.querySelectorAll('a')].map((a) => decodeURIComponent(a.getAttribute('href')))
+}
+
+// A view or the card grid is replaced only when its own HTML changed, so a poll never resets scroll position,
+// the open drawer or a hovered card.
+function put(id, html) {
+  if (rendered[id] === html) return
+  rendered[id] = html
+  $(id).innerHTML = html
 }
 
 // ---- Board ---------------------------------------------------------------
@@ -518,10 +632,11 @@ function entryUsd(u) {
 }
 
 // A sum is null as soon as one of its parts is unknown, so a total is never shown short.
+const addUp = (a, b) => (a === null || b === null ? null : a + b)
+
 function sums(entries) {
-  const add = (a, b) => (a === null || b === null ? null : a + b)
   return entries.reduce((s, u) => ({
-    tokens: add(s.tokens, u.tokens), seconds: add(s.seconds, u.seconds), usd: add(s.usd, entryUsd(u)),
+    tokens: addUp(s.tokens, u.tokens), seconds: addUp(s.seconds, u.seconds), usd: addUp(s.usd, entryUsd(u)),
   }), { tokens: 0, seconds: 0, usd: 0 })
 }
 
@@ -534,6 +649,16 @@ function costOf(job) {
     .map((n) => [n, sums(good.filter((u) => u.round === n))])
   const total = bad ? { tokens: null, seconds: null, usd: null } : sums(good)
   return { recorded: Array.isArray(log) ? listed.length : 1, bad, rounds, total }
+}
+
+// Every job's tokens, seconds and list price together, for the Cost & LOE view's tiles and its Total row. It follows
+// sums(): the total is null as soon as one job's part is unknown, and recorded is false when no job has any usage.
+function allSums() {
+  const costs = jobs.map(costOf)
+  const total = costs.reduce((s, c) => ({
+    tokens: addUp(s.tokens, c.total.tokens), seconds: addUp(s.seconds, c.total.seconds), usd: addUp(s.usd, c.total.usd),
+  }), { tokens: 0, seconds: 0, usd: 0 })
+  return { ...total, recorded: costs.some((c) => c.recorded) }
 }
 
 function jobProblems(job, cost) {
@@ -583,7 +708,7 @@ function baseOf(job) {
   return isGitId(job.base) ? job.base : null
 }
 
-const usd = (v) => `$${v.toFixed(2)}`
+const usd = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const tokensText = (v) => v.toLocaleString('en-US')
 
 function duration(s) {
@@ -592,6 +717,8 @@ function duration(s) {
   if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
   return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`
 }
+
+const timeText = (s) => (s === null ? '-' : duration(s))
 
 // "-" when nothing is recorded; "unknown" when a full price cannot be worked out from what is.
 function priceText(cost, v) {
@@ -605,17 +732,37 @@ function loeText(s) {
   return ok(s.tokens) && ok(s.seconds) ? (s.seconds / 60 / s.tokens * 100000).toFixed(1) : '-'
 }
 
-function figures(job, cost, rework) {
+// One job's cost and LOE cells, worked out once so its card's figures line and its row in the Cost & LOE table
+// always read the same.
+function cells(job, cost) {
   const t = cost.total
+  const m = moneyOf(job, cost)
+  const rate = traditionalRate()
+  const traditional = m.gap || rate === null ? null : rate * m.points
+  return {
+    points: POINTS.includes(job.points) ? String(job.points) : '-',
+    tokens: cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-',
+    time: cost.recorded && t.seconds !== null ? duration(t.seconds) : '-',
+    loe: cost.recorded ? loeText(t) : '-',
+    price: priceText(cost, t.usd),
+    paid: isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-',
+    perPoint: m.gap ? '-' : perPointText(m.price, m.points),
+    saving: traditional === null ? '-' : percent(traditional - m.price, traditional),
+  }
+}
+
+function figures(job, cost, rework) {
+  const c = cells(job, cost)
   const parts = [
     ...(rework ? [`rework ${rework}`] : []),
-    `points ${POINTS.includes(job.points) ? job.points : '-'}`,
-    `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
-    `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
-    `LOE ${cost.recorded ? loeText(t) : '-'}`,
-    `full price ${priceText(cost, t.usd)}`,
-    `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
-    ...moneyParts(job, cost),
+    `points ${c.points}`,
+    `tokens ${c.tokens}`,
+    `time ${c.time}`,
+    `LOE ${c.loe}`,
+    `full price ${c.price}`,
+    `paid ${c.paid}`,
+    `cost/point ${c.perPoint}`,
+    `saving ${c.saving}`,
   ]
   // Non-breaking spaces keep each label on one line with its value when the card wraps.
   return `<div class="figures">${parts.map((p) => esc(p).replace(/ /g, '&nbsp;')).join(' · ')}</div>`
@@ -668,17 +815,6 @@ function leftOutText(gaps) {
   return ` · ${gaps.length} left out (${reasons.join(', ')})`
 }
 
-// The card's cost per point and saving, for figures().
-function moneyParts(job, cost) {
-  const m = moneyOf(job, cost)
-  const rate = traditionalRate()
-  const traditional = m.gap || rate === null ? null : rate * m.points
-  return [
-    `cost/point ${m.gap ? '-' : perPointText(m.price, m.points)}`,
-    `saving ${traditional === null ? '-' : percent(traditional - m.price, traditional)}`,
-  ]
-}
-
 // The drawer's lines under the cost table: cost per point from its Total, then AI cost efficiency. A "-" says why.
 function moneyLines(job, cost) {
   const m = moneyOf(job, cost)
@@ -710,10 +846,11 @@ function efficiency() {
   }
 }
 
-// The COST / POINT tile and its learning curve. A merged job whose points, full price or merged_at is unknown is left
-// out and counted, never added with what is known: its points without its price would make the work look cheaper per
-// point than it was. The figure, the curve and the count all use the same jobs, so the curve has one bar per counted job.
-function costPerPointTile() {
+// Cost per story point, for the COST EFFICIENCY card and the Cost & LOE view, which share this one figure and its
+// learning curve. A merged job whose points, full price or merged_at is unknown is left out and counted, never added
+// with what is known: its points without its price would make the work look cheaper per point than it was. The
+// figure, the curve and the count all use the same jobs, so the curve has one bar per counted job.
+function costPerPoint() {
   const all = jobs.filter((j) => j.stage === 'merged').map((job) => {
     const m = moneyOf(job, costOf(job))
     const at = mergedAt(job)
@@ -722,22 +859,28 @@ function costPerPointTile() {
   const counted = all.filter((x) => !x.gap).sort((a, b) => a.at - b.at)
   const price = counted.reduce((s, x) => s + x.price, 0)
   const points = counted.reduce((s, x) => s + x.points, 0)
-  const sub = `list price per story point · ${jobsText(counted.length)} counted` +
-    leftOutText(all.map((x) => x.gap).filter(Boolean))
-  // Each bar is scaled to the largest cost per point, so a later job's shorter bar means it cost less per point.
+  const left = leftOutText(all.map((x) => x.gap).filter(Boolean))
+  return {
+    counted,
+    value: counted.length ? usd(price / points) : '-',
+    corner: counted.length ? `${usd(price / points)} / pt` : '-',
+    caption: `${jobsText(counted.length)} counted${left}`,
+    sub: `list price per story point · ${jobsText(counted.length)} counted${left}`,
+  }
+}
+
+// The learning curve: one bar per counted job, oldest merge first. Each bar is scaled to the largest cost per point,
+// so a later job's shorter bar means it cost less per point.
+function curve(counted) {
+  if (!counted.length) return ''
   const top = Math.max(0, ...counted.map((x) => x.price / x.points))
   // The id column cuts a long id with an ellipsis, so the title keeps the whole id readable on hover.
   const rows = counted.map((x) => `<li><span class="id" title="${esc(x.id)}">${esc(x.id)}</span>` +
     `<span class="usd">${esc(perPointText(x.price, x.points))}</span>` +
     `<span class="bar"><span style="width: ${top ? (x.price / x.points / top * 100).toFixed(1) : 0}%"></span></span></li>`)
   // role="list" because Safari drops the list role of an <ol> styled with list-style: none.
-  const curve = counted.length
-    ? '<div class="k curve-k" id="curve-title">Cost per point of each merged job, oldest merge first</div>' +
-      `<ol class="sub curve" role="list" aria-labelledby="curve-title">${rows.join('')}</ol>`
-    : ''
-  return `<div class="kpi wide"><div class="k">Cost / point</div>` +
-    `<div class="v">${esc(counted.length ? perPointText(price, points) : '-')}</div>` +
-    `<div class="sub">${esc(sub)}</div>${curve}</div>`
+  return '<div class="curve-title" id="curve-title">Cost per point of each merged job, oldest merge first</div>' +
+    `<ol class="curve" role="list" aria-labelledby="curve-title">${rows.join('')}</ol>`
 }
 
 // ---- Stage times ------------------------------------------------------------
@@ -745,7 +888,7 @@ function costPerPointTile() {
 const STAGE_NAMES = ['spec', 'build', 'review', 'approve', 'merged', 'needs-human']
 
 // The orchestrator appends { stage, at } to stage_log each time it sets stage. Returns { log, fault }: log is
-// [{ stage, t }] oldest first, or null; fault says why a stage_log that is there cannot be read.
+// [{ stage, at, t }] oldest first, or null; fault says why a stage_log that is there cannot be read.
 // A bad log counts as none, never partly: the entries that do read could skip a wait or a whole round, and the
 // figures would show times that never happened.
 // Jobs from before stage_log have none and show "-". Their times are never back-filled or guessed from file dates,
@@ -768,7 +911,8 @@ function stageLog(job) {
     if (log.length && t < log[log.length - 1].t) {
       return { log: null, fault: `entry ${i + 1} is earlier than entry ${i}` }
     }
-    log.push({ stage: e.stage, t })
+    // at is kept as written, for the Live Stream view's activity table.
+    log.push({ stage: e.stage, at: e.at, t })
   }
   // A log that does not start at spec was begun mid-job, by a job already running when stage_log was added. Its start
   // is unknown, so it counts as none; that is expected, not a fault.
@@ -820,20 +964,21 @@ function timing(pasts) {
   }
 }
 
-// ---- Executive Overview Panel -----------------------------------------------
+// ---- Executive figures --------------------------------------------------------
 
-// How flow efficiency is really worked out, in plain words, shown under the figure.
+// How flow efficiency is really worked out, in plain words. It is part of the Flow Efficiency card's explanation.
 const FLOW_CAPTION = 'Active is time in spec, build, review and approve; waiting is time in Client approval, where ' +
   'the owner decides. Both are clock time between stage changes. Idle time inside a stage, such as a job waiting for ' +
   'a session to pick it up, is not recorded, so it counts as active. A wait runs to the next stage change, which after ' +
   '/factory approve is the merge, so it includes the merge and its re-test. A build or merge stopped for the owner ' +
   'also waits in Client approval.'
-// A pointer to reading, shown under the caption. It is the page's only citation and stays on this one line.
+// A pointer to reading. It is the page's only citation and stays on this one line.
 const FLOW_REFERENCE = 'Further reading: Kersten, M. (2018), Project to Product. This page works the figure out only as described above.'
 
-// The panel's four tiles, worked out once from the job files and pasts (each job's earlier-round verdicts, from
-// pastRounds), with no DOM access, so every view of these figures reads the same numbers. Each tile has its title, its
-// figure and sub-lines as text, and the numbers behind them; times are seconds. A figure with nothing to work from is "-".
+// Value delivery, cycle time, flow efficiency and rework rate, worked out once from the job files and pasts (each
+// job's earlier-round verdicts, from pastRounds), with no DOM access, so every view of these figures reads the same
+// numbers. Each one has its title, its figure and sub-lines as text, and the numbers behind them; times are seconds.
+// A figure with nothing to work from is "-".
 function overviewFigures(pasts) {
   const t = timing(pasts)
   const v = velocity()
@@ -848,7 +993,7 @@ function overviewFigures(pasts) {
   const sizedPoints = points(sized)
   const left = jobs.length - sized.length
   const pct = percent(mergedPoints, sizedPoints)
-  // num, rest and of are the figure's three parts, for the panel to colour; joined, they are the figure.
+  // num, rest and of are the figure's three parts, for a view to colour; joined, they are the figure.
   const parts = sizedPoints
     ? { num: String(mergedPoints), rest: ` / ${sizedPoints} pts `, of: `(${pct})` }
     : { num: '-', rest: '', of: '' }
@@ -866,8 +1011,8 @@ function overviewFigures(pasts) {
   const n = t.timed
   const cycleSeconds = n ? (t.active + t.waiting) / n : null
   const cycle = {
-    title: 'Cycle Time', figure: cycleSeconds === null ? '-' : duration(cycleSeconds),
-    seconds: cycleSeconds, timed: n, merged: t.merged,
+    title: 'Cycle Time', figure: timeText(cycleSeconds),
+    seconds: cycleSeconds, timed: n, merged: t.merged, timedText,
     sub: [`mean time to delivery (MTTD), spec to merge · ${timedText}${n < t.merged ? ' · the rest have no stage times' : ''}`],
   }
 
@@ -875,7 +1020,6 @@ function overviewFigures(pasts) {
   // short one. The times are means per merged job, so active plus waiting is the cycle time.
   const active = n ? t.active / n : null
   const waiting = n ? t.waiting / n : null
-  const timeText = (s) => (s === null ? '-' : duration(s))
   const flow = {
     title: 'Flow Efficiency', figure: percent(t.active, t.active + t.waiting),
     active, waiting, timed: n, merged: t.merged, waited: t.waited,
@@ -896,50 +1040,312 @@ function overviewFigures(pasts) {
   return [value, cycle, flow, rework]
 }
 
-// The panel's tiles from overviewFigures(). Only the figure's parts are wrapped, for colour, so each .v reads exactly as
-// its figure. The flow class keeps that tile left-aligned; the others centre their figure and sub-lines.
-function overviewPanel(pasts) {
-  const [value, cycle, flow, rework] = overviewFigures(pasts)
-  const num = (s) => `<span class="num">${esc(s)}</span>`
-  const subs = (tile) => tile.sub.map((s) => `<div class="sub">${esc(s)}</div>`).join('')
-  const kpi = (tile, v, rest, cls = 'kpi') =>
-    `<div class="${cls}"><div class="k">${esc(tile.title)}</div><div class="v">${v}</div>${rest}</div>`
-  return kpi(value, num(value.num) + esc(value.rest) + (value.of ? `<span class="of">${esc(value.of)}</span>` : ''), subs(value)) +
-    kpi(cycle, num(cycle.figure), subs(cycle)) +
-    kpi(flow, num(flow.figure), `<div class="times">${esc(flow.times[0])}<span class="sep"> | </span>${esc(flow.times[1])}</div>` +
-      `${subs(flow)}<p class="cap">${esc(flow.caption)}</p><p class="ref">${esc(flow.reference)}</p>`, 'kpi flow') +
-    kpi(rework, num(rework.figure), subs(rework))
-}
-
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
-// The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
-function kpis() {
+// Merged jobs that merged on their first review round, for the PASS RATE card.
+function passRate() {
   const merged = jobs.filter((j) => j.stage === 'merged')
-  const e = efficiency()
-  return [
-    ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
-    ['AI cost efficiency', e.value, e.sub],
-  ].map(([k, value, sub]) =>
-    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('') +
-    costPerPointTile()
+  const first = merged.filter((j) => j.round === 1).length
+  return { value: percent(first, merged.length), first, merged: merged.length }
 }
 
-// The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
-// Spend is every job's full price at list price: the usage log has no dates, so it cannot be cut to this month.
-function strip() {
-  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
-  const costs = jobs.map(costOf)
-  // Null as soon as one job's total is unknown, as sums() does, so spend is never shown short.
-  const spent = costs.some((c) => c.recorded)
-    ? costs.reduce((s, c) => (s === null || c.total.usd === null ? null : s + c.total.usd), 0)
-    : null
-  const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
-  const item = (k, v) => `<span><span class="k">${k}</span> ${esc(v)}</span>`
-  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint')) +
-    `<span><span class="k">SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}` +
-    ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
+// ---- Header band ------------------------------------------------------------
+
+// The folder that holds the job worktrees, which is the project's name: every worktree is
+// <parent>/<name>-factory/<job-id>, so the name is the second-to-last part of the path. Taken from the last job in id
+// order that has one, because the newest job's worktree is the one most recently written. "-" when no job has one.
+function projectName() {
+  const paths = jobs.map((j) => j.worktree).filter((w) => typeof w === 'string')
+  if (!paths.length) return '-'
+  const parts = paths[paths.length - 1].split(/[/\\]/).filter(Boolean)
+  return parts.length >= 2 ? parts[parts.length - 2] : '-'
 }
+
+// Main's short commit: the merge commit of the merged job with the latest merged_at. The page cannot run git and the
+// branch is gone after a merge, so this is the only commit on main it can know. "-" when nothing has merged.
+function mainCommit() {
+  const merged = jobs.filter((j) => j.stage === 'merged' && mergedAt(j) !== null && commitOf(j) !== null)
+  if (!merged.length) return '-'
+  return merged.reduce((a, b) => (mergedAt(b) > mergedAt(a) ? b : a)).commit
+}
+
+const monthName = () => `${MONTHS[new Date().getUTCMonth()]} ${new Date().getUTCFullYear()}`
+
+// This month's spend: every job not yet merged, whose work is this month's so far, plus every job merged in the
+// current UTC month. The usage log has no dates, so a job is dated by its merge; a merged job with no readable
+// merged_at cannot be dated at all, so it is left out and counted. Spend is null as soon as one counted job's price
+// is unknown, as the whole-board total is, so it is never shown short.
+function monthSpend() {
+  const now = new Date()
+  const counted = []
+  let left = 0
+  for (const job of jobs) {
+    if (job.stage !== 'merged') {
+      counted.push(job)
+      continue
+    }
+    const at = mergedAt(job)
+    if (at === null) {
+      left++
+    } else if (new Date(at).getUTCFullYear() === now.getUTCFullYear() && new Date(at).getUTCMonth() === now.getUTCMonth()) {
+      counted.push(job)
+    }
+  }
+  const costs = counted.map(costOf)
+  const spent = costs.some((c) => c.recorded)
+    ? costs.reduce((s, c) => addUp(s, c.total.usd), 0)
+    : null
+  return { spent, left }
+}
+
+const activeJobs = () => jobs.filter((j) => LIVE.has(j.stage)).length
+
+const budgetText = () => (isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-')
+
+// What the pill and the Live Stream view's status line say about the last poll.
+const STREAM = {
+  connecting: { cls: 'wait', pill: 'Connecting…', status: 'Connecting…' },
+  active: { cls: 'live', pill: 'Live Stream Active', status: 'Active' },
+  error: { cls: 'err', pill: 'Stream Error' },
+}
+
+const streamStatus = () => (streamState === 'error' ? `Error: ${streamError}` : STREAM[streamState].status)
+
+// The band is written into its own elements rather than rebuilt, so the pill keeps focus across a poll.
+function renderBand() {
+  $('identity').textContent = `${projectName()} · branch: main (${mainCommit()})`
+  $('stream-pill').className = `pill ${STREAM[streamState].cls}`
+  $('pill-text').textContent = STREAM[streamState].pill
+  const month = monthName()
+  const { spent, left } = monthSpend()
+  $('spend-k').textContent = `SPEND (${month})`
+  $('spend-v').textContent = `${spent === null ? '-' : usd(spent)} / ${budgetText()}`
+  $('spend-group').title = `Every job not yet merged, plus every job merged in ${month}, at list price.` +
+    (left ? ` ${jobsText(left)} with no merged_at left out.` : '')
+  $('active-v').textContent = `${activeJobs()} running`
+}
+
+// ---- The five executive cards -------------------------------------------------
+
+// The lightning bolt beside the velocity figure, drawn here so the page loads no icon font and no image.
+const BOLT = '<svg class="kpi-bolt" width="9" height="12" viewBox="0 0 9 12" aria-hidden="true">' +
+  '<path d="M5.4 0 0 7.2h2.8L2.2 12 9 4.8H5z"/></svg>'
+
+// Each card keeps the whole explanation its tile had before, as a title and, for a screen reader, as the text its
+// aria-describedby points at; the two are the same lines, so nothing on screen is the short version of something lost.
+function kpiCards(figs) {
+  const [value, cycle, flow] = figs
+  const v = velocity()
+  const pass = passRate()
+  const cpp = costPerPoint()
+  const share = value.sizedPoints ? value.mergedPoints / value.sizedPoints * 100 : 0
+  const cards = [
+    {
+      kpi: 'value-delivery', label: 'VALUE DELIVERY',
+      corner: `<span class="c-indigo">${esc(value.pct)}</span>`,
+      value: value.sizedPoints ? `${esc(value.num)}<span class="kpi-of">${esc(value.rest.trimEnd())}</span>` : '-',
+      bar: `<div class="kpi-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${share.toFixed(1)}"` +
+        ` aria-label="Value delivery: merged points of sized points"><span style="width: ${share.toFixed(1)}%"></span></div>`,
+      why: value.sub,
+    },
+    {
+      kpi: 'cycle-time', label: 'CYCLE TIME',
+      corner: `${BOLT}<span class="c-velocity">${esc(v.value)}</span>`,
+      value: esc(cycle.figure),
+      caption: `Mean spec to merge · ${cycle.timedText}`,
+      why: cycle.sub,
+    },
+    {
+      kpi: 'flow-efficiency', label: 'FLOW EFFICIENCY',
+      // The corner repeats the figure as a whole percent, from the same two times behind it.
+      corner: `<span class="c-indigo">${esc(flow.figure === '-' ? '-' : `${Math.round(flow.active / (flow.active + flow.waiting) * 100)}%`)}</span>`,
+      value: esc(flow.figure), green: true,
+      caption: `Active: ${timeText(flow.active)} · Owner wait: ${timeText(flow.waiting)}`,
+      why: [flow.times.join(' | '), ...flow.sub, flow.caption, flow.reference],
+    },
+    {
+      kpi: 'pass-rate', label: 'PASS RATE',
+      corner: '<span class="c-amber">1st Review</span>',
+      value: esc(pass.value),
+      caption: `${pass.first} of ${pass.merged} merged on 1st round`,
+      why: ['merged on the first review round'],
+    },
+    {
+      kpi: 'cost-efficiency', label: 'COST EFFICIENCY',
+      corner: `<span class="c-emerald">${esc(cpp.corner)}</span>`,
+      value: cpp.counted.length ? `${esc(cpp.value)}<span class="kpi-of"> / point</span>` : '-',
+      caption: cpp.caption,
+      why: [cpp.sub],
+    },
+  ]
+  return cards.map((c) => {
+    const why = esc(c.why.join('\n'))
+    return `<div class="kpi-card" data-kpi="${c.kpi}" title="${why}" aria-describedby="kpi-why-${c.kpi}">` +
+      `<div class="kpi-top"><span class="kpi-label">${c.label}</span><span class="kpi-corner">${c.corner}</span></div>` +
+      `<div class="kpi-value${c.green ? ' green' : ''}">${c.value}</div>` +
+      (c.bar || `<div class="kpi-caption">${esc(c.caption)}</div>`) +
+      `<span class="sr-only" id="kpi-why-${c.kpi}">${why}</span></div>`
+  }).join('')
+}
+
+// ---- Git topology view ---------------------------------------------------------
+
+// The drawing is a fixed size, so its box scrolls on a narrow page instead of the page itself.
+const GIT = { w: 560, top: 40, lane: 88 }
+
+// One lane per job: it leaves the trunk at its branch point, and a merged job joins the trunk again at a merge node.
+// An unmerged job ends at an open tip and says how far behind main it is. The feature, branch and worktree are not
+// here: the Board and the drawer show them, and the lanes stay readable without them.
+function gitLane(job, y) {
+  const live = LIVE.has(job.stage)
+  const merged = job.stage === 'merged'
+  const human = job.stage === 'needs-human'
+  const behind = behindOf(job)
+  const commit = esc(commitOf(job) || '-')
+  const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
+  const open = `<path class="br" d="M12 ${y + 4} C12 ${y + 22} 34 ${y + 18} 34 ${y + 36}"/>` +
+    `<circle class="g-tip-node" cx="34" cy="${y + 40}" r="4.5"/>`
+  const rejoin = `<path class="br" d="M12 ${y + 4} C12 ${y + 22} 34 ${y + 18} 34 ${y + 36} L34 ${y + 44} ` +
+    `C34 ${y + 64} 12 ${y + 60} 12 ${y + 80}"/>` +
+    `<circle class="g-node" cx="34" cy="${y + 40}" r="4"/><circle class="g-node" cx="12" cy="${y + 80}" r="5"/>`
+  const drift = behind === null
+    ? `<text class="g-line" x="56" y="${y + 76}">drift unknown</text>`
+    : behind === 0
+      ? `<text class="g-line" x="56" y="${y + 76}">up to date with main</text>`
+      : `<path class="g-warn" d="M6 0 12 11 H0 Z" transform="translate(56 ${y + 66})"/>` +
+        `<text class="g-line drift" x="74" y="${y + 76}">${esc(behind)} ${behind === 1 ? 'commit' : 'commits'} behind main · out of date</text>`
+  const body = merged
+    ? `${rejoin}<text class="g-label" x="56" y="${y + 24}">${esc(job.id)} · ${esc(state)}</text>` +
+      `<text class="g-line tip" x="56" y="${y + 46}">merged as ${commit}</text>`
+    : `${open}<text class="g-label" x="56" y="${y + 20}">${esc(job.id)} · ${esc(state)}</text>` +
+      `<text class="g-line" x="56" y="${y + 40}">branch point ${esc(baseOf(job) || '-')}</text>` +
+      `<text class="g-line tip" x="56" y="${y + 58}">tip ${commit}</text>${drift}`
+  return `<g class="g-job ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}" ` +
+    `data-job="${esc(job.id)}" tabindex="0" role="button">` +
+    `<rect class="g-hit" x="2" y="${y}" width="${GIT.w - 4}" height="${GIT.lane - 6}" rx="8"/>` +
+    `<circle class="main-node" cx="12" cy="${y + 4}" r="3"/>${body}</g>`
+}
+
+function gitView() {
+  if (!jobs.length) return '<div class="git-wrap"><div class="empty">—</div></div>'
+  const height = GIT.top + jobs.length * GIT.lane + 16
+  const warns = jobs.filter((j) => j.stage !== 'merged' && behindOf(j) > 0).length
+  const count = warns
+    ? `${warns} open ${warns === 1 ? 'branch' : 'branches'} behind main`
+    : 'No open branch is behind main'
+  return '<div class="git-wrap">' +
+    `<div class="git-count${warns ? ' warn' : ''}">${esc(count)}</div><div class="git-box">` +
+    `<svg id="git-graph" width="${GIT.w}" height="${height}" viewBox="0 0 ${GIT.w} ${height}" role="group" ` +
+    'aria-label="Git topology: one branch lane per job, off main">' +
+    `<line class="trunk" x1="12" y1="10" x2="12" y2="${height - 10}"/>` +
+    '<circle class="main-node" cx="12" cy="16" r="3"/><text class="g-label" x="30" y="20">main</text>' +
+    `<text class="g-line" x="76" y="20">${esc(mainCommit())}</text>` +
+    `${jobs.map((job, i) => gitLane(job, GIT.top + i * GIT.lane)).join('')}</svg></div></div>`
+}
+
+// ---- Cost and LOE view ----------------------------------------------------------
+
+const LOE_DEFINITION = 'LOE (level of effort) is minutes of agent time per 1,000 tokens × 100. ' +
+  'Full price is the list price from prices.json, not what was paid.'
+
+const COST_HEADS = ['Job', 'Stage', 'Points', 'Tokens', 'Time', 'LOE', 'Full price', 'Paid', 'Cost / point', 'Saving']
+
+// One row per job on the board, in id order, then a Total row. Every cell comes from cells(), so a row reads exactly
+// as the figures line on that job's card.
+function costByJob() {
+  const rows = jobs.map((job) => {
+    const c = cells(job, costOf(job))
+    return `<tr><td><button class="job-btn" type="button" data-job="${esc(job.id)}">${esc(job.id)}</button></td>` +
+      [job.stage, c.points, c.tokens, c.time, c.loe, c.price, c.paid, c.perPoint, c.saving]
+        .map((v) => `<td>${esc(v)}</td>`).join('') + '</tr>'
+  }).join('')
+  const t = allSums()
+  const sum = (key, fmt) => (t.recorded && t[key] !== null ? fmt(t[key]) : '-')
+  const total = '<tr class="total"><td>Total</td><td>-</td><td>-</td>' +
+    [sum('tokens', tokensText), sum('seconds', duration), t.recorded ? loeText(t) : '-', sum('usd', usd), '-', '-', '-']
+      .map((v) => `<td>${esc(v)}</td>`).join('') + '</tr>'
+  return '<div class="cost-table-box"><table id="cost-table"><thead><tr>' +
+    COST_HEADS.map((h) => `<th>${esc(h)}</th>`).join('') + `</tr></thead><tbody>${rows}${total}</tbody></table></div>`
+}
+
+function costView(figs) {
+  const rework = figs[3]
+  const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
+  const t = allSums()
+  const sum = (key, fmt) => (t.recorded && t[key] !== null ? fmt(t[key]) : '-')
+  const month = monthName()
+  const { spent } = monthSpend()
+  const cpp = costPerPoint()
+  const e = efficiency()
+  const tiles = [
+    [`SPEND (${month})`, `${spent === null ? '-' : usd(spent)} / ${budgetText()}`,
+      `every job not yet merged, plus every job merged in ${month}`],
+    ['ALL JOBS, LIST PRICE', sum('usd', usd), 'every job on the board, at list price'],
+    ['TOKENS', sum('tokens', tokensText), 'every job on the board'],
+    ['AGENT TIME', sum('seconds', duration), 'every job on the board'],
+    ['LOE', t.recorded ? loeText(t) : '-', 'minutes of agent time per 1,000 tokens × 100'],
+    ['COST PER POINT', cpp.value, cpp.caption],
+    ['AI COST EFFICIENCY', e.value, e.sub],
+    ['REWORK RATE', rework.figure, rework.sub[0]],
+  ].map(([k, v, sub]) => `<div class="kpi-card"><div class="kpi-top"><span class="kpi-label">${esc(k)}</span></div>` +
+    `<div class="kpi-value">${esc(v)}</div><div class="kpi-caption">${esc(sub)}</div></div>`).join('')
+  return '<div class="cost-wrap">' +
+    `<div class="engagement">${esc(`Client ${text('client')} · Stage ${text('stage')} · Sprint ${text('sprint')}`)}</div>` +
+    `<div class="tile-grid">${tiles}</div>` +
+    (jobs.length ? costByJob() : '<div class="empty">—</div>') +
+    curve(cpp.counted) +
+    `<p class="define">${esc(LOE_DEFINITION)}</p></div>`
+}
+
+// ---- Live stream view ------------------------------------------------------------
+
+// The newest stage changes across all jobs, newest first, from each job's readable stage_log. A job whose log cannot
+// be read is counted, not guessed at: no time is invented for it.
+function activity() {
+  const rows = []
+  let missing = 0
+  for (const job of jobs) {
+    const { log } = stageLog(job)
+    if (!log) {
+      missing++
+      continue
+    }
+    for (const e of log) rows.push({ id: job.id, at: e.at, t: e.t, stage: e.stage })
+  }
+  // Equal times keep the higher job id first, so the order never depends on the folder listing.
+  rows.sort((a, b) => b.t - a.t || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+  return { rows: rows.slice(0, ACTIVITY_ROWS), missing }
+}
+
+const utcText = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+function streamView(problems) {
+  const { rows, missing } = activity()
+  const facts = [
+    ['Source', `jobs/ (this folder, read every ${POLL_MS / 1000} seconds)`],
+    ['Last update', lastOk === null ? '-' : utcText(lastOk)],
+    ['Jobs read', String(jobs.length)],
+    ['Running now', String(activeJobs())],
+    ['Price list', pricesError === null ? 'read' : `could not be read: ${pricesError}`],
+  ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('') +
+    `<div><dt>Problems</dt><dd>${problems.length}` +
+    (problems.length ? `<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : '') + '</dd></div>'
+  const table = rows.length
+    ? '<table id="stream-activity"><thead><tr><th>Time (UTC)</th><th>Job</th><th>Stage entered</th></tr></thead><tbody>' +
+      rows.map((r) => `<tr><td>${esc(r.at)}</td>` +
+        `<td><button class="job-btn" type="button" data-job="${esc(r.id)}">${esc(r.id)}</button></td>` +
+        `<td>${esc(r.stage)}</td></tr>`).join('') + '</tbody></table>'
+    : '<div class="empty">—</div>'
+  const left = missing
+    ? `<div class="stream-left">${esc(`${missing} ${missing === 1 ? 'job has' : 'jobs have'} no readable stage log and ` +
+      `${missing === 1 ? 'is' : 'are'} not listed`)}</div>`
+    : ''
+  return '<div class="stream-wrap"><h2>Live Stream</h2>' +
+    `<div class="s-status ${STREAM[streamState].cls}">${esc(streamStatus())}</div>` +
+    `<dl class="facts">${facts}</dl><h3>Recent activity</h3>${table}${left}</div>`
+}
+
+// ---- Board cards -----------------------------------------------------------------
 
 // Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
 // means the owner sent the job back. Limit: once such a file exists, the page cannot tell a later reviewer-requested
@@ -998,44 +1404,22 @@ async function copyApprove(el) {
   }
 }
 
-// ---- Branch graph -----------------------------------------------------------
+// ---- Views -----------------------------------------------------------------------
 
-// One row per job, oldest first: its lane leaves main, and a merged job joins main again at a merge node.
-// Unmerged jobs end at an open tip. main is the line every row's lane draws down its left edge.
-function graphRow(job) {
-  const live = LIVE.has(job.stage)
-  const merged = job.stage === 'merged'
-  const human = job.stage === 'needs-human'
-  const lane = merged
-    ? '<path class="br" d="M12 4 C12 16 34 12 34 24 L34 32 C34 44 12 40 12 52"/>' +
-      '<circle class="node" cx="34" cy="28" r="4"/><circle class="node" cx="12" cy="52" r="5"/>'
-    : '<path class="br" d="M12 4 C12 16 34 12 34 24"/><circle class="tip" cx="34" cy="28" r="4.5"/>'
-  const commit = commitOf(job)
-  const behind = behindOf(job)
-  // Drift is counted when job.json was last written, so a merged job, whose branch is gone, has none to show.
-  const drift = merged ? '' : `
-        <div class="g-meta"><span class="k">behind main</span> ${behind === null ? '-' : behind}` +
-    ` <span class="k">synced to</span> ${esc(baseOf(job) || '-')}${behind > 0 ? ' <span class="flag">out of date</span>' : ''}</div>`
-  const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
-  return `
-    <div class="g-row ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}"
-         role="button" tabindex="0" data-job="${esc(job.id)}">
-      <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
-        <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
-      <div class="g-text">
-        <div class="num">${esc(job.id)} · ${esc(state)}</div>
-        <p class="feature">${esc(job.feature)}</p>
-        <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
-        <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
-        <div class="g-meta"><span class="k">worktree</span> ${esc(job.worktree)}${merged ? ' <span class="k">removed</span>' : ''}</div>
-      </div>
-    </div>`
-}
+// The four views live in one page and the URL hash chooses between them, so each has its own address and the browser's
+// Back button steps through them. An empty or unknown hash is the board.
+const VIEWS = ['board', 'git', 'cost', 'stream']
 
-function graph() {
-  if (!jobs.length) return '<div class="empty">—</div>'
-  return '<div class="g-main"><div class="g-lane"></div><span class="num">main</span></div>' +
-    jobs.map(graphRow).join('')
+function showView() {
+  const name = decodeURIComponent(location.hash.replace(/^#/, ''))
+  const now = VIEWS.includes(name) ? name : 'board'
+  for (const v of VIEWS) $(`view-${v}`).hidden = v !== now
+  for (const a of $('view-toggle').querySelectorAll('a')) {
+    const on = a.getAttribute('href') === `#${now}`
+    a.classList.toggle('on', on)
+    if (on) a.setAttribute('aria-current', 'page')
+    else a.removeAttribute('aria-current')
+  }
 }
 
 async function render() {
@@ -1056,44 +1440,40 @@ async function render() {
     else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0))
   })
   // Newest first within a column.
-  const html = STAGES.map((s) => `
-    <section class="col ${s.cls || ''}">
+  const board = STAGES.map((s) => `
+    <section class="col" data-col="${s.key}">
       <div class="col-head">
-        <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
-        <span class="count">${byStage[s.key].length || ''}</span>
+        <div class="col-top"><h2 class="col-title">${esc(s.label)}</h2><span class="col-badge">${byStage[s.key].length}</span></div>
+        <span class="who">${esc(s.who)}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
-  const stripHtml = strip()
-  const overviewHtml = overviewPanel(pasts)
-  const kpiHtml = kpis()
-  const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
-  const graphHtml = graph()
-  if (html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + overviewHtml + kpiHtml + graphHtml + banner
-    $('board').innerHTML = html
-    $('strip').innerHTML = stripHtml
-    $('overview-tiles').innerHTML = overviewHtml
-    $('kpis').innerHTML = kpiHtml
-    $('graph').innerHTML = graphHtml
-    $('banner').innerHTML = banner
-  }
+  // Worked out once and shared, so the cards and the Cost & LOE view can never disagree.
+  const figs = overviewFigures(pasts)
+  renderBand()
+  put('banner', problems.map((p) => `<div class="banner">${esc(p)}</div>`).join(''))
+  put('kpi-cards', kpiCards(figs))
+  put('view-board', board)
+  put('view-git', gitView())
+  put('view-cost', costView(figs))
+  put('view-stream', streamView(problems))
 }
 
 async function poll() {
-  const status = $('status')
   try {
     jobs = await loadJobs()
     await loadPrices()
     await loadEngagement()
-    await render()
     if (openJobId) await refreshDrawer()
-    status.className = 'status'
-    status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
+    streamState = 'active'
+    streamError = null
+    lastOk = Date.now()
   } catch (err) {
-    status.className = 'status error'
-    status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
+    // The last good data stays on screen; the pill, the Live Stream view and Last update say the read failed.
+    streamState = 'error'
+    streamError = err.message
   }
+  await render()
 }
 
 // Each orchestrator session writes only its own jobs/<id>/job.json.
@@ -1285,8 +1665,8 @@ document.addEventListener('click', (e) => {
 })
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') return closeDrawer()
-  // Only when the card or graph row itself has focus; Enter on the Approve button inside a card is that button's own click.
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job]')) {
+  // Only when the card or graph lane itself has focus; Enter on the Approve button inside a card is that button's own click.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-job[data-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
     openDrawer(e.target.dataset.job)
   }
@@ -1503,6 +1883,8 @@ function markdown(src) {
   return html
 }
 
+window.addEventListener('hashchange', showView)
+showView()
 poll()
 setInterval(poll, POLL_MS)
 </script>
