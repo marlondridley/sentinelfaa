@@ -465,7 +465,7 @@
 </details>
 <div class="strip" id="strip"></div>
 <section id="pulse" aria-labelledby="pulse-title">
-  <div class="col-head"><h2 id="pulse-title">Executive Financial Pulse</h2><span class="who">this calendar month (UTC), from the job files</span></div>
+  <div class="col-head"><h2 id="pulse-title">Executive Financial Pulse</h2><span class="who">this calendar month, from the job files</span></div>
   <div class="kpis" id="pulse-tiles"></div>
 </section>
 <section id="overview" aria-labelledby="overview-title">
@@ -1064,16 +1064,19 @@ function strip() {
     ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
 }
 
-// The Executive Financial Pulse tile: this UTC calendar month's spend at list price against the owner's monthly budget.
+// The Executive Financial Pulse tile: this calendar month's spend at list price against the owner's monthly budget.
 // The usage log has no dates, so each job's whole full price is placed in one month by one date: a merged job in the
 // month of its merged_at, a job not yet merged in this month, as its work is being paid for now. A merged job with no
 // readable merged_at cannot be placed, and a counted job with an unknown price makes the spend unknown: either shows
-// "-" with the first such job named, never a short total. The month is UTC because merged_at is stored in UTC.
+// "-" with the first such job named, never a short total. The month is the viewer's local calendar month, from the
+// browser's clock and time zone; merged_at instants are compared with its local start and end in absolute time.
 function pulse() {
   const now = new Date(Date.now())
-  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
-  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)
-  const month = new Date(start).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime()
+  const month = new Date(start).toLocaleString('en-US', { month: 'short', year: 'numeric' })
+  // usd() has no thousands separators; the pulse shows them, as in the owner's image ($1,840.00).
+  const money = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   let spent = 0
   let counted = 0
   let gap = null
@@ -1090,14 +1093,14 @@ function pulse() {
     else spent += price
   }
   const budget = isSet(engagement.monthly_budget_usd) ? engagement.monthly_budget_usd : null
-  const value = gap ? '-' : `${usd(spent)} / ${budget === null ? '-' : usd(budget)} (${budget === null ? '-' : percent(spent, budget)})`
+  const value = gap ? '-' : `${money(spent)} / ${budget === null ? '-' : money(budget)} (${budget === null ? '-' : percent(spent, budget)})`
   const subs = [
-    `${month} (UTC) · this calendar month only; the strip above is all jobs, all time`,
+    'this calendar month only, in your time zone; the strip above is all jobs, all time',
     `list price, not paid · ${counted} ${counted === 1 ? 'job' : 'jobs'} this month`,
     ...(gap ? [gap] : []),
     ...(budget === null ? ['set monthly_budget_usd in factory/engagement.json'] : []),
   ]
-  return `<div class="kpi"><div class="k">Spend this month (UTC calendar month, list price)</div>` +
+  return `<div class="kpi"><div class="k">Spend (${esc(month)})</div>` +
     `<div class="v">${esc(value)}</div>${subs.map((s) => `<div class="sub">${esc(s)}</div>`).join('')}</div>`
 }
 
