@@ -433,6 +433,21 @@
     .file .rn { display: inline; white-space: pre; }
     .doc { padding: 18px 16px 48px; }
   }
+
+  /* View toggle: four plain links under the header, so Back and Forward move between the views. The Cost & LOE view
+     uses the same gutter as #pulse. */
+  #views { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 6px 32px 0; font-family: var(--mono); font-size: 12px; }
+  #views a { color: var(--muted); text-decoration: none; padding-bottom: 4px; border-bottom: 2px solid transparent; }
+  #views a:hover { color: var(--text); }
+  #views a[aria-current="page"] { color: var(--text); border-bottom-color: var(--active); }
+  #views a:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  #cost { padding: 20px 32px 40px; }
+  #cost .col-head { padding-left: 0; }
+  #cost .kpis { padding: 0 0 14px; }
+  /* Alone in their view, the graph and the stream lose the gaps the board gave them. */
+  body[data-view="git"] .graph { padding-top: 20px; }
+  body[data-view="stream"] .stream { margin-bottom: 40px; }
+  @media (max-width: 640px) { #views, #cost { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
 <body>
@@ -440,6 +455,9 @@
   <h1>Software factory</h1>
   <div class="status" id="status">connecting…</div>
 </header>
+<nav id="views" aria-label="Views">
+  <a href="#board">Board</a><a href="#git">Git Graph</a><a href="#cost">Cost &amp; LOE</a><a href="#stream">Live Stream</a>
+</nav>
 <div id="banner"></div>
 <details class="stream" id="stream">
   <summary>Live event stream <span class="m" id="stream-count"></span></summary>
@@ -459,6 +477,11 @@
 <section class="graph">
   <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
   <div id="graph"></div>
+</section>
+<section id="cost" aria-labelledby="cost-title">
+  <div class="col-head"><h2 id="cost-title">Cost &amp; LOE</h2><span class="who">every job, at list price, from the job files</span></div>
+  <div class="kpis" id="cost-kpis"></div>
+  <div class="md"><table id="cost-table"></table></div>
 </section>
 <footer>
   <span>/factory &lt;feature&gt;</span>
@@ -493,12 +516,12 @@ const POLL_MS = 2000
 // last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
 // signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
 const STAGES = [
-  { key: 'spec', label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
-  { key: 'build', label: 'Build', who: 'builder · opus', stages: ['build'] },
-  { key: 'review', label: 'Review & audit', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
-  { key: 'needs-human', label: 'Client approval', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
-  { key: 'merged', label: 'Merged to main', who: 'main', cls: 'merged-col', stages: ['merged'] },
-  { key: 'rework', label: 'Rework', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
+  { key: 'spec', label: 'SPEC', who: 'spec-writer · opus', stages: ['spec'] },
+  { key: 'build', label: 'BUILD', who: 'builder · opus', stages: ['build'] },
+  { key: 'review', label: 'REVIEW & AUDIT', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
+  { key: 'needs-human', label: 'CLIENT APPROVAL', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
+  { key: 'merged', label: 'MERGED', who: 'main', cls: 'merged-col', stages: ['merged'] },
+  { key: 'rework', label: 'REWORK', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
@@ -815,6 +838,20 @@ function costPerPointTile() {
   return `<div class="kpi wide"><div class="k">Cost / point</div>` +
     `<div class="v">${esc(counted.length ? perPointText(price, points) : '-')}</div>` +
     `<div class="sub">${esc(sub)}</div>${curve}</div>`
+}
+
+// The Cost & LOE view's table: one row per job in every stage, by job id, with the same price and per-point figures
+// as the cards. Named apart from costTable(), the drawer's per-round table.
+function costLoeTable() {
+  const cols = ['Job', 'Stage', 'Points', 'Full price', 'Cost per point']
+  const head = `<thead><tr>${cols.map((c) => `<th scope="col">${c}</th>`).join('')}</tr></thead>`
+  const rows = [...jobs].sort((a, b) => a.id.localeCompare(b.id)).map((job) => {
+    const cost = costOf(job)
+    const m = moneyOf(job, cost)
+    return `<tr><td>${esc(idTitle(job))}</td><td>${esc(job.stage)}</td><td>${m.points === null ? '-' : m.points}</td>` +
+      `<td>${esc(priceText(cost, cost.total.usd))}</td><td>${esc(m.gap ? '-' : perPointText(m.price, m.points))}</td></tr>`
+  })
+  return `${head}<tbody>${rows.join('') || '<tr><td colspan="5">No jobs in factory/jobs/ yet.</td></tr>'}</tbody>`
 }
 
 // ---- Stage times ------------------------------------------------------------
@@ -1295,7 +1332,7 @@ async function render() {
     <section class="col ${s.cls || ''}">
       <div class="col-head">
         <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
-        <span class="count">${byStage[s.key].length || ''}</span>
+        <span class="count">${byStage[s.key].length}</span>
       </div>
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
@@ -1305,14 +1342,19 @@ async function render() {
   const kpiHtml = kpis()
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
-  if (html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + banner
+  const costTileHtml = costPerPointTile()
+  const costTableHtml = costLoeTable()
+  const costHtml = costTileHtml + costTableHtml
+  if (html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner
     $('board').innerHTML = html
     $('strip').innerHTML = stripHtml
     $('pulse-tiles').innerHTML = pulseHtml
     $('overview-tiles').innerHTML = overviewHtml
     $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
+    $('cost-kpis').innerHTML = costTileHtml
+    $('cost-table').innerHTML = costTableHtml
     $('banner').innerHTML = banner
   }
   renderStream()
@@ -1889,6 +1931,43 @@ function markdown(src) {
   return html
 }
 
+// ---- Views ------------------------------------------------------------------
+
+// The four views the nav's links pick by location.hash, each with the elements it shows; every other element named
+// here is hidden. Only the hash picks the view, never a poll, so a redraw cannot change it. An element that is absent
+// is skipped, so a page without #pulse still switches.
+const VIEWS = {
+  board: ['#strip', '#pulse', '#overview', '#kpis', '#board'],
+  git: ['#strip', '.graph'],
+  cost: ['#strip', '#cost'],
+  stream: ['#stream'],
+}
+
+// An empty or unknown hash shows the board and leaves the address as it is. Entering the stream opens it; after that
+// its open state is the user's. The scroll goes back to the top, because #board and #stream are also element ids the
+// browser scrolls to.
+function showView() {
+  const name = location.hash.slice(1)
+  const view = Object.hasOwn(VIEWS, name) ? name : 'board'
+  document.body.dataset.view = view
+  for (const sel of new Set(Object.values(VIEWS).flat())) {
+    const el = document.querySelector(sel)
+    if (el) el.style.display = VIEWS[view].includes(sel) ? '' : 'none'
+  }
+  for (const a of document.querySelectorAll('#views a')) {
+    if (a.getAttribute('href') === `#${view}`) a.setAttribute('aria-current', 'page')
+    else a.removeAttribute('aria-current')
+  }
+  if (view === 'stream') $('stream').open = true
+  scrollTo(0, 0)
+  // A hash set in the address bar or by location.hash makes the browser scroll to its element during the layout of the
+  // next frame, once the element is shown. A frame callback runs before that layout, so the second one, a frame later,
+  // runs after the scroll.
+  requestAnimationFrame(() => requestAnimationFrame(() => scrollTo(0, 0)))
+}
+
+window.addEventListener('hashchange', showView)
+showView()
 poll()
 setInterval(poll, POLL_MS)
 </script>
