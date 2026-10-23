@@ -355,15 +355,15 @@
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
-  /* Executive Overview Panel: four headline tiles in the .kpi look, with a larger figure. The section carries the page
-     gutter, so its grid has none of its own and the heading's left edge lines up with the first tile's. align-items:
-     start lets each tile keep its own height; flow efficiency is the tall one, with its times line. Each tile's
-     explanation (its sub-lines, and flow's caption and reference) sits in the tooltip of the (i) after its title. The
-     column rules are written under #overview in the @media blocks too, because the id outranks the plain .kpis rules
-     there. */
+  /* Executive Overview Panel: five headline tiles in one row (the four overview tiles, then Pass rate) in the .kpi
+     look, with a larger figure. The section carries the page gutter, so its grid has none of its own and the heading's
+     left edge lines up with the first tile's. align-items: start lets each tile keep its own height; flow efficiency is
+     the tall one, with its times line. Each overview tile's explanation (its sub-lines, and flow's caption and
+     reference) sits in the tooltip of the (i) after its title. The column rules are written under #overview in the
+     @media blocks too, because the id outranks the plain .kpis rules there. */
   #overview { padding: 20px 32px 0; }
   #overview .col-head { padding-left: 0; }
-  #overview .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; padding: 0; }
+  #overview .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: start; padding: 0; }
   #overview .kpi .k {
     position: relative; font-size: 13px; text-transform: none; letter-spacing: normal; color: var(--text);
   }
@@ -611,7 +611,6 @@
   <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
   <div class="kpis" id="overview-tiles"></div>
 </section>
-<div class="kpis" id="kpis"></div>
 <main class="board" id="board"></main>
 <section class="graph">
   <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
@@ -1209,7 +1208,7 @@ function compactUsd(v) {
 // Whole dollars with thousands separators, for the header bar's spend: $782, $1,234. Rounded half up, as compactUsd.
 const wholeUsd = (v) => `$${Math.round(v).toLocaleString('en-US')}`
 
-// The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
+// The KPI tiles after the four overview tiles, in the Executive Overview Panel's row. Each figure comes from the job files; one with no source shows "-".
 function kpis() {
   const merged = jobs.filter((j) => j.stage === 'merged')
   return [
@@ -1547,23 +1546,22 @@ async function render() {
     </section>`).join('')
   const stripHtml = strip()
   const bar = execBar()
-  const overviewHtml = overviewPanel(pasts)
-  const kpiHtml = kpis()
+  // Pass rate shares the overview grid, so the five cards sit in one row.
+  const overviewHtml = overviewPanel(pasts) + kpis()
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
   const graphHtml = graph()
   const costTileHtml = costPerPointTile()
   const costTableHtml = costLoeTable()
   const costHtml = costTileHtml + costTableHtml
   const barHtml = bar.left + bar.centre + bar.title
-  if (html + stripHtml + barHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + barHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner
+  if (html + stripHtml + barHtml + overviewHtml + graphHtml + costHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + barHtml + overviewHtml + graphHtml + costHtml + banner
     $('board').innerHTML = html
     $('strip').innerHTML = stripHtml
     $('exec-left').innerHTML = bar.left
     $('exec-centre').innerHTML = bar.centre
     $('exec-centre').title = bar.title
     $('overview-tiles').innerHTML = overviewHtml
-    $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
     $('cost-kpis').innerHTML = costTileHtml
     $('cost-table').innerHTML = costTableHtml
@@ -2434,7 +2432,7 @@ function markdown(src) {
 // here is hidden. Only the hash picks the view, never a poll, so a redraw cannot change it. An element that is absent
 // is skipped, so a page without one of them still switches. The header bar is on every view, so it is not named here.
 const VIEWS = {
-  board: ['#strip', '#overview', '#kpis', '#board'],
+  board: ['#strip', '#overview', '#board'],
   git: ['#strip', '.graph'],
   cost: ['#strip', '#cost'],
   stream: ['#stream'],

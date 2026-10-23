@@ -103,7 +103,8 @@ and saying how many), the Export Executive Briefing button and the Live
 Event Stream link, also opened by the `m` key. `#board` (the default, and for an
 empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
-Overview Panel, Pass rate and the six lanes, each with its card count. `#git`
+Overview Panel (one row of five cards: the four overview tiles, then Pass
+rate) and the six lanes, each with its card count. `#git`
 shows the strip and the branch graph. `#cost` shows the strip, the cost per
 point tile and a table with one row per job: stage, points, full price and cost
 per point. `#stream` shows the live event stream from each job's
