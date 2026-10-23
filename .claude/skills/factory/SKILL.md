@@ -46,10 +46,26 @@ evidence folder (see **Files**).
 ## Parallel jobs
 
 Every job runs in its own git worktree on its own branch, so several jobs can run
-at once, one per Claude session. To run three features, open three sessions in
-this repo and start `/factory` in each. Your session orchestrates only the job it
-started or was handed.
+at once, one per Claude session. To run more than one feature, open one session
+per feature in this repo and start `/factory` in each. Your session orchestrates
+only the job it started or was handed.
 
+`MAX_RUNNING_JOBS = 3`: at most this many running jobs at once, so parallel jobs
+share the machine and Docker fairly. Change the number here and nowhere else.
+
+- A job is running when its `job.json` `stage` is `spec`, `build`, `review` or
+  `approve`. Jobs in `needs-human` or `merged` are not running.
+- To count running jobs, read every `factory/jobs/*/job.json`. Skip folders whose
+  name starts with `.` (such as `.merge-lock`, which is not a job) and any job
+  whose `decision.md` first line starts with `CANCELLED`.
+- `/factory <feature>` (step 1) and `/factory next` count running jobs before they
+  claim anything. At `MAX_RUNNING_JOBS` or more, they create and claim nothing
+  and tell the user which jobs are running, with each job's id and stage, so the
+  user can run the command again once one finishes. There is no queue and no
+  waiting.
+- `/factory approve`, `/factory rework` and `/factory paid` are not blocked by
+  the cap: they act on a job that already exists, and approving or reworking one
+  is how a slot frees up.
 - Your session stays in the main checkout. Agents work in the job's worktree.
   The main checkout is the user's, and it may be dirty or on another branch.
   Only **Merge** touches it.
@@ -282,7 +298,10 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
 
 ## /factory <feature>
 
-1. **Create the job.** `mkdir -p factory/jobs`, then pick the next 3-digit number
+1. **Create the job.** `mkdir -p factory/jobs`, then count running jobs (see
+   **Parallel jobs**). At `MAX_RUNNING_JOBS` or more, stop: create no folder,
+   and tell the user the cap is reached and which jobs are running, with each
+   job's id and stage. Otherwise pick the next 3-digit number
    after the highest numbered folder in `factory/jobs/` (`001` if there are
    none) and a 2–4 word kebab-case slug of the feature: `004-blog-reading-time`.
    Claim it with `mkdir factory/jobs/<job-id>` (no `-p`). If that fails because
@@ -525,8 +544,12 @@ why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
 
 ## /factory next
 
-Read `factory/backlog.md` and take the first `- [ ]` item. Claim it with one
-Edit that replaces its exact line with `- [x] <item> → claimed`. If the Edit
+First count running jobs (see **Parallel jobs**). At `MAX_RUNNING_JOBS` or
+more, stop: claim no backlog line, and tell the user the cap is reached and which
+jobs are running, with each job's id and stage.
+
+Otherwise read `factory/backlog.md` and take the first `- [ ]` item. Claim it
+with one Edit that replaces its exact line with `- [x] <item> → claimed`. If the Edit
 fails because the line changed, another session claimed it: re-read the backlog
 and try the next `- [ ]` item. If none is left, say so and stop.
 
