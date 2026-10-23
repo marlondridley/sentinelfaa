@@ -443,7 +443,7 @@ class LiteLLMClient:
             {"role": "user", "content": redacted_user_message},
         ]
         call.repaired = call.incomplete = False
-        result, content = await self._complete(messages, target_model, max_tokens, temperature, cid, call)
+        result, content = await self._complete(messages, target_model, max_tokens, temperature, cid, call.role, call)
 
         # One repair request, never more: if the object parsed but lacks
         # required keys, show the model its answer and name what is missing.
@@ -459,7 +459,7 @@ class LiteLLMClient:
                     "Return the complete object with every required key, and nothing else."
                 )},
             ]
-            result, _ = await self._complete(messages, target_model, max_tokens, temperature, cid, call)
+            result, _ = await self._complete(messages, target_model, max_tokens, temperature, cid, call.role, call)
             call.incomplete = any(k not in result for k in required)
         return result
 
@@ -470,11 +470,18 @@ class LiteLLMClient:
         max_tokens: int,
         temperature: float,
         cid: str | None,
+        role: str | None,
         call: ModelCall | None = None,
     ) -> tuple[dict[str, Any], str]:
         """One completion: returns (parsed JSON object, raw content). Raises LLMError."""
         if call is not None:
             call.attempts += 1
+        # The gateway keeps its own spend record of every request, a second log
+        # beside model_calls; this tag lets it be summed per agent role
+        # (docs/operations.md). Only the role name goes in, never alert or flight data.
+        headers = {"x-litellm-tags": f"role:{role or UNREGISTERED_ROLE}"}
+        if cid and cid != "-":
+            headers["x-correlation-id"] = cid
         try:
             response = await litellm.acompletion(
                 model=target_model,
@@ -488,7 +495,7 @@ class LiteLLMClient:
                 # default and pins a worker slot. Timeout is a transient error
                 # (classify() below), so tenacity retries it.
                 timeout=settings.LLM_TIMEOUT_SECONDS,
-                extra_headers={"x-correlation-id": cid} if cid and cid != "-" else None,
+                extra_headers=headers,
             )
         except Exception as exc:  # noqa: BLE001 -- normalized immediately below
             err = classify(exc)
