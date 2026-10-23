@@ -1,4 +1,6 @@
 #!/bin/sh
+# RETIRED (instraclustr/README.md, "Retired files"): superseded by
+# vault-unseal-and-seed.bash, which runs on every start. Kept for reference only.
 set -e
 
 echo "=== Starting Vault Auto-Seeding Script ==="
@@ -11,7 +13,6 @@ vault secrets enable -version=2 -path=secret kv 2>/dev/null || echo "Secret engi
 : "${POSTGRES_USER:?Missing POSTGRES_USER in environment}"
 : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD in environment}"
 : "${POSTGRES_DB:?Missing POSTGRES_DB in environment}"
-: "${ANTHROPIC_API_KEY:?Missing ANTHROPIC_API_KEY in environment}"
 : "${LLM_API_KEY:?Missing LLM_API_KEY in environment}"
 
 # 2. Enable KV Version 2 engine at path 'secret'
@@ -25,11 +26,10 @@ vault kv put secret/postgres/credentials \
   password="${POSTGRES_PASSWORD}" \
   database="${POSTGRES_DB}"
 
-# 4. Seed LiteLLM Keys
-echo "Seeding LLM API keys for LiteLLM..."
-vault kv put secret/litellm \
-  ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-  LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}"
+# 4. LiteLLM keys: not written here. secret/litellm is the source of truth for
+# the gateway's provider key, master key and database password, seeded per key
+# by vault-unseal-and-seed.bash (seed_litellm), which never overwrites a value
+# Vault already holds. A blind put from .env here would.
 
 # 5. Seed Sentinel App Proxy Key
 echo "Seeding application proxy keys..."

@@ -14,7 +14,7 @@
 # (fresh Vault or fresh LiteLLM database, e.g. after `down -v`) it replaces
 # any stale key under the same alias and issues a new one.
 set -eu
-: "${VAULT_ADDR:?}" "${LITELLM_MASTER_KEY:?}"
+: "${VAULT_ADDR:?}"
 PROXY="${LITELLM_URL:-http://nas-litellm:4000}"
 ALIAS=sentinel-app
 BUDGET="${LITELLM_APP_BUDGET_USD:-10}"
@@ -25,6 +25,12 @@ RPM="${LITELLM_APP_RPM:-30}"
 VAULT_TOKEN=$(vault write -field=token auth/approle/login \
     role_id="$(cat /vault-bootstrap/role_id)" secret_id="$(cat /vault-bootstrap/secret_id)")
 export VAULT_TOKEN
+
+# The master key, from Vault (secret/litellm, seeded by vault-unseal-and-seed.bash),
+# never from .env. An empty or unreadable one stops the job with a plain message.
+LITELLM_MASTER_KEY=$(vault kv get -field=LITELLM_MASTER_KEY secret/litellm) \
+    || { echo "ERROR: could not read LITELLM_MASTER_KEY at secret/litellm" >&2; exit 1; }
+[ -n "$LITELLM_MASTER_KEY" ] || { echo "ERROR: LITELLM_MASTER_KEY at secret/litellm is empty" >&2; exit 1; }
 
 proxy() {  # proxy <path> [json-body]
     if [ $# -gt 1 ]; then

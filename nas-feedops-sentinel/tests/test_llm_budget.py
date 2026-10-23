@@ -288,6 +288,50 @@ def test_prometheus_alerts_when_a_circuit_is_open_or_a_budget_is_spent():
     assert "nas_llm_budget_refusals_total" in by_name["LLMPassBudgetExhausted"]["expr"]
 
 
+def test_prometheus_warns_when_the_application_key_has_used_80_percent_of_its_gateway_budget():
+    """The gateway's own budget metrics, as the pinned LiteLLM image names and labels them (litellm 1.101.0)."""
+    monitoring = Path(__file__).resolve().parent.parent / "monitoring"
+    rules = yaml.safe_load((monitoring / "alert-rules.yml").read_text(encoding="utf-8"))
+    (group,) = [g for g in rules["groups"] if any(r.get("alert") == "LLMBudgetNearlyUsed" for r in g["rules"])]
+    rule = next(r for r in group["rules"] if r.get("alert") == "LLMBudgetNearlyUsed")
+    expr = " ".join(rule["expr"].split())
+
+    assert group["name"] == "nas-sentinel-ai"
+    assert 'litellm_remaining_api_key_budget_metric{api_key_alias="sentinel-app"}' in expr
+    assert 'litellm_api_key_max_budget_metric{api_key_alias="sentinel-app"} > 0' in expr, "no division by a zero budget"
+    assert expr.endswith(">= 0.8")
+    assert rule["for"] == "15m" and rule["labels"] == {"severity": "warning"}
+    assert "80%" in rule["annotations"]["summary"]
+    description = rule["annotations"]["description"]
+    assert "LITELLM_APP_BUDGET_USD" in description and "30-day reset" in description
+    # The .env value only sets a newly issued key's budget; the runbook's command raises the one already issued.
+    assert "docs/runbooks.md" in description and "alone does not" in description
+    assert "falls back to rules" in description and "still staged" in description
+    jobs = {j["job_name"]: j for j in yaml.safe_load((monitoring / "prometheus.yml").read_text(encoding="utf-8"))["scrape_configs"]}
+    assert jobs["nas-litellm"]["static_configs"] == [{"targets": ["nas-litellm:4000"], "labels": {"service": "litellm", "tracon": "PCT"}}]
+    assert jobs["nas-litellm"]["metrics_path"] == "/metrics/"
+    assert not {"authorization", "basic_auth", "bearer_token", "bearer_token_file"} & set(jobs["nas-litellm"]), \
+        "no key in prometheus.yml: the gateway's /metrics takes none"
+
+
+# ── the gateway's spend record ───────────────────────────────────────────────────
+
+async def test_every_request_to_the_gateway_is_tagged_with_the_calling_role_the_repair_included(monkeypatch):
+    sent: list[dict] = []
+    replies = [_response({"pattern": "TRANSIENT"}), _response(_COMPLETE)]       # the first lacks keys: one repair
+
+    async def gateway(**kwargs):
+        sent.append(kwargs["extra_headers"])
+        return replies[len(sent) - 1]
+
+    monkeypatch.setattr(llm.litellm, "acompletion", gateway)
+    assert await _ask() == _COMPLETE
+
+    assert [h["x-litellm-tags"] for h in sent] == ["role:critic", "role:critic"]
+    (row,) = await storage.get_model_calls_since(_EPOCH)
+    assert (row["role"], row["attempts"]) == ("critic", 2), "one model_calls row, two gateway requests"
+
+
 # ── the per-pass token budget ─────────────────────────────────────────────────────
 
 async def test_a_call_past_the_budget_is_refused_and_not_sent(monkeypatch):

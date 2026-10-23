@@ -49,6 +49,7 @@ locals {
     "temporal-worker" = vault_policy.sentinel_app.name
     "migrate"         = vault_policy.sentinel_migrate.name
     "proof"           = vault_policy.sentinel_migrate.name
+    "litellm"         = vault_policy.litellm.name
   }
 }
 
@@ -60,6 +61,11 @@ resource "vault_policy" "sentinel_app" {
 resource "vault_policy" "sentinel_migrate" {
   name   = "sentinel-migrate"
   policy = file("${path.module}/../vault-policies/sentinel-migrate.hcl")
+}
+
+resource "vault_policy" "litellm" {
+  name   = "litellm"
+  policy = file("${path.module}/../vault-policies/litellm.hcl")
 }
 
 resource "vault_policy" "vault_bootstrap" {

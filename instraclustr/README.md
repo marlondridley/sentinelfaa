@@ -11,7 +11,8 @@ The shared services the application stack in [`../nas-feedops-sentinel`](../nas-
 | `vault-ceremony` (on demand) | `terraform/ceremony.sh`: a root token from unseal shares 1 and 2, one `terraform plan` or `apply` of `terraform/`, then revoked |
 | `spire-server` | workload identity: issues each application service its own X.509-SVID; its CA is signed by the offline root (`spire/server.conf`) |
 | `spire-agent` | attests application sidecars through the Docker API and serves the Workload API socket they read (`spire/agent.conf`) |
-| `litellm` | the model gateway, configured by `litellm-config.yaml` |
+| `litellm` | the model gateway, configured by `litellm-config.yaml`; started by `litellm-entrypoint.sh` with its secrets from Vault |
+| `litellm-spiffe`, `litellm-vault-agent` | the gateway's workload identity sidecars: its own X.509-SVID, and its three secrets from Vault rendered to a memory-only file ("Gateway secrets" below) |
 | `litellm-db-init` (job) | `litellm-db-init.sh`: creates LiteLLM's own `litellm` database |
 | `litellm-bootstrap` (job) | `litellm-bootstrap.sh`: issues the application's scoped LiteLLM key and stores it in Vault |
 
@@ -19,7 +20,7 @@ How the identities, key shares and recovery work is in [docs/operations.md](../n
 
 ## Workload identity
 
-No application container holds a credential, a Vault token, or a route to Vault. Each application service (`../nas-feedops-sentinel/docker-compose.yml`) has two sidecars:
+No application container holds a credential, a Vault token, or a route to Vault. Each application service (`../nas-feedops-sentinel/docker-compose.yml`), and the model gateway in this stack (`litellm`), has two sidecars:
 
 1. **spiffe-helper**, labelled `com.sentinelfaa.identity=<service>`. spire-agent attests it through the Docker API and issues it `spiffe://sentinelfaa.internal/workload/<service>`: an X.509-SVID that lives one hour and is rotated at half-life.
 2. **Vault Agent** logs in to Vault over mutual TLS with that SVID. Vault's cert auth ([`terraform/`](terraform/main.tf)) checks three things: the chain goes back to the offline root, the SPIFFE ID matches exactly, and the CN matches. Vault Agent then renders what the service's policy ([`vault-policies/`](vault-policies)) allows into a file on a memory-only volume. The service reads that file.
@@ -55,7 +56,7 @@ In this order (PowerShell, repository root):
    ```powershell
    docker compose -f instraclustr/docker-compose.yml --env-file instraclustr/.env up -d --build
    ```
-   On the very first start spire-agent exits: it has no identity yet. That's expected.
+   On the very first start spire-agent exits: it has no identity yet. That's expected, and so is what follows from it: `litellm-vault-agent` cannot log in without an identity, so the gateway, its two database jobs and PgBouncer do not start until steps 3 and 4 are done ("Gateway secrets" below).
 3. **Vault's workload auth.** Run the root ceremony's Terraform step. `plan` shows the change; `apply` shows it again and asks for `yes`:
    ```powershell
    docker compose -f instraclustr/docker-compose.yml --env-file instraclustr/.env --profile ceremony run --rm vault-ceremony plan
@@ -79,7 +80,7 @@ Edit [`vault-policies/`](vault-policies) or [`terraform/main.tf`](terraform/main
 
 - `spire-entries.yaml`;
 - `terraform/main.tf`'s `workloads`;
-- the application compose file (the service and its two sidecars).
+- the application compose file (the service and its two sidecars), or this stack's compose file for the gateway (`litellm-spiffe`, `litellm-vault-agent`).
 
 ### Threat model, stated plainly
 
@@ -93,7 +94,25 @@ Edit [`vault-policies/`](vault-policies) or [`terraform/main.tf`](terraform/main
 
 ## Configuration
 
-Copy `.env.example` to `.env`; it is gitignored. The stack will not start without `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD`. The seed job copies the database passwords into Vault, the only place the application stack reads them from. `../nas-feedops-sentinel/.env` holds no database credential. The provider key (`ANTHROPIC_API_KEY`) belongs here, since only the gateway needs it.
+Copy `.env.example` to `.env`; it is gitignored. The stack will not start without `POSTGRES_PASSWORD` and `APP_DB_PASSWORD`. The seed job copies the database passwords into Vault, the only place the application stack reads them from. `../nas-feedops-sentinel/.env` holds no database credential. The gateway's secrets are not in `.env` at all (next section).
+
+### Gateway secrets
+
+The model gateway's three secrets live in Vault at `secret/litellm`, and nowhere else:
+
+| Key | What it is | When Vault has none |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | the Claude API key, the only provider key | left empty, with a warning: the gateway cannot reach the model, the Critic reports itself unavailable, and every alert is still staged |
+| `LITELLM_MASTER_KEY` | the gateway's admin key; only the gateway and `litellm-bootstrap` read it | generated (`sk-` and 64 hex digits) |
+| `LITELLM_DB_PASSWORD` | the `litellm` database role's password | generated (64 hex digits) |
+
+How they get there and how they are used:
+
+- **Seeding.** On every start the seed job (`vault-unseal-and-seed.bash`, `seed_litellm`) keeps any value Vault already has; it never overwrites one. For a key Vault lacks, it uses the value from `.env` if there is one, and otherwise does what the table says.
+- **Reading.** `litellm-vault-agent` logs in as the gateway's own identity (`spiffe://sentinelfaa.internal/workload/litellm`; policy `vault-policies/litellm.hcl`, read-only on `secret/data/litellm`) and renders the three into `/vault/secrets/litellm.env` on a memory-only volume. `litellm` starts through `litellm-entrypoint.sh`, which waits for that file, exports its values to the gateway process only (so `docker inspect` does not show them) and builds `DATABASE_URL`. `postgres-scram` and `litellm-db-init` read the database password from the same file, mounted read-only. `litellm-bootstrap` reads the master key from Vault as `vault-bootstrap`.
+- **Moving an existing stack (one time).** Leave the old `LITELLM_MASTER_KEY`, `LITELLM_DB_PASSWORD` and `ANTHROPIC_API_KEY` in `.env` for exactly one start, so the seed copies them into Vault and the existing database role and virtual key keep working. Then delete them from `.env`. A new install does the same with `ANTHROPIC_API_KEY` alone.
+- **Rotating one.** A person does this; the seed never will. It needs root: generate a root token from unseal shares 1 and 2, as `terraform/ceremony.sh` does; write the new value with `vault kv patch secret/litellm <KEY>=<new value>`; revoke the token; then restart this stack. `litellm-db-init` sets a new database password on the role at that start. There is no one-command tool for this yet.
+- **Before it works on the live stack**, a human runs two steps, in this order: the root ceremony's Terraform step (`vault-ceremony plan`, then `apply`, as in "First-time setup" step 3), which adds the `litellm` cert role and policy; and `scripts/spire-entries-apply.py`, which registers the `litellm` SPIRE entry (`--check` reports it missing until then). Until both are done `litellm-vault-agent` never renders the file, so `postgres-scram`, `litellm-db-init` and the gateway do not start, and neither does PgBouncer, which waits for `postgres-scram`: the application cannot reach its database either.
 
 ## Hardening
 
@@ -101,7 +120,7 @@ Copy `.env.example` to `.env`; it is gitignored. The stack will not start withou
 - **`spire-agent`** is the one container that holds the Docker socket and the host PID namespace, because the docker workload attestor needs both. `:ro` on the socket limits the file, not the Docker API behind it, so a compromised agent can still ask Docker for anything. What is taken away: every capability, privilege escalation and a writable root (it writes only to its data and socket volumes). A labelled workload still receives its SVID and an unlabelled one still receives none, checked in a scratch trust domain. Both SPIRE images are pinned by digest. `tests/test_hardening.py` holds all of this.
 - **Key files and folder permissions.** The CA keys, the Vault unseal share and bootstrap secret-id, the `.env` files, `secrets.toml` and the Terraform state inherit their permissions from the folder the repository was cloned into. If another local group can read that folder, it can read them. `scripts/Protect-KeyMaterial.ps1` reports who can read each of them and changes nothing; `-Apply` restricts them to you, SYSTEM and Administrators. It reads no file's contents.
 - **Not done here:** one flat `nas-network` shared by everything, plaintext service-to-service traffic (the application to LiteLLM, Temporal with no authentication), and third-party images (nginx, Keycloak, Postgres, Grafana, Temporal) that run with Docker's default capabilities. Each of those needs its own change and its own test against the real image.
-- **`/metrics` takes no credential**, on the API (`/metrics`) and on the worker, the watcher and the dashboard (port 9108); Prometheus scrapes them over plain `http`. That is acceptable only while nothing outside the compose network can reach it, and `tests/test_metrics_exposure.py` holds exactly that: no application service publishes a host port, the edge routes the API only at `/health` and `/v1/`, and the public listeners reach the dashboard and Keycloak and nothing else. On the flat network any container can still read it, so segmentation is what narrows that, and authentication on `/metrics` has to come before either condition is relaxed.
+- **`/metrics` takes no credential**, on the API (`/metrics`) and on the worker, the watcher and the dashboard (port 9108), and on the gateway (`nas-litellm:4000`, "Models" below); Prometheus scrapes them over plain `http`. That is acceptable only while nothing outside the compose network can reach it, and `tests/test_metrics_exposure.py` holds exactly that: no application service publishes a host port, the edge routes the API only at `/health` and `/v1/`, and the public listeners reach the dashboard and Keycloak and nothing else. The gateway is the one exception that publishes a port, `127.0.0.1:4000`, so a process on this machine can read its metrics too; `tests/test_litellm_gateway.py` holds that port to loopback. On the flat network any container can still read it, so segmentation is what narrows that, and authentication on `/metrics` has to come before either condition is relaxed.
 
 ## Models
 
@@ -110,6 +129,8 @@ The application names aliases only. `litellm-config.yaml` decides which provider
 - `primary-model` is Claude Haiku 4.5, direct from Anthropic. It is the only model, and there is no fallback: when it is unavailable the Critic says so and every alert is still staged for a person.
 
 Adding another provider is an edit to that file and to `tests/test_model_provider.py`, which holds the gateway to Haiku. The application's key can call only `primary-model`, within `LITELLM_APP_BUDGET_USD` per 30 days and `LITELLM_APP_RPM` requests per minute.
+
+The gateway also keeps its own spend record of every call, tagged with the calling agent's role, and serves Prometheus metrics on `http://nas-litellm:4000/metrics/`, which the application stack's Prometheus scrapes (job `nas-litellm`) for the `LLMBudgetNearlyUsed` alert. That endpoint takes no key, by the owner's choice (`require_auth_for_metrics_endpoint: false` in `litellm-config.yaml`): any container on `nas-network` can read key aliases, key hashes and spend figures from it, but no prompt, response or key, and the host port is loopback only. How to read the spend record and compare it with the application's own: [docs/operations.md](../nas-feedops-sentinel/docs/operations.md#the-gateways-spend-record).
 
 ## Retired files
 

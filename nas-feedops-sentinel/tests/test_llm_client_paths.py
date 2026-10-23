@@ -92,23 +92,31 @@ def gateway(monkeypatch):
     return state
 
 
-async def _complete(client, temperature=0.0, cid=None):
-    return await client._complete([{"role": "user", "content": "hi"}], "openai/primary-model", 100, temperature, cid)
+async def _complete(client, temperature=0.0, cid=None, role=None):
+    return await client._complete([{"role": "user", "content": "hi"}], "openai/primary-model", 100, temperature, cid, role)
 
 
 async def test_a_completion_returns_the_parsed_object_and_the_raw_text(gateway):
     gateway.reply = _response('```json\n{"a": 1}\n```')
-    parsed, raw = await _complete(llm.LiteLLMClient(model="openai/primary-model"), cid="abc")
+    parsed, raw = await _complete(llm.LiteLLMClient(model="openai/primary-model"), cid="abc", role="critic")
 
     assert parsed == {"a": 1} and raw.startswith("```json")
-    assert gateway.kwargs["extra_headers"] == {"x-correlation-id": "abc"}
+    assert gateway.kwargs["extra_headers"] == {"x-litellm-tags": "role:critic", "x-correlation-id": "abc"}
 
 
 async def test_no_correlation_header_is_sent_without_a_correlation_id(gateway):
     gateway.reply = _response('{"a": 1}')
-    await _complete(llm.LiteLLMClient(model="openai/primary-model"), cid="-")
+    await _complete(llm.LiteLLMClient(model="openai/primary-model"), cid="-", role="critic")
 
-    assert gateway.kwargs["extra_headers"] is None
+    assert gateway.kwargs["extra_headers"] == {"x-litellm-tags": "role:critic"}
+
+
+async def test_a_call_with_no_role_is_tagged_unregistered_in_the_gateway_spend_record(gateway):
+    gateway.reply = _response('{"a": 1}')
+    await _complete(llm.LiteLLMClient(model="openai/primary-model"))
+
+    assert gateway.kwargs["extra_headers"] == {"x-litellm-tags": f"role:{llm.UNREGISTERED_ROLE}"}
+    assert llm.UNREGISTERED_ROLE == "unregistered"
 
 
 async def test_a_gateway_failure_is_normalised_before_it_reaches_the_caller(gateway):

@@ -45,6 +45,7 @@ PG_IMAGE=pgvector/pgvector:pg16          # the image instraclustr's postgres ser
 created_network=0
 created_socket_volume=0
 PKI_TMP=""
+SECRETS_TMP=""
 SOCKET_VOLUME=nas-spire-agent-socket   # external, like nas-network; launch_nas_sentinel.ps1 creates both
 
 infra() { docker compose -p "$P-infra" -f "$ROOT/instraclustr/docker-compose.yml" --env-file "$INFRA_ENV" "$@"; }
@@ -77,6 +78,7 @@ cleanup() {
   [ "$created_network" = 1 ] && docker network rm nas-network >/dev/null 2>&1 || true
   [ "$created_socket_volume" = 1 ] && docker volume rm "$SOCKET_VOLUME" >/dev/null 2>&1 || true
   [ -n "$PKI_TMP" ] && rm -rf "$PKI_TMP" || true
+  [ -n "$SECRETS_TMP" ] && rm -rf "$SECRETS_TMP" || true
   exit "$code"
 }
 
@@ -109,7 +111,13 @@ PG_PASSWORD="$(envval "$INFRA_ENV" POSTGRES_PASSWORD)"
 PG_DB="$(envval "$INFRA_ENV" POSTGRES_DB)"
 APP_USER="$(envval "$INFRA_ENV" APP_DB_USER)"
 APP_PASSWORD="$(envval "$INFRA_ENV" APP_DB_PASSWORD)"
-LITELLM_PASSWORD="$(envval "$INFRA_ENV" LITELLM_DB_PASSWORD)"
+# The litellm role's password lives in Vault, rendered for postgres-scram by
+# litellm-vault-agent. There is no Vault or SPIRE here, so postgres-scram reads
+# a throwaway one from a file in the same format instead.
+LITELLM_PASSWORD="smoke-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+SECRETS_TMP="$(mktemp -d)"
+printf 'LITELLM_DB_PASSWORD=%s\n' "$LITELLM_PASSWORD" > "$SECRETS_TMP/litellm.env"
+scram() { infra run --rm --no-deps -v "$SECRETS_TMP:/smoke-secrets:ro" -e LITELLM_SECRETS_FILE=/smoke-secrets/litellm.env postgres-scram; }
 
 # psql as a login over TCP, the way the services connect.
 login() {  # host, port, user, password
@@ -147,10 +155,12 @@ md5_roles="$(docker exec -e PGPASSWORD="$PG_PASSWORD" "$OLD_PG" psql -U "$PG_USE
 [ "$md5_roles" = 3 ] || fail "setup: expected 3 md5 login roles, found $md5_roles"
 docker stop "$OLD_PG" >/dev/null && docker rm "$OLD_PG" >/dev/null
 
-step "upgrade: postgres, then postgres-scram, then PgBouncer (as the launcher starts them)"
-infra up -d pgbouncer                    # fails here if postgres-scram does not exit 0
+step "upgrade: postgres, then postgres-scram, then PgBouncer (the launcher's order)"
+infra up -d --wait postgres
+scram_log="$(scram 2>&1)" || fail "postgres-scram did not exit 0:
+$scram_log"
+infra up -d --no-deps pgbouncer
 wait_healthy nas-pgbouncer 120
-scram_log="$(docker logs postgres-scram 2>&1)"
 for expected in "re-hashed $PG_USER" "re-hashed $APP_USER" "re-hashed litellm" "pg_hba.conf switched from md5 to scram-sha-256"; do
   grep -qF "$expected" <<<"$scram_log" || fail "postgres-scram did not report '$expected':
 $scram_log"
@@ -166,7 +176,7 @@ step "logins over SCRAM: through PgBouncer (the path that failed), and each migr
 [ "$(login postgres 5432 litellm "$LITELLM_PASSWORD")" = 1 ] || fail "the litellm role cannot log in"
 
 step "postgres-scram again: nothing left to do, and it still exits 0"
-rerun="$(infra run --rm --no-deps postgres-scram 2>&1)" || fail "postgres-scram failed on a second run:
+rerun="$(scram 2>&1)" || fail "postgres-scram failed on a second run:
 $rerun"
 if grep -qE "re-hashed|switched" <<<"$rerun"; then fail "postgres-scram changed something on a second run:
 $rerun"; fi
