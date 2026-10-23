@@ -1044,8 +1044,7 @@ function kpis() {
   return [
     ['Pass rate', percent(merged.filter((j) => j.round === 1).length, merged.length), 'merged on the first review round'],
   ].map(([k, value, sub]) =>
-    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('') +
-    costPerPointTile()
+    `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('')
 }
 
 // The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
