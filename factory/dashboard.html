@@ -75,7 +75,6 @@
   .curve { list-style: none; margin: 4px 0 0; padding: 0; max-width: 760px; }
   .curve li {
     display: grid; grid-template-columns: minmax(0, 28ch) 10ch minmax(40px, 1fr); gap: 10px; align-items: center;
-    font-family: var(--mono); font-size: 11px; color: var(--muted);
   }
   .curve .id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .curve .usd { text-align: right; color: var(--text); }
@@ -706,7 +705,7 @@ function costPerPointTile() {
     `<span class="bar"><span style="width: ${top ? (x.price / x.points / top * 100).toFixed(1) : 0}%"></span></span></li>`)
   const curve = counted.length
     ? '<div class="k curve-k" id="curve-title">Cost per point of each merged job, oldest merge first</div>' +
-      `<ol class="curve" aria-labelledby="curve-title">${rows.join('')}</ol>`
+      `<ol class="sub curve" aria-labelledby="curve-title">${rows.join('')}</ol>`
     : ''
   return `<div class="kpi wide"><div class="k">Cost / point</div>` +
     `<div class="v">${esc(counted.length ? perPointText(price, points) : '-')}</div>` +
