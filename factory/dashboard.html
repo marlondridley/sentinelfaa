@@ -137,7 +137,7 @@
   .card.merged { opacity: .72; }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-top .num { min-width: 0; overflow-wrap: anywhere; }
   .pulse {
     width: 7px; height: 7px; border-radius: 50%; background: var(--active);
     animation: pulse 1.6s ease-in-out infinite;
@@ -458,10 +458,29 @@ const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'co
 const POINTS = [1, 2, 3, 5, 8, 13]
 const USAGE_KEYS = ['agent', 'round', 'model', 'tokens', 'seconds']
 const DAY_MS = 24 * 60 * 60 * 1000
+// The words the page shows for the factory's own words. To rename something on screen, add one line here; later jobs
+// extend it the same way. Never rename ids, branches or job.json fields: commands and links need them as they are.
+const LABELS = {
+  // Keyed by the job slug, the id without its number, so a title survives renumbering.
+  jobs: {
+    'worktree-drift-guard': 'Branch Synchronization & Drift Mitigation',
+    'litellm-spend-and-vault': 'API Spend Optimization & Credential Isolation',
+  },
+  terms: {
+    loe: 'Compute Utilization & Level of Effort Index',
+  },
+}
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+// The display word for key in LABELS[table], or fallback, the factory's own word, when there is no entry.
+const label = (table, key, fallback) => (Object.hasOwn(LABELS[table], key) ? LABELS[table][key] : fallback)
+// A job's slug, the id without its number, and its title: the display title, or the slug when it has none.
+const slugOf = (job) => job.id.split('-').slice(1).join('-')
+const titleOf = (job) => label('jobs', slugOf(job), slugOf(job))
+// The full id, then the display title when the job has one, so the real id stays visible and copyable.
+const idTitle = (job) => (titleOf(job) === slugOf(job) ? job.id : `${job.id} · ${titleOf(job)}`)
 
 let jobs = []
 let prices = null // prices.json, or null when it could not be read
@@ -650,18 +669,21 @@ function loeText(s) {
 
 function figures(job, cost, rework) {
   const t = cost.total
-  const parts = [
-    ...(rework ? [`rework ${rework}`] : []),
-    `points ${POINTS.includes(job.points) ? job.points : '-'}`,
-    `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
-    `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
-    `LOE ${cost.recorded ? loeText(t) : '-'}`,
-    `full price ${priceText(cost, t.usd)}`,
-    `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
-    ...moneyParts(job, cost),
-  ]
   // Non-breaking spaces keep each label on one line with its value when the card wraps.
-  return `<div class="figures">${parts.map((p) => esc(p).replace(/ /g, '&nbsp;')).join(' · ')}</div>`
+  const nb = (p) => esc(p).replace(/ /g, '&nbsp;')
+  const parts = [
+    ...(rework ? [nb(`rework ${rework}`)] : []),
+    nb(`points ${POINTS.includes(job.points) ? job.points : '-'}`),
+    nb(`tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`),
+    nb(`time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`),
+    // The LOE display name is too long for one line of a card: it wraps between its own words, and only its last
+    // word stays with the value.
+    `${esc(label('terms', 'loe', 'LOE'))}&nbsp;${esc(cost.recorded ? loeText(t) : '-')}`,
+    nb(`full price ${priceText(cost, t.usd)}`),
+    nb(`paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`),
+    ...moneyParts(job, cost).map(nb),
+  ]
+  return `<div class="figures">${parts.join(' · ')}</div>`
 }
 
 // Velocity: story points merged per day, over the last 7 days and the 7 days before.
@@ -979,14 +1001,14 @@ function card(job, past, cost, rework) {
   const human = job.stage === 'needs-human'
   const rows = past.map((v, i) => chips(i + 1, v, false))
   if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
-  const [num, ...slug] = job.id.split('-')
+  const [num] = job.id.split('-')
   // A div, not a button, so the Approve button can sit inside it; the keydown listener gives it Enter and Space.
   return `
     <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
          role="button" tabindex="0" data-job="${esc(job.id)}">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
-        <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
+        <span class="num">${esc(num)} · ${esc(titleOf(job))}</span>
         ${human ? '<span class="flag">your call</span>' : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
@@ -1040,7 +1062,7 @@ function graphRow(job) {
       <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
         <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
       <div class="g-text">
-        <div class="num">${esc(job.id)} · ${esc(state)}</div>
+        <div class="num">${esc(idTitle(job))} · ${esc(state)}</div>
         <p class="feature">${esc(job.feature)}</p>
         <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
         <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
@@ -1345,9 +1367,9 @@ const firstLines = new Map()
 function costTable(cost) {
   if (!cost.recorded) return '<p class="note">No usage recorded for this job.</p>'
   const cell = (v, fmt) => (v === null ? '-' : fmt(v))
-  const row = (label, s) => `<tr><td>${esc(label)}</td><td>${cell(s.tokens, tokensText)}</td>` +
+  const row = (name, s) => `<tr><td>${esc(name)}</td><td>${cell(s.tokens, tokensText)}</td>` +
     `<td>${cell(s.seconds, duration)}</td><td>${loeText(s)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
-  return '<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>LOE</th><th>Full price</th></tr>' +
+  return `<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>${esc(label('terms', 'loe', 'LOE'))}</th><th>Full price</th></tr>` +
     cost.rounds.map(([n, s]) => row(n === 0 ? '0 (spec)' : String(n), s)).join('') +
     row('Total', cost.total) + '</table>'
 }
@@ -1355,7 +1377,7 @@ function costTable(cost) {
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
-  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
+  $('d-num').textContent = `${idTitle(job)} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
   $('d-title').textContent = job.feature
   $('d-branch').textContent = job.branch
   const cost = costOf(job)
