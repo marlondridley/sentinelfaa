@@ -672,9 +672,11 @@ List-price spend (USD): <spend>
   With no `usage` entries they read `0` and `0.00`.
 
 A cancelled job's `usage` stays counted in the dashboard's monthly pulse, the
-strip's all-time spend and the cost view: the tokens were spent. Showing
-cancelled jobs on the dashboard is separate work; this skill only records the
-stage.
+strip's all-time spend and the cost view: the tokens were spent. The dashboard
+shows a cancelled job as a dimmed row in the Cost & LOE table, with a "spent on
+cancelled work" line above it, and in the job drawer that row opens, with the
+cancel summary and the revive command. It is not on the board, not in the
+branch graph and not in any flow, cycle, rework, value or pass-rate figure.
 
 **Migration.** Jobs `020-executive-briefing` and `027-pulse-in-header` were
 cancelled before this stage existed: the first line of their `decision.md`
