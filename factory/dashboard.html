@@ -137,7 +137,7 @@
   .card.merged { opacity: .72; }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-top .num { min-width: 0; overflow-wrap: anywhere; }
   .pulse {
     width: 7px; height: 7px; border-radius: 50%; background: var(--active);
     animation: pulse 1.6s ease-in-out infinite;
@@ -229,7 +229,7 @@
   .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(920px, 100vw);
     background: var(--panel); border-left: 1px solid var(--line);
-    display: grid; grid-template-rows: auto 1fr; transform: translateX(100%);
+    display: grid; grid-template-rows: auto auto 1fr; transform: translateX(100%);
     transition: transform .25s ease;
   }
   .open .scrim { opacity: 1; pointer-events: auto; }
@@ -281,6 +281,40 @@
   .file .v { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
   .v.good { background: var(--pass); } .v.warn { background: var(--changes); } .v.stop { background: var(--human); }
   .doc { overflow-y: auto; padding: 22px 28px 60px; min-width: 0; }
+
+  /* Screenshots from evidence/round-<N>/<agent>/, on the card and in the drawer. The drawer's section has its own
+     height cap and scroll, as the compliance matrix does, so the file list and document stay in view. */
+  .shots { margin-top: 8px; }
+  .shots-k { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .shots .note, .d-shots .note { font-size: 12px; margin: 2px 0 0; }
+  .thumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; min-width: 0; }
+  .thumbs img {
+    display: block; max-width: 100%; object-fit: contain; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 4px;
+  }
+  .card .thumbs img { width: calc(25% - 3px); max-height: 48px; }
+  .thumbs .more { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .d-shots {
+    padding: 12px 24px; border-bottom: 1px solid var(--line); max-height: 30vh; overflow-y: auto; min-width: 0;
+  }
+  .d-shots .s-title, .d-shots .group {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
+  }
+  .d-shots .group { margin-top: 10px; }
+  .s-rounds { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 2px; }
+  .s-rounds button {
+    cursor: pointer; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: none; color: var(--muted);
+  }
+  .s-rounds button:hover { color: var(--text); border-color: var(--muted); }
+  .s-rounds button.on { background: var(--card-hover); color: var(--text); border-color: var(--muted); }
+  .s-rounds button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .d-shots .thumbs { gap: 10px; align-items: start; }
+  .shot { margin: 0; width: 160px; max-width: 100%; }
+  .shot a { display: block; }
+  .shot a:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
+  .shot img { width: 100%; max-height: 120px; }
+  .shot figcaption { margin-top: 3px; font-size: 12px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
 
   /* Rendered markdown */
   .md { max-width: 680px; line-height: 1.65; }
@@ -449,6 +483,7 @@
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
+    .d-shots { padding: 10px 16px; max-height: 24vh; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     .files {
       border-right: 0; border-bottom: 1px solid var(--line); display: flex; gap: 4px;
@@ -502,6 +537,7 @@
       <div class="md matrix" id="d-compliance"></div>
       <button class="close" data-close aria-label="Close">×</button>
     </div>
+    <section class="d-shots" id="d-shots" aria-label="Screenshots"></section>
     <div class="d-body">
       <nav class="files" id="d-files"></nav>
       <article class="doc"><div class="md" id="d-doc"></div></article>
@@ -544,10 +580,29 @@ const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'co
 const POINTS = [1, 2, 3, 5, 8, 13]
 const USAGE_KEYS = ['agent', 'round', 'model', 'tokens', 'seconds']
 const DAY_MS = 24 * 60 * 60 * 1000
+// The words the page shows for the factory's own words. To rename something on screen, add one line here; later jobs
+// extend it the same way. Never rename ids, branches or job.json fields: commands and links need them as they are.
+const LABELS = {
+  // Keyed by the job slug, the id without its number, so a title survives renumbering.
+  jobs: {
+    'worktree-drift-guard': 'Branch Synchronization & Drift Mitigation',
+    'litellm-spend-and-vault': 'API Spend Optimization & Credential Isolation',
+  },
+  terms: {
+    loe: 'Compute Utilization & Level of Effort Index',
+  },
+}
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+// The display word for key in LABELS[table], or fallback, the factory's own word, when there is no entry.
+const label = (table, key, fallback) => (Object.hasOwn(LABELS[table], key) ? LABELS[table][key] : fallback)
+// A job's slug, the id without its number, and its title: the display title, or the slug when it has none.
+const slugOf = (job) => job.id.split('-').slice(1).join('-')
+const titleOf = (job) => label('jobs', slugOf(job), slugOf(job))
+// The full id, then the display title when the job has one, so the real id stays visible and copyable.
+const idTitle = (job) => (titleOf(job) === slugOf(job) ? job.id : `${job.id} · ${titleOf(job)}`)
 
 let jobs = []
 let prices = null // prices.json, or null when it could not be read
@@ -736,18 +791,21 @@ function loeText(s) {
 
 function figures(job, cost, rework) {
   const t = cost.total
-  const parts = [
-    ...(rework ? [`rework ${rework}`] : []),
-    `points ${POINTS.includes(job.points) ? job.points : '-'}`,
-    `tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`,
-    `time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`,
-    `LOE ${cost.recorded ? loeText(t) : '-'}`,
-    `full price ${priceText(cost, t.usd)}`,
-    `paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`,
-    ...moneyParts(job, cost),
-  ]
   // Non-breaking spaces keep each label on one line with its value when the card wraps.
-  return `<div class="figures">${parts.map((p) => esc(p).replace(/ /g, '&nbsp;')).join(' · ')}</div>`
+  const nb = (p) => esc(p).replace(/ /g, '&nbsp;')
+  const parts = [
+    ...(rework ? [nb(`rework ${rework}`)] : []),
+    nb(`points ${POINTS.includes(job.points) ? job.points : '-'}`),
+    nb(`tokens ${cost.recorded && t.tokens !== null ? tokensText(t.tokens) : '-'}`),
+    nb(`time ${cost.recorded && t.seconds !== null ? duration(t.seconds) : '-'}`),
+    // The LOE display name is too long for one line of a card: it wraps between its own words, and only its last
+    // word stays with the value.
+    `${esc(label('terms', 'loe', 'LOE'))}&nbsp;${esc(cost.recorded ? loeText(t) : '-')}`,
+    nb(`full price ${priceText(cost, t.usd)}`),
+    nb(`paid ${isSet(job.paid_usd) && isFigure(job.paid_usd) ? usd(job.paid_usd) : '-'}`),
+    ...moneyParts(job, cost).map(nb),
+  ]
+  return `<div class="figures">${parts.join(' · ')}</div>`
 }
 
 // Velocity: story points merged per day, over the last 7 days and the 7 days before.
@@ -1060,24 +1118,134 @@ async function reworkOf(job) {
   }
 }
 
-function card(job, past, cost, rework) {
+// ---- Screenshots ------------------------------------------------------------
+
+// The builder, reviewer-ux and reviewer-ui save screenshots in evidence/round-<N>/<agent>/, in this order on the page.
+const SHOT_AGENTS = [['builder', 'Builder'], ['ux', 'UX reviewer'], ['ui', 'UI reviewer']]
+const IMAGE = /\.(png|jpe?g|webp|gif)$/i
+const CARD_SHOTS = 4
+const shotCache = new Map() // job id -> { shots, error }, the last listing of its evidence folder
+let openShotRound = null // the round chosen in the drawer, or null for the default
+let shotsHtml = null
+
+// Every image under jobs/<id>/evidence/round-<N>/<agent>/, as { round, agent, name, url }, sorted by round, agent
+// (SHOT_AGENTS order) and file name. Anything else in the folder is ignored, so no video or other file is ever linked.
+// No evidence folder (HTTP 404) means no screenshots, not a fault; any other failure throws.
+async function listShots(id) {
+  const base = `jobs/${id}/evidence/`
+  const res = await fetch(base, { cache: 'no-store' })
+  if (res.status === 404) return []
+  if (!res.ok) throw new Error(`${base}: HTTP ${res.status}`)
+  const links = (html) => [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a')]
+    .map((a) => decodeURIComponent(a.getAttribute('href')))
+  const rounds = links(await res.text()).filter((h) => /^round-\d+\/$/.test(h))
+  const found = await Promise.all(rounds.map(async (r) => {
+    const agents = (await listLinks(base + r)).filter((h) => SHOT_AGENTS.some(([k]) => h === `${k}/`))
+    return Promise.all(agents.map(async (a) => (await listLinks(base + r + a))
+      .filter((h) => IMAGE.test(h))
+      .map((name) => ({
+        round: Number(r.slice(6, -1)), agent: a.slice(0, -1), name, url: base + r + a + encodeURIComponent(name),
+      }))))
+  }))
+  const order = (s) => SHOT_AGENTS.findIndex(([k]) => k === s.agent)
+  return found.flat(2).sort((a, b) => a.round - b.round || order(a) - order(b) || a.name.localeCompare(b.name))
+}
+
+// The job's screenshots from the cache, listed again when fresh is true or the job is not cached yet.
+async function shotsOf(job, fresh) {
+  if (!fresh && shotCache.has(job.id)) return shotCache.get(job.id)
+  let entry
+  try {
+    entry = { shots: await listShots(job.id), error: null }
+  } catch (err) {
+    entry = { shots: [], error: err.message }
+  }
+  shotCache.set(job.id, entry)
+  return entry
+}
+
+// A live job's evidence still changes, so it is listed on every poll. A merged or needs-human job's does not: it is
+// listed once per page load and again when its drawer opens, or on the next poll after a listing that failed.
+function shotsFresh(job) {
+  const had = shotCache.get(job.id)
+  return LIVE.has(job.stage) || !had || had.error !== null
+}
+
+// What agents name their files is what people read: "02-filter-applied-passed.png" is "Filter applied passed".
+function caption(name) {
+  const c = name.replace(/\.[^.]*$/, '').replace(/^\d+[-_]/, '').replace(/[-_]/g, ' ').trim()
+  return c ? c[0].toUpperCase() + c.slice(1) : name
+}
+
+// The round shown by default: the highest with any image. During a rework the new round has none until its agents
+// save some, so the approver still sees the last round that has.
+const defaultRound = (shots) => Math.max(...shots.map((s) => s.round))
+
+// The plain line for a section with nothing to show: why there are none, or why the folder could not be read.
+function noShots(job, entry) {
+  if (entry.error) return `Could not read the evidence folder: ${entry.error}`
+  return LIVE.has(job.stage) ? 'No screenshots yet.' : 'No screenshots were saved for this job.'
+}
+
+// The card's row: up to CARD_SHOTS thumbnails of the default round. They are plain images, not links, so a click on
+// one opens the drawer like the rest of the card.
+function shotsRow(job, entry) {
+  if (!entry.shots.length) {
+    return `<div class="shots"><div class="shots-k">Screenshots</div><p class="note">${esc(noShots(job, entry))}</p></div>`
+  }
+  const round = defaultRound(entry.shots)
+  const shots = entry.shots.filter((s) => s.round === round)
+  const more = shots.length - CARD_SHOTS
+  const imgs = shots.slice(0, CARD_SHOTS).map((s) =>
+    `<img src="${esc(s.url)}" alt="${esc(caption(s.name))}" loading="lazy">`).join('')
+  return `<div class="shots"><div class="shots-k">${esc(`Screenshots · round ${round} · ${shots.length}`)}</div>` +
+    `<div class="thumbs">${imgs}${more > 0 ? `<span class="more">${esc(`+${more} more`)}</span>` : ''}</div></div>`
+}
+
+// The drawer's section: a button per round with images, then the chosen round's images under their agent's heading.
+// Each thumbnail links to the full image in a new tab.
+function shotsSection(job, entry) {
+  const title = '<div class="s-title">Screenshots</div>'
+  if (!entry.shots.length) return `${title}<p class="note">${esc(noShots(job, entry))}</p>`
+  const rounds = [...new Set(entry.shots.map((s) => s.round))]
+  const round = rounds.includes(openShotRound) ? openShotRound : defaultRound(entry.shots)
+  const buttons = rounds.map((n) => {
+    const count = entry.shots.filter((s) => s.round === n).length
+    return `<button type="button" class="${n === round ? 'on' : ''}" aria-pressed="${n === round}" data-shot-round="${n}">` +
+      `${esc(`Round ${n} · ${count}`)}</button>`
+  }).join('')
+  const groups = SHOT_AGENTS.map(([k, label]) => {
+    const mine = entry.shots.filter((s) => s.round === round && s.agent === k)
+    if (!mine.length) return ''
+    const figs = mine.map((s) => {
+      const cap = esc(caption(s.name))
+      return `<figure class="shot"><a href="${esc(s.url)}" target="_blank" rel="noopener">` +
+        `<img src="${esc(s.url)}" alt="${cap}" loading="lazy"></a><figcaption>${cap}</figcaption></figure>`
+    }).join('')
+    return `<div class="group">${esc(label)}</div><div class="thumbs">${figs}</div>`
+  }).join('')
+  return `${title}<div class="s-rounds">${buttons}</div>${groups}`
+}
+
+function card(job, past, cost, rework, shots) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
   const rows = past.map((v, i) => chips(i + 1, v, false))
   if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
-  const [num, ...slug] = job.id.split('-')
+  const [num] = job.id.split('-')
   // A div, not a button, so the Approve button can sit inside it; the keydown listener gives it Enter and Space.
   return `
     <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
          role="button" tabindex="0" data-job="${esc(job.id)}">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
-        <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
+        <span class="num">${esc(num)} · ${esc(titleOf(job))}</span>
         ${human ? '<span class="flag">your call</span>' : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
       ${figures(job, cost, rework)}
+      ${shotsRow(job, shots)}
       ${rows.length ? `<div class="rounds">${rows.join('')}</div>` : ''}
       ${human ? `<div class="hint">/factory approve ${esc(job.id)}<br>/factory rework ${esc(job.id)} …</div>
       <div class="approve">
@@ -1126,7 +1294,7 @@ function graphRow(job) {
       <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
         <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
       <div class="g-text">
-        <div class="num">${esc(job.id)} · ${esc(state)}</div>
+        <div class="num">${esc(idTitle(job))} · ${esc(state)}</div>
         <p class="feature">${esc(job.feature)}</p>
         <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
         <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
@@ -1148,6 +1316,7 @@ async function render() {
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
   const pasts = await Promise.all(jobs.map(pastRounds))
   const reworks = await Promise.all(jobs.map(reworkOf))
+  const shots = await Promise.all(jobs.map((job) => shotsOf(job, shotsFresh(job))))
   jobs.forEach((job, i) => {
     const cost = costOf(job)
     problems.push(...jobProblems(job, cost))
@@ -1157,7 +1326,7 @@ async function render() {
       ? 'rework'
       : (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
     if (!col) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
-    else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0))
+    else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0, shots[i]))
   })
   // Newest first within a column.
   const html = STAGES.map((s) => `
@@ -1431,9 +1600,9 @@ const firstLines = new Map()
 function costTable(cost) {
   if (!cost.recorded) return '<p class="note">No usage recorded for this job.</p>'
   const cell = (v, fmt) => (v === null ? '-' : fmt(v))
-  const row = (label, s) => `<tr><td>${esc(label)}</td><td>${cell(s.tokens, tokensText)}</td>` +
+  const row = (name, s) => `<tr><td>${esc(name)}</td><td>${cell(s.tokens, tokensText)}</td>` +
     `<td>${cell(s.seconds, duration)}</td><td>${loeText(s)}</td><td>${esc(priceText(cost, s.usd))}</td></tr>`
-  return '<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>LOE</th><th>Full price</th></tr>' +
+  return `<table><tr><th>Round</th><th>Tokens</th><th>Time</th><th>${esc(label('terms', 'loe', 'LOE'))}</th><th>Full price</th></tr>` +
     cost.rounds.map(([n, s]) => row(n === 0 ? '0 (spec)' : String(n), s)).join('') +
     row('Total', cost.total) + '</table>'
 }
@@ -1441,11 +1610,17 @@ function costTable(cost) {
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
-  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
+  $('d-num').textContent = `${idTitle(job)} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
   $('d-title').textContent = job.feature
   $('d-branch').textContent = job.branch
   const cost = costOf(job)
   $('d-cost').innerHTML = costTable(cost) + moneyLines(job, cost)
+  // Replaced only when it changed, so the images do not flicker and the section keeps its scroll position.
+  const shots = shotsSection(job, await shotsOf(job, false))
+  if (shots !== shotsHtml) {
+    shotsHtml = shots
+    $('d-shots').innerHTML = shots
+  }
 
   const base = `jobs/${job.id}/`
   const files = sortFiles(await listFiles(base))
@@ -1486,8 +1661,12 @@ async function openDrawer(id) {
   openJobId = id
   openPath = null
   openText = undefined
+  openShotRound = null
+  shotsHtml = null
   document.body.classList.add('open')
   try {
+    const job = jobs.find((j) => j.id === id)
+    if (job) await shotsOf(job, true)
     await refreshDrawer()
   } catch (err) {
     $('d-doc').innerHTML = `<p class="note">${esc(err.message)}</p>`
@@ -1507,6 +1686,11 @@ document.addEventListener('click', (e) => {
   if (approveEl) return copyApprove(approveEl)
   const cardEl = e.target.closest('[data-job]')
   if (cardEl) return openDrawer(cardEl.dataset.job)
+  const roundEl = e.target.closest('[data-shot-round]')
+  if (roundEl) {
+    openShotRound = Number(roundEl.dataset.shotRound)
+    return refreshDrawer()
+  }
   const fileEl = e.target.closest('[data-file]')
   if (fileEl) {
     openPath = fileEl.dataset.file
