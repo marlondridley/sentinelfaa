@@ -204,16 +204,72 @@ bootstrap_login() {
         role_id="$(cat "$BOOT_DIR/role_id")" secret_id="$(cat "$BOOT_DIR/secret_id")" 2>/tmp/login.err
 }
 
+# ── The gateway's secrets: Vault is their source of truth ─────────────────────
+# secret/litellm holds the provider key, the master key and the litellm
+# database role's password; the gateway and its database jobs read them
+# through litellm-vault-agent (vault-agent/litellm.hcl). Per key:
+#   Vault has a value        -> kept; never overwritten from .env
+#   Vault has none, env has  -> copied in: the one-time migration for a stack
+#                               whose Postgres role and virtual keys already
+#                               use the old .env values
+#   neither                  -> generated (master key, database password), or
+#                               left empty with a warning (ANTHROPIC_API_KEY,
+#                               an external credential a person supplies)
+# Rotating one is a person's job, with root: see instraclustr/.env.example.
+
+# litellm_secret <key>: Vault's value for <key> at secret/litellm, empty when it
+# has none. Any other failure (denied, unreachable) returns 1, so a key is
+# never generated over a value that could not be read.
+litellm_secret() {
+    vault kv get -field="$1" secret/litellm 2>/tmp/kv.err && return 0
+    grep -qE "No value found at|not present in secret" /tmp/kv.err && return 0
+    cat /tmp/kv.err >&2
+    return 1
+}
+
+random_hex() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# litellm_value <key> <value from the environment>: prints the value to store.
+# Says what it did on stderr (stdout is the value), and never prints a value.
+litellm_value() {
+    current=$(litellm_secret "$1") || { echo "ERROR: could not read $1 at secret/litellm" >&2; return 1; }
+    if [ -n "$current" ]; then
+        echo "secret/litellm $1: in Vault, kept" >&2
+        printf '%s' "$current"
+    elif [ -n "$2" ]; then
+        echo "secret/litellm $1: copied from the environment (one-time migration; now delete it from .env)" >&2
+        printf '%s' "$2"
+    elif [ "$1" = ANTHROPIC_API_KEY ]; then
+        echo "WARNING: secret/litellm $1: none in Vault or the environment, left empty: the gateway cannot reach the model and the Critic reports itself unavailable" >&2
+    elif [ "$1" = LITELLM_MASTER_KEY ]; then
+        echo "secret/litellm $1: generated" >&2
+        printf 'sk-%s' "$(random_hex)"
+    else
+        echo "secret/litellm $1: generated" >&2
+        random_hex
+    fi
+}
+
+seed_litellm() {
+    anthropic=$(litellm_value ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}") || exit 1
+    master=$(litellm_value LITELLM_MASTER_KEY "${LITELLM_MASTER_KEY:-}") || exit 1
+    db_password=$(litellm_value LITELLM_DB_PASSWORD "${LITELLM_DB_PASSWORD:-}") || exit 1
+    # All three in one write: a kv put replaces the whole secret.
+    vault kv put secret/litellm \
+        ANTHROPIC_API_KEY="$anthropic" LITELLM_MASTER_KEY="$master" LITELLM_DB_PASSWORD="$db_password" >/dev/null
+    unset anthropic master db_password current
+    rm -f /tmp/kv.err
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 # Guarded so a script can dot-source this file for its functions
-# (write_secret_file, rotate_secret_id, root_setup, revoke_root) without
-# running the init/unseal/every-run state machine below.
+# (write_secret_file, rotate_secret_id, root_setup, revoke_root, seed_litellm)
+# without running the init/unseal/every-run state machine below.
 if [ "${VAULT_BOOTSTRAP_SOURCED:-0}" != "1" ]; then
 
 : "${POSTGRES_USER:?Missing POSTGRES_USER}"
 : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
 : "${POSTGRES_DB:?Missing POSTGRES_DB}"
-: "${LITELLM_MASTER_KEY:?Missing LITELLM_MASTER_KEY}"
 : "${APP_DB_PASSWORD:?Missing APP_DB_PASSWORD}"
 
 wait_for_vault
@@ -283,9 +339,7 @@ vault kv put secret/postgres/credentials \
     username="${POSTGRES_USER}" password="${POSTGRES_PASSWORD}" database="${POSTGRES_DB}" >/dev/null
 vault kv put secret/postgres/app \
     username="${APP_DB_USER}" password="${APP_DB_PASSWORD}" database="${POSTGRES_DB}" >/dev/null
-vault kv put secret/litellm \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" >/dev/null
+seed_litellm
 # secret/sentinel/config (LITELLM_API_KEY) is written by litellm-bootstrap.sh:
 # a scoped virtual key, not the master key.
 echo "secrets seeded"

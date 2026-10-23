@@ -88,6 +88,39 @@ and the investigations; later calls in that pass were refused and fell back to
 rules. Staging is unaffected. Search the logs for `llm_pass_budget_exhausted`
 for the pass. Raise the cap only if the burst was legitimate.
 
+### LLMBudgetNearlyUsed (warning)
+
+The application's model key (`sentinel-app`, issued by
+`instraclustr/litellm-bootstrap.sh`) has used 80% or more of its 30-day budget,
+`LITELLM_APP_BUDGET_USD`, by the gateway's own count. At 100% the gateway
+refuses every call: the Critic falls back to rules and every alert is still
+staged for a person. The supervisor decides what to do.
+1. See which agent role spent it: the gateway's spend per role
+   (`docs/operations.md`, "The gateway's spend record"). One role far above
+   the others is worth a look before anything is raised.
+2. Wait for the 30-day reset if the remaining days are few and rules-only
+   advice is acceptable until then.
+3. Or raise the budget. The operator does it for the supervisor, in two
+   places. First the key already issued: this command sets its budget to the
+   number at the end (US dollars per 30 days; `20` here). It runs inside
+   `nas-litellm` and reads the master key from the gateway's own rendered
+   secrets file there, so the key is never typed, copied or printed:
+   ```sh
+   docker exec nas-litellm python3 -c '
+   import json, sys, urllib.request as u
+   key = next(l.split("=", 1)[1].strip() for l in open("/vault/secrets/litellm.env") if l.startswith("LITELLM_MASTER_KEY="))
+   body = json.dumps({"key_alias": "sentinel-app", "max_budget": float(sys.argv[1])}).encode()
+   req = u.Request("http://localhost:4000/key/update", data=body, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+   print("sentinel-app budget is now", json.load(u.urlopen(req))["max_budget"], "USD per 30 days")
+   ' 20
+   ```
+   The gateway accepts calls again at once; the alert clears after the next
+   model call updates its figures. Then set `LITELLM_APP_BUDGET_USD` in
+   `instraclustr/.env` to the same number. Editing `.env` alone changes
+   nothing now: `litellm-bootstrap` uses it only when it issues a new key
+   (after the gateway's database is lost, for example), and it keeps a key
+   that still works.
+
 ### AgentBlockedFromDecidingOrWriting (critical)
 
 An agent tried to decide, write or stage. The tool-use policy refused it and

@@ -7,8 +7,17 @@
 # stored hash is md5, while an md5 rule already accepts SCRAM hashes. So new
 # passwords are hashed with SCRAM first, every md5 login role is re-hashed, and
 # pg_hba.conf switches only once no md5 hash is left.
+#
+# The litellm role's password is Vault's (secret/litellm), read from the file
+# litellm-vault-agent renders, mounted read-only here. LITELLM_SECRETS_FILE
+# points elsewhere only in the deployment smoke test
+# (.github/scripts/deploy-smoke.sh), which has no Vault and passes a throwaway
+# file in the same format.
 set -eu
-: "${POSTGRES_USER:?}" "${POSTGRES_PASSWORD:?}" "${APP_DB_USER:?}" "${APP_DB_PASSWORD:?}" "${LITELLM_DB_PASSWORD:?}"
+: "${POSTGRES_USER:?}" "${POSTGRES_PASSWORD:?}" "${APP_DB_USER:?}" "${APP_DB_PASSWORD:?}"
+SECRETS="${LITELLM_SECRETS_FILE:-/vault/secrets/litellm.env}"
+LITELLM_DB_PASSWORD=$(sed -n 's/^LITELLM_DB_PASSWORD=//p' "$SECRETS")
+: "${LITELLM_DB_PASSWORD:?no LITELLM_DB_PASSWORD in $SECRETS}"
 export PGPASSWORD="$POSTGRES_PASSWORD"
 PSQL="psql -h postgres -U $POSTGRES_USER -d postgres -v ON_ERROR_STOP=1 -qAt"
 HBA=/var/lib/postgresql/data/pg_hba.conf

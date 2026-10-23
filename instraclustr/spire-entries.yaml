@@ -9,11 +9,12 @@
 # `terraform plan` gives on the Vault side.
 #
 # Identity model: one SPIFFE ID per service, and one Vault cert-auth role
-# bound to exactly that ID (terraform/main.tf's `workloads`, the same six
+# bound to exactly that ID (terraform/main.tf's `workloads`, the same seven
 # names -- instraclustr/tests pins that they match). Vault's audit log then
 # names the service that read a secret. What a service may READ is set by
 # its class's policy (vault-policies/): sentinel-app for the long-running
-# services, sentinel-migrate for the schema jobs.
+# services, sentinel-migrate for the schema jobs, litellm for the model
+# gateway.
 #
 # dns_names: Vault's cert auth names a login's identity alias after the
 # certificate's Subject CN, and an X.509-SVID has a CN only when its entry has
@@ -69,3 +70,9 @@ entries:
     dns_names: [proof.sentinelfaa.invalid]
     selectors:
       - docker:label:com.sentinelfaa.identity:proof
+  # The model gateway, in the infrastructure stack: its sidecar is
+  # litellm-spiffe in instraclustr/docker-compose.yml.
+  - spiffe_id: spiffe://sentinelfaa.internal/workload/litellm
+    dns_names: [litellm.sentinelfaa.invalid]
+    selectors:
+      - docker:label:com.sentinelfaa.identity:litellm

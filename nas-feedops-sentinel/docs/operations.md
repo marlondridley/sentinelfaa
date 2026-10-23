@@ -127,6 +127,16 @@ docstring for what each step asserts.
   budget `LITELLM_APP_BUDGET_USD`, `LITELLM_APP_RPM` requests/minute) and
   stores it in Vault. LiteLLM keeps keys in its own `litellm` database
   (`litellm-db-init.sh`).
+* **The gateway's own secrets.** The Anthropic key, the LiteLLM master key
+  and the `litellm` database password live in Vault at `secret/litellm`, not
+  in `.env`. The gateway has its own identity and Vault Agent sidecar, like
+  the services here, and reads them from a memory-only file. The seed job
+  never overwrites a value Vault has; for one it lacks it takes the old `.env`
+  value once (the migration), or generates the master key and password. How
+  to migrate, how to rotate, and the two human steps (the root ceremony's
+  Terraform step and `spire-entries-apply.py`) without which the gateway, and
+  PgBouncer behind it, do not start on the live stack:
+  [`instraclustr/README.md`](../../instraclustr/README.md#gateway-secrets).
 * **Operators.** Keycloak realm roles decide who may act:
   `watch_officer` (approve / reject / monitor), `supervisor` (also override),
   `auditor` (read-only). A signed-in user with no role is read-only. Grant
@@ -191,6 +201,9 @@ Rules are in `monitoring/alert-rules.yml`; each has a runbook in
 - model p95 latency;
 - agents falling back to rules;
 - model calls refused by policy;
+- the application's model key nearing the end of its 30-day budget
+  (`LLMBudgetNearlyUsed`, from the gateway's own metrics: see "The gateway's
+  spend record");
 - an agent blocked from deciding or writing;
 - scrape targets down;
 - the alerting path itself: a heartbeat (`Watchdog`), Slack refusing
@@ -276,6 +289,93 @@ unavailable (alert `ModelCircuitOpen`). One pipeline pass may spend
 `LLM_TOKEN_BUDGET_PER_PASS` (250000) tokens; past it calls are refused (alert
 `LLMPassBudgetExhausted`). Refused calls are recorded in `model_calls` as
 `circuit_open` or `budget_exhausted` and are excluded from the success rate.
+
+### The gateway's spend record
+
+There are two records of every model call, kept by two different
+components. The application writes `model_calls` (one row per call, in
+`sentinel_db`). The gateway, LiteLLM, writes its own spend record
+(`LiteLLM_SpendLogs`, in its separate `litellm` database): one row per request
+it received, with its cost and a tag naming the agent role that sent it,
+`role:<role>` (`role:critic`, for example, or `role:unregistered` for a call
+with no role). The application adds that tag (`x-litellm-tags`,
+`src/llm_client.py`) and nothing else from the call: no alert or flight data.
+The gateway keeps no prompt or response text in it
+(`store_prompts_in_spend_logs` is off in `instraclustr/litellm-config.yaml`).
+Because one component cannot quietly edit the other's record, comparing them
+is an audit check. Neither record changes what any agent or action does.
+
+**Who checks, and when.** The supervisor (or the operator, for them), when
+`LLMBudgetNearlyUsed` fires, after a cost question, or as a periodic audit.
+Run both commands from the repository root in Git Bash (or any sh).
+
+1. The gateway's figures per role. This runs inside `nas-litellm` and reads
+   the master key from the gateway's own rendered secrets file there, so the
+   key is never typed, copied or printed:
+   ```sh
+   docker exec nas-litellm python3 -c '
+   import json, urllib.request as u
+   key = next(l.split("=", 1)[1].strip() for l in open("/vault/secrets/litellm.env") if l.startswith("LITELLM_MASTER_KEY="))
+   req = u.Request("http://localhost:4000/spend/tags", headers={"Authorization": "Bearer " + key})
+   for row in json.load(u.urlopen(req)):
+       print(row["individual_request_tag"], row["log_count"], row["total_spend"])
+   '
+   ```
+   Each line is a tag, the number of requests, and their cost in US dollars,
+   over everything the gateway has recorded. Compare only the `role:` lines:
+   the gateway also tags each request with the caller's `User-Agent:` by
+   itself. To see the requests one by one, change the path to `/spend/logs`
+   and print each row's `startTime`, `status`, `request_tags` and `spend`
+   instead.
+2. The application's figures per role, from `model_calls`, in the same form:
+   ```sh
+   docker exec nas-api python -c '
+   import asyncio, collections
+   from datetime import datetime, timezone
+   from src import storage
+   rows = asyncio.run(storage.get_model_calls_since(datetime(2000, 1, 1, tzinfo=timezone.utc)))
+   total = collections.defaultdict(lambda: [0, 0.0])
+   for r in rows:
+       total["role:" + r["role"]][0] += r["attempts"]
+       total["role:" + r["role"]][1] += r["cost_usd"] or 0.0
+   for tag, (requests, cost) in sorted(total.items()):
+       print(tag, requests, round(cost, 6))
+   '
+   ```
+   It counts attempts, not rows: a call that needed its one schema repair is
+   one row and two gateway requests. Refused calls (`policy_denied`,
+   `budget_exhausted`, `circuit_open`) count 0, because nothing was sent.
+
+Both cover everything recorded so far (the gateway's `/spend/tags` ignores a
+date range). Calls made before the tag existed are in `model_calls` but have
+no tag at the gateway, so the first comparison is a baseline: write down both
+outputs, and at each later check compare how much each figure has grown.
+
+**What a mismatch means.** Small differences are expected: a request that
+never reached the gateway (a connection failure, which the client retries
+once) counts on the application side only, and one the gateway refused
+before running it (the key over its budget, for example) is in its record
+without a tag. A role whose requests or cost
+grew clearly more at the gateway than in `model_calls` means something called
+the gateway without being recorded: a code path that bypasses
+`src/llm_client.py`, or a key used by something other than the application.
+Clearly more in `model_calls` than at the gateway means the gateway lost
+records. Either way, open an issue with both outputs; do
+not edit either record. Until it is explained, treat the cost figures on the
+Agent Evaluation page as unconfirmed.
+
+**The gateway's metrics.** The gateway also serves Prometheus metrics on
+`http://nas-litellm:4000/metrics/`, scraped as job `nas-litellm`; the
+`sentinel-app` key's remaining and maximum budget there feed
+`LLMBudgetNearlyUsed` (`docs/runbooks.md`). The owner chose to let that
+endpoint answer without a key, so no key has to be put in
+`monitoring/prometheus.yml` (`require_auth_for_metrics_endpoint: false` in
+`instraclustr/litellm-config.yaml`). That choice has a cost. Any container on
+`nas-network` can read the gateway's metrics, which include key aliases, key
+hashes and spend and budget figures, though no prompt, response or key.
+Nothing outside this machine can reach it: the gateway's host port is
+`127.0.0.1:4000` only. To require a key again, set that setting to `true`; the
+scrape then needs a key of its own, which is a separate change.
 
 ## The FAA SWIM Jumpstart kit
 

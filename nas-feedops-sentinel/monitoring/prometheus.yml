@@ -60,6 +60,15 @@ scrape_configs:
       - targets: ["temporal:8000"]
         labels: {service: temporal, tracon: PCT}
 
+  # The model gateway, in the infrastructure stack (../instraclustr/docker-compose.yml, container nas-litellm): the
+  # application key's remaining and maximum budget, for LLMBudgetNearlyUsed. Its /metrics takes no key
+  # (litellm-config.yaml, require_auth_for_metrics_endpoint), so none is here. /metrics redirects to /metrics/.
+  - job_name: nas-litellm
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["nas-litellm:4000"]
+        labels: {service: litellm, tracon: PCT}
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]

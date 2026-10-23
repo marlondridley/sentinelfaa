@@ -72,7 +72,13 @@ def test_no_other_provider_key_is_wired_into_the_stack(path):
     assert not other, f"{path} references {sorted(set(other))}"
 
 
-def test_the_one_provider_key_reaches_the_gateway():
+def test_the_one_provider_key_reaches_the_gateway_through_its_vault_agent_only():
     compose = yaml.safe_load((INFRA / "docker-compose.yml").read_text(encoding="utf-8"))
-    environment = compose["services"]["litellm"]["environment"]
-    assert any(str(v).startswith("ANTHROPIC_API_KEY=") for v in environment), environment
+    litellm = compose["services"]["litellm"]
+    assert "ANTHROPIC_API_KEY" not in str(litellm.get("environment") or ""), "not from compose or .env"
+    assert "litellm-secrets:/vault/secrets:ro" in litellm["volumes"]
+    agent = (INFRA / "vault-agent" / "litellm.hcl").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY={{ .Data.data.ANTHROPIC_API_KEY }}" in agent
+    entrypoint = (INFRA / "litellm-entrypoint.sh").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY=*" in entrypoint, "exported from the rendered file, for os.environ/ANTHROPIC_API_KEY"
+    assert not re.search(r"^ANTHROPIC_API_KEY=", (INFRA / ".env.example").read_text(encoding="utf-8"), re.M)

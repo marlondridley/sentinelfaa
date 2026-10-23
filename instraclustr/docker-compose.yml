@@ -244,8 +244,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
+      # The gateway's secrets live in Vault (secret/litellm). These are read
+      # only when Vault has no value yet: the one-time migration from an old
+      # .env. Empty, the seed generates the master key and database password
+      # (vault-unseal-and-seed.bash, seed_litellm).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:-}
       APP_DB_USER: ${APP_DB_USER:-sentinel_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
     volumes:
@@ -370,18 +375,19 @@ services:
     depends_on:
       vault-unseal:
         condition: service_completed_successfully
+      litellm-vault-agent:
+        condition: service_healthy
       litellm-db-init:
         condition: service_completed_successfully
-    environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Its own database, for virtual keys (litellm-db-init.sh). Direct to
-      # Postgres: Prisma needs session-level connections, not the pooler.
-      # No Vault token here any more -- the provider keys come from env, and
-      # the proxy never needed root access to Vault.
-      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@postgres:5432/litellm
+    # No secret in its environment, and no Vault token: the provider key, the
+    # master key and the database password (for DATABASE_URL) come from the
+    # file litellm-vault-agent renders, which litellm-entrypoint.sh reads and
+    # then starts the image's own entrypoint with the command below.
+    entrypoint: ["/bin/sh", "/scripts/litellm-entrypoint.sh"]
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./litellm-entrypoint.sh:/scripts/litellm-entrypoint.sh:ro
+      - litellm-secrets:/vault/secrets:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:4000/health/liveliness\")' || exit 1"]
@@ -399,15 +405,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # The litellm role's password is in the gateway's rendered file.
+      litellm-vault-agent:
+        condition: service_healthy
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       APP_DB_USER: ${APP_DB_USER:-sentinel_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
-      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-scram.sh:/scripts/postgres-scram.sh:ro
+      - litellm-secrets:/vault/secrets:ro
     entrypoint: ["/bin/sh", "/scripts/postgres-scram.sh"]
 
   # One-shot: LiteLLM's own database and login role (idempotent).
@@ -418,17 +427,21 @@ services:
       # After the switch, so the password it sets is hashed with SCRAM.
       postgres-scram:
         condition: service_completed_successfully
+      litellm-vault-agent:
+        condition: service_healthy
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
     volumes:
       - ./litellm-db-init.sh:/scripts/litellm-db-init.sh:ro
+      # The litellm role's password, from the gateway's rendered file.
+      - litellm-secrets:/vault/secrets:ro
     entrypoint: ["/bin/sh", "/scripts/litellm-db-init.sh"]
 
   # One-shot: the application's scoped virtual key, stored in Vault
   # (litellm-bootstrap.sh). The application services receive it through their
-  # Vault Agent sidecars; the master key stays with the proxy.
+  # Vault Agent sidecars; the master key stays with the proxy, and this job
+  # reads it from Vault as vault-bootstrap, never from .env.
   litellm-bootstrap:
     image: hashicorp/vault:1.15.2
     container_name: litellm-bootstrap
@@ -440,7 +453,6 @@ services:
     environment:
       VAULT_ADDR: "https://vault:8200"
       VAULT_CACERT: /certs-trust/root-ca.crt
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       LITELLM_APP_BUDGET_USD: ${LITELLM_APP_BUDGET_USD:-10}
       LITELLM_APP_RPM: ${LITELLM_APP_RPM:-30}
     volumes:
@@ -448,6 +460,56 @@ services:
       - ./vault-init-data/bootstrap:/vault-bootstrap:ro
       - ./certs/trust:/certs-trust:ro
     entrypoint: ["/bin/sh", "/scripts/litellm-bootstrap.sh"]
+
+  # The gateway's workload identity sidecars, the same pair every application
+  # service has (../nas-feedops-sentinel/docker-compose.yml, x-spiffe-helper
+  # and x-vault-agent: the same pinned images, uid 999 and memory-only
+  # volumes). spire-agent issues litellm-spiffe the gateway's own X.509-SVID
+  # (spire-entries.yaml); litellm-vault-agent logs in to Vault with it and
+  # renders secret/litellm (vault-policies/litellm.hcl) into
+  # /vault/secrets/litellm.env. Needs the litellm entry applied
+  # (scripts/spire-entries-apply.py) and the root ceremony's Terraform step;
+  # until both are done the gateway does not start.
+  litellm-spiffe:
+    image: ghcr.io/spiffe/spiffe-helper:0.10.0@sha256:95f5000aa1e0aadbfde20d66f1ad25733034162825aa51cc922ac78365bb8ee8
+    container_name: nas-litellm-spiffe
+    user: "999:999"
+    restart: unless-stopped
+    labels:
+      com.sentinelfaa.identity: litellm
+    depends_on:
+      - spire-agent
+    command: ["-config", "/etc/spiffe-helper/spiffe-helper.conf"]
+    volumes:
+      - nas-spire-agent-socket:/tmp/spire-agent/public:ro
+      - ./vault-agent:/etc/spiffe-helper:ro
+      - litellm-svid:/run/spiffe
+
+  litellm-vault-agent:
+    image: hashicorp/vault:1.15.2@sha256:6b4e5dadf082cb3587930ced09b52851c5ae9f8d1c7df31ed39f0085a3029f63
+    container_name: nas-litellm-vault-agent
+    user: "999:999"
+    restart: unless-stopped
+    entrypoint: ["vault", "agent", "-config=/vault/agent/litellm.hcl"]
+    depends_on:
+      litellm-spiffe:
+        condition: service_started
+      # secret/litellm holds all three values once the seed has run.
+      vault-unseal:
+        condition: service_completed_successfully
+    volumes:
+      - ./vault-agent:/vault/agent:ro
+      - ./certs/trust:/certs-trust:ro
+      - litellm-svid:/run/spiffe:ro
+      - litellm-secrets:/vault/secrets
+    healthcheck:
+      # Healthy once the gateway's secrets are rendered: the gateway and the
+      # two database jobs wait for this.
+      test: ["CMD-SHELL", "test -s /vault/secrets/litellm.env"]
+      interval: 3s
+      timeout: 3s
+      start_period: 5s
+      retries: 60
 
 volumes:
   # cassandra-data:      -- unused, see DISABLED block above
@@ -457,6 +519,20 @@ volumes:
   vault-unseal-share:
   spire-server-data:
   spire-agent-data:
+  # The gateway's SVID and rendered secrets: memory only, readable by uid 999
+  # (its two sidecars) and by root in the containers that mount them.
+  litellm-svid:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=999,gid=999,mode=0700"
+  litellm-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=999,gid=999,mode=0700"
   # External, like nas-network: one real volume, pre-created by
   # launch_nas_sentinel.ps1, shared with nas-feedops-sentinel/docker-compose.yml
   # rather than two separately project-scoped volumes of the same name.
