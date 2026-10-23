@@ -544,13 +544,16 @@
     background-color: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
   }
   #exec-bar .sprint-dot.unset { background-color: #64748B; box-shadow: none; }
+  /* The pulse is two stacked lines, as in the owner's image: a small label over the figures, both figures in the bar's
+     sans-serif at the line's size. */
   #exec-bar .header-center { min-width: 0; font-size: 13px; color: #94A3B8; white-space: nowrap; }
-  #exec-bar .pulse-label { margin-right: 6px; font-weight: 500; color: #CBD5E1; }
-  #exec-bar .pulse-metrics { color: #E2E8F0; }
-  #exec-bar .spend-amount {
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 15px; font-weight: 700; color: #F8FAFC;
+  #exec-bar .pulse-label {
+    display: block; margin-bottom: 2px; font-size: 11px; line-height: 1.3; font-weight: 500; color: #CBD5E1;
   }
-  #exec-bar .spend-percent, #exec-bar .pulse-reason { font-size: 12px; color: #94A3B8; }
+  #exec-bar .pulse-metrics { display: block; font-size: 14px; line-height: 1.3; color: #E2E8F0; }
+  #exec-bar .pulse-metrics strong { font-weight: 700; color: #F8FAFC; }
+  #exec-bar .spend-percent { font-weight: 400; color: #94A3B8; }
+  #exec-bar .pulse-reason { font-size: 12px; color: #94A3B8; }
   #exec-bar .header-right { display: flex; align-items: center; gap: 10px; }
   #exec-bar .btn-header {
     display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; white-space: nowrap;
@@ -1191,16 +1194,20 @@ function closeTips() {
 
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
-// Compact money, for the header bar only; usd() stays two-decimal everywhere else. The amount is first rounded to the
-// nearest whole dollar, half up. Under $1,000 it shows whole: $0, $45, $999. From $1,000 it shows thousands, the
-// amount / 1000 to one decimal with a trailing .0 dropped, suffix k: $1k, $1.2k, $12k. From 1,000k the same
-// in millions, suffix M: $1.5M. The bar's title holds the two-decimal figures, so the rounding is never the only source.
+// Compact money, for the header bar's budget only; usd() stays two-decimal everywhere else. The amount is first rounded
+// to the nearest whole dollar, half up. Under $1,000 it shows whole: $0, $45, $999. From $1,000 it shows thousands, the
+// amount / 1000 to at most two decimals with trailing zeros dropped, suffix k: $1k, $1.25k, $2.5k, $10k. A figure that
+// would round to 1,000k shows in millions by the same rule, suffix M: $1.5M. The bar's title holds the two-decimal
+// figures, so the rounding is never the only source.
 function compactUsd(v) {
   const n = Math.round(v)
   if (n < 1000) return `$${n}`
-  const k = Math.round(n / 100) / 10
-  return k < 1000 ? `$${k}k` : `$${Math.round(n / 1e5) / 10}M`
+  const k = Math.round(n / 10) / 100
+  return k < 1000 ? `$${k}k` : `$${Math.round(n / 1e4) / 100}M`
 }
+
+// Whole dollars with thousands separators, for the header bar's spend: $782, $1,234. Rounded half up, as compactUsd.
+const wholeUsd = (v) => `$${Math.round(v).toLocaleString('en-US')}`
 
 // The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
 function kpis() {
@@ -1231,10 +1238,11 @@ function strip() {
 // The Executive Financial Pulse figures for the header bar: this calendar month's spend at list price, and the owner's
 // monthly budget, or null when it is not set.
 // The usage log has no dates, so each job's whole full price is placed in one month by one date: a merged job in the
-// month of its merged_at, a job not yet merged in this month, as its work is being paid for now. A merged job with no
-// readable merged_at cannot be placed, and a counted job with an unknown price makes the spend unknown: either shows
-// "-" with the first such job named, never a short total. The month is the viewer's local calendar month, from the
-// browser's clock and time zone; merged_at instants are compared with its local start and end in absolute time.
+// month of its merged_at, a job not yet merged in this month, as its work is being paid for now. Spend is the sum of
+// the priced jobs placed in this month. A merged job with no readable merged_at cannot be placed, and a job placed in
+// this month with an unknown price cannot be summed: both are left out and counted in leftOut, which the bar states,
+// so the figure is never replaced by "-" for them. The month is the viewer's local calendar month, from the browser's
+// clock and time zone; merged_at instants are compared with its local start and end in absolute time.
 function pulse() {
   const now = new Date(Date.now())
   const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
@@ -1242,27 +1250,30 @@ function pulse() {
   const month = new Date(start).toLocaleString('en-US', { month: 'short', year: 'numeric' })
   let spent = 0
   let counted = 0
-  let gap = null
+  let leftOut = 0
   for (const job of jobs) {
     const at = job.stage === 'merged' ? mergedAt(job) : start
     if (at === null) {
-      gap = gap || `no merged_at on job ${job.id}`
+      leftOut++
       continue
     }
     if (at < start || at >= end) continue
-    counted++
     const price = costOf(job).total.usd
-    if (price === null) gap = gap || `unknown price on job ${job.id}`
-    else spent += price
+    if (price === null) {
+      leftOut++
+      continue
+    }
+    counted++
+    spent += price
   }
   const budget = isSet(engagement.monthly_budget_usd) ? engagement.monthly_budget_usd : null
-  return { month, spent, counted, gap, budget }
+  return { month, spent, counted, leftOut, budget }
 }
 
 // The header bar's left and centre groups; its right group, the stream link, is static so a poll never redraws it.
 // Client and sprint come only from engagement.json and show "-" when unset. The select has the one engagement and is
-// disabled: the page cannot switch projects. The centre line is compact; its title has the two-decimal figures and
-// what they cover, and a figure that cannot be known shows "-" with the reason after the line.
+// disabled: the page cannot switch projects. The centre is a label over one compact line of figures; its title has the
+// two-decimal figures and what they cover, and the jobs left out or a budget that is not set are said after the line.
 function execBar() {
   const p = pulse()
   const client = isSet(engagement.client) ? engagement.client : '-'
@@ -1273,20 +1284,25 @@ function execBar() {
     '<span class="dropdown-arrow" aria-hidden="true">▾</span></div></div>' +
     `<div class="sprint-pill"><span class="sprint-dot${isSet(engagement.sprint) ? '' : ' unset'}"></span>` +
     `<span>SPRINT ${esc(sprint)}</span></div>`
-  const pct = p.gap || p.budget === null ? '-' : percent(p.spent, p.budget)
+  // Spend shows "-" only when there is nothing at all this month: no priced job and none left out.
+  const none = p.counted === 0 && p.leftOut === 0
+  const pct = none || p.budget === null ? '-' : percent(p.spent, p.budget)
   const reasons = [
-    ...(p.gap ? [p.gap] : []),
+    ...(p.leftOut ? [`${p.leftOut} ${p.leftOut === 1 ? 'job' : 'jobs'} left out: no date or price`] : []),
     ...(p.budget === null ? ['set monthly_budget_usd in factory/engagement.json'] : []),
   ]
-  const centre = '<span class="pulse-label">Executive Financial Pulse:</span> <span class="pulse-metrics">' +
-    `<strong class="spend-amount">${esc(p.gap ? '-' : compactUsd(p.spent))}</strong> Spend this Month / ` +
+  // The label names the owner when engagement.json has one; the parenthesis is left open, as the owner drew it.
+  const owner = isSet(engagement.owner) ? engagement.owner.trim() : ''
+  const label = owner ? `Executive Financial Pulse (${owner}'s spend data aggregated into:` : 'Executive Financial Pulse:'
+  const centre = `<span class="pulse-label">${esc(label)}</span><span class="pulse-metrics">` +
+    `<strong class="spend-amount">${esc(none ? '-' : wholeUsd(p.spent))}</strong> Spend this Month / ` +
     `<strong>${esc(p.budget === null ? '-' : compactUsd(p.budget))}</strong> Budget ` +
-    `<span class="spend-percent">(${esc(pct)})</span></span>` +
-    reasons.map((r) => ` <span class="pulse-reason">(${esc(r)})</span>`).join('')
+    `<span class="spend-percent">(${esc(pct)})</span>` +
+    reasons.map((r) => ` <span class="pulse-reason">(${esc(r)})</span>`).join('') + '</span>'
   // usd() has no thousands separators; the title shows them, as in the owner's image ($1,840.00).
   const money = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const title = [
-    `Spend (${p.month}): ${p.gap ? '-' : money(p.spent)} / ${p.budget === null ? '-' : money(p.budget)} monthly budget (${pct})`,
+    `Spend (${p.month}): ${none ? '-' : money(p.spent)} / ${p.budget === null ? '-' : money(p.budget)} monthly budget (${pct})`,
     'this calendar month only, in your time zone; the strip is all jobs, all time',
     `list price, not paid · ${p.counted} ${p.counted === 1 ? 'job' : 'jobs'} this month`,
     ...reasons,
@@ -1598,15 +1614,18 @@ async function loadPrices() {
 }
 
 // engagement.json, beside prices.json, is optional and written only by the owner; the factory never creates it:
-//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0> }
-// Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. A file that is
-// not valid JSON, or a key of the wrong type, shows "-" for what it cannot read and says so in a banner.
+//   { "client": "<text>", "stage": "<text>", "sprint": <whole number>, "monthly_budget_usd": <number >= 0>,
+//     "owner": "<text>" }
+// Every key is optional. A missing file, a missing key or null shows "-": no value is ever defaulted. owner is the
+// exception: it is the name in the pulse label, and unset (or blank) it is left out of the label rather than shown "-".
+// A file that is not valid JSON, or a key of the wrong type, is treated as unset and said in a banner.
 // The folder index is read first so a missing file is not fetched, which would log a 404 on every poll.
 const ENGAGEMENT_KEYS = {
   client: [(v) => typeof v === 'string', 'text'],
   stage: [(v) => typeof v === 'string', 'text'],
   sprint: [(v) => Number.isInteger(v) && v >= 0, 'a whole number'],
   monthly_budget_usd: [(v) => Number.isFinite(v) && v >= 0, 'an amount in dollars'],
+  owner: [(v) => typeof v === 'string', 'text'],
 }
 
 async function loadEngagement() {
@@ -1627,7 +1646,8 @@ async function loadEngagement() {
   for (const [k, [ok, kind]] of Object.entries(ENGAGEMENT_KEYS)) {
     if (!isSet(e[k])) continue
     if (ok(e[k])) engagement[k] = e[k]
-    else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so it shows -`)
+    else engagementProblems.push(`engagement.json has ${k} ${JSON.stringify(e[k])}, not ${kind}, so ` +
+      (k === 'owner' ? 'the pulse label leaves it out' : 'it shows -'))
   }
 }
 
