@@ -72,6 +72,7 @@ state that never lands in a commit.
 <repo>/factory/prices.json                     list price per model, for the dashboard's full price (committed)
 <repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd, traditional_usd_per_point for the dashboard; never created or defaulted
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
+<repo>/factory/jobs/<job-id>/events.jsonl      the job's event log (you append to it, only the dashboard's live event stream reads it)
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/rework-<k>.md     written by you, from /factory rework
@@ -194,6 +195,53 @@ read `not run`, until a job builds that check. Status is only ever `passed`,
   has no `stage_log` keeps none: never start one part-way through a job, and
   never work out times from file dates.
 
+### Events
+
+`events.jsonl` is your record of what you saw happen in the job, for the
+dashboard's live event stream: one JSON object per line, appended with a single
+
+```bash
+printf '%s\n' '<json>' >> factory/jobs/<job-id>/events.jsonl
+```
+
+Never rewrite, edit, reorder or delete a line. Each line has `t`, the UTC time
+from `date -u +%Y-%m-%dT%H:%M:%SZ` taken when the transition happens, and
+`event`, one of:
+
+```json
+{"t":"2026-10-21T13:06:40Z","event":"agent_started","agent":"builder","round":1}
+{"t":"2026-10-21T13:31:02Z","event":"agent_finished","agent":"builder","round":1,"verdict":"READY"}
+{"t":"2026-10-21T13:31:05Z","event":"stage_changed","from":"build","to":"review"}
+{"t":"2026-10-21T14:05:00Z","event":"merged","commit":"4f2a9c1"}
+```
+
+- `agent_started` and `agent_finished`: `agent` is the `subagent_type` and
+  `round` means what it means in `usage`. `agent_finished` also has `verdict`:
+  the first-line result you read (`PASS`, `CHANGES`, `READY`, `BLOCKED`,
+  `APPROVE`, `ESCALATE`), or `null` for the spec-writer, which has none, and
+  for an agent that finished without a readable first line.
+- `stage_changed`: `from` and `to` are `stage` values; `from` is `null` for the
+  job's first event. Append one every time you set `stage`, in the same moment
+  as its `stage_log` entry.
+- `merged`: `commit` is the merge commit id you write to `job.json`.
+- The job id is the folder name and is not repeated in the line.
+
+Append `agent_started` immediately before you spawn or resume an agent (each of
+the four reviewers gets its own line) and `agent_finished` as soon as it
+returns, in the same moment as its `usage` entry. The steps below name each
+append point. The dashboard shows an agent as running while its start has no
+finish and the job's `stage` is `spec`, `build`, `review` or `approve`.
+
+The log is separate from `job.json` and from the `stage_log` and `merged_at`
+timestamps: `job.json` stays the only source of every figure, stage and card on
+the dashboard. The log is for visibility only and may be missing, so nothing
+but the dashboard's live event stream reads it; no agent reads it and no figure
+depends on it. Never write an event for something you did not do, never
+estimate a time, and never back-fill old jobs: a job without the file has no
+events. If an append fails, tell the user and carry on; the loop never depends
+on the log. It is bounded by the loop itself (about 20 lines per round), so it
+is never rotated.
+
 ### Prompts
 
 Every agent prompt starts with the job's absolute paths:
@@ -215,7 +263,8 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
    `round: 0`, all reviews `pending`, `commit`, `behind`, `base`, `points`,
    `paid_usd` and `merged_at` `null`, `usage: []`, and a `stage_log` holding
-   one entry, `{ "stage": "spec", "at": "<now>" }` (see **job.json**).
+   one entry, `{ "stage": "spec", "at": "<now>" }` (see **job.json**). Start
+   `events.jsonl` with `stage_changed` from `null` to `spec` (see **Events**).
 2. **Worktree.** Create the branch and its worktree from `main`:
    ```bash
    git worktree add -b factory/<job-id> <worktree> main
@@ -225,15 +274,17 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
    the worktree, run the setup AGENTS.md gives for a fresh checkout
    (installing dependencies, for example). If any of it fails, stop and tell
    the user.
-3. **Spec.** Spawn `spec-writer` with the prompt
-   `<paths> Feature: <feature, verbatim>`.
-   Wait for it to finish, append its `usage` entry, then check that `spec.md`
+3. **Spec.** Append `agent_started` for `spec-writer`, round 0, then spawn
+   `spec-writer` with the prompt `<paths> Feature: <feature, verbatim>`.
+   Wait for it to finish, append its `usage` entry and `agent_finished` with
+   `verdict: null`, then check that `spec.md`
    exists and has a line `Story points: N`, directly under the title block,
    with N one of 1, 2, 3, 5, 8, 13. Copy N into `job.json` as `points`. If
    `spec.md` is missing, or the line is missing or N is not one of those values,
    stop and tell the user which; never pick a value yourself.
-4. **Build.** Set `stage: "build"` and append a `stage_log` entry. Spawn
-   `builder` **with the name
+4. **Build.** Set `stage: "build"` and append a `stage_log` entry and a
+   `stage_changed` event. Append `agent_started` for `builder`, round 1, then
+   spawn `builder` **with the name
    `builder-<job-id>`** and the prompt `<paths> Build round 1. Port: <port>.`
    Wait for it to finish, then go to **Build check**.
 
@@ -241,30 +292,35 @@ gets `5102 + 10n`, appended as ` Port: <port>.`
 
 Every builder run (first run, resume or rework) ends here. Append its `usage`
 entry, refresh `commit` to the branch tip and `behind` and `base` with it, then
-read the first line of `build.md`.
+read the first line of `build.md` and append `agent_finished` for `builder`
+with that `verdict` (`READY`, `BLOCKED`, or `null` if it is neither).
 
 - `STATUS: READY`: start the next review round.
 - `STATUS: BLOCKED`: go to **Needs human**.
 
 ### Review round N
 
-1. Set `stage: "review"` and append a `stage_log` entry, and set `round: N`
-   and all four reviews to `pending`. Create
+1. Set `stage: "review"` and append a `stage_log` entry and a `stage_changed`
+   event, and set `round: N` and all four reviews to `pending`. Create
    `factory/jobs/<job-id>/round-<N>/`.
-2. Spawn all four reviewers **in one message**, so they run in parallel. Each
+2. Append one `agent_started` line, round N, for each of the four reviewers,
+   then spawn all four **in one message**, so they run in parallel. Each
    gets the prompt `<paths> Review round N.`, plus its port for `reviewer-ux`
    and `reviewer-ui`.
 3. **WAIT FOR ALL.** Each time a reviewer finishes, read the first line of its
    file (`VERDICT: PASS` or `VERDICT: CHANGES`) and write that verdict and the
    reviewer's `usage` entry to `job.json` straight away, so the dashboard chips
-   fill in as they land. The round is done only when all four `review-*.md`
-   files exist in `round-<N>/`.
+   fill in as they land, and append its `agent_finished` with that `verdict`.
+   The round is done only when all four `review-*.md` files exist in
+   `round-<N>/`.
    Never resume the builder mid-round. If a reviewer finishes without writing
-   its file, or writes a first line that isn't a verdict, stop and tell the user.
+   its file, or writes a first line that isn't a verdict, append its
+   `agent_finished` with `verdict: null`, then stop and tell the user.
 4. Decide:
    - **All PASS**: go to **Approve**.
    - **Any CHANGES, resumes left**: set `stage: "build"` and append a
-     `stage_log` entry, then resume the same builder with `SendMessage` to
+     `stage_log` entry and a `stage_changed` event, append `agent_started` for
+     `builder`, round N+1, then resume the same builder with `SendMessage` to
      `builder-<job-id>`:
      `Round N reviews are in factory/jobs/<job-id>/round-<N>/. Address every review with VERDICT: CHANGES, commit, and update build.md for round N+1.`
      Wait for it to finish, then go to **Build check**.
@@ -275,10 +331,12 @@ read the first line of `build.md`.
 
 ### Approve
 
-Set `stage: "approve"` and append a `stage_log` entry. Spawn `approver` with
-the prompt `<paths> Final round: N.`
+Set `stage: "approve"` and append a `stage_log` entry and a `stage_changed`
+event. Append `agent_started` for `approver`, round N, then spawn `approver`
+with the prompt `<paths> Final round: N.`
 When it finishes, append its `usage` entry, then read the first line of
-`decision.md`:
+`decision.md` and append `agent_finished` for `approver` with that `verdict`
+(`APPROVE`, `ESCALATE`, or `null` if it is neither):
 
 - `APPROVE`: go to **Merge**.
 - `ESCALATE`: go to **Needs human**.
@@ -316,8 +374,8 @@ you took in this Merge; never delete or break another job's lock.
      remove it yourself, and do not call any other holder stale. Keep trying
      the `mkdir`, so the merge goes on as soon as they have removed it.
    - If you still cannot take `.merge-lock` after 30 minutes of waiting, set
-     `stage: "needs-human"`, append a `stage_log` entry, and tell the user
-     which job holds the lock. If that
+     `stage: "needs-human"`, append a `stage_log` entry and a `stage_changed`
+     event, and tell the user which job holds the lock. If that
      job's session is no longer running, the lock is stale and they remove it
      with `rm -r factory/jobs/.merge-lock`. Once that merge has finished (or the
      stale lock is gone), they run `/factory approve` with this job's id, not
@@ -347,7 +405,8 @@ you took in this Merge; never delete or break another job's lock.
    when the job adds a file at the same path. A dirty folder (`?? dir/`)
    overlaps when any job path is under it. If any path overlaps, or the
    checkout is not on `main`, release the lock, set `stage: "needs-human"`,
-   append a `stage_log` entry, and tell the user the job is approved but cannot
+   append a `stage_log` entry and a `stage_changed` event, and tell the user
+   the job is approved but cannot
    merge: the main checkout has
    uncommitted changes to files this job also changes (name each overlapping
    file), or is on another branch (name it). They commit, stash or remove those
@@ -413,19 +472,24 @@ you took in this Merge; never delete or break another job's lock.
    `stage: "merged"`, `commit` to that id, `behind` and `base` to
    `null`, and `merged_at` to the current UTC time
    (`date -u +%Y-%m-%dT%H:%M:%SZ`), and append a `stage_log` entry for
-   `merged` with that same time. If the merge fails, run
+   `merged` with that same time. In the same moment append a `merged` event
+   with that `commit` and a `stage_changed` event to `merged`, both with that
+   same time. If the merge fails, run
    `git merge --abort` (when a merge is in progress), then release the lock, set
-   `stage: "needs-human"`, append a `stage_log` entry, and tell the user why;
+   `stage: "needs-human"`, append a `stage_log` entry and a `stage_changed`
+   event, and tell the user why;
    once they have fixed the cause they run `/factory approve <job-id>`. If
    removing the worktree fails, the job is still merged: release the lock, set
    `stage: "merged"`, `commit`, `behind`, `base` and `merged_at` as above,
-   append the `merged` `stage_log` entry as above, and tell the user
+   append the `merged` `stage_log` entry and the `merged` and `stage_changed`
+   events as above, and tell the user
    what `git worktree remove` printed, and that `factory/<job-id>` is left to
    delete with `git branch -d` once the worktree is gone. Never push.
 
 ### Needs human
 
-Set `stage: "needs-human"`, append a `stage_log` entry, and refresh `commit`
+Set `stage: "needs-human"`, append a `stage_log` entry and a `stage_changed`
+event, and refresh `commit`
 to the branch tip, and `behind` and `base`. The branch
 and its worktree stay for the human to inspect. Tell the user which job is waiting, give the worktree path, and quote
 why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
@@ -451,8 +515,10 @@ The job must be in `needs-human`.
 
 1. Write the note, verbatim, to `factory/jobs/<job-id>/rework-<k>.md`, where `k`
    is the next unused number.
-2. Set `stage: "build"` and append a `stage_log` entry.
-3. Spawn a fresh `builder` named `builder-<job-id>` with the prompt
+2. Set `stage: "build"` and append a `stage_log` entry and a `stage_changed`
+   event.
+3. Append `agent_started` for `builder`, round N, then spawn a fresh `builder`
+   named `builder-<job-id>` with the prompt
    `<paths> Rework: read rework-<k>.md and address it, then update build.md for round N+1. Port: <port>.`
    (`N` is the job's last round.) A rework run gets a fresh `MAX_RESUMES`.
 4. Continue from **Build check**, exactly like a new job.
