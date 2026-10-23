@@ -87,6 +87,12 @@ The builder, `reviewer-ux` and `reviewer-ui` each create their own
 run, the job's last round plus one) and name its files in their report. It is
 the one place an agent writes besides its one file; you never create it.
 
+The dashboard shows the images in `evidence/round-<N>/<agent>/` on the job's card
+and in its drawer, the latest round with images by default. Only image files
+(`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) are listed, and each caption comes
+from the file name, so name files for what they show (`02-filter-applied-passed.png`
+reads "Filter applied passed"), as the `evidence-driven-testing` skill says.
+
 The dashboard's job drawer has a compliance matrix, read from these same files.
 Only the rows the factory really runs show a result: the four review verdicts of
 the latest round (with each reviewer's earlier rounds), the approver's decision
