@@ -396,12 +396,6 @@
   #overview .tip .line { display: block; overflow-wrap: anywhere; }
   #overview .tip .line + .line { margin-top: 6px; }
 
-  /* Executive Financial Pulse: one plain .kpi tile in a single-column row, with the same gutter as #overview so the
-     two headings line up. The id keeps the row at one column under the @media rules for .kpis. */
-  #pulse { padding: 20px 32px 0; }
-  #pulse .col-head { padding-left: 0; }
-  #pulse .kpis { grid-template-columns: minmax(0, 1fr); padding: 0; }
-
   @media (max-width: 1100px) {
     .board { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 28px; }
     .col-head::after { display: none; }
@@ -417,7 +411,6 @@
     /* One column on a phone: the 24px figures and the times line do not fit two narrow tiles. */
     #overview { padding-left: 16px; padding-right: 16px; }
     #overview .kpis { grid-template-columns: minmax(0, 1fr); }
-    #pulse { padding-left: 16px; padding-right: 16px; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
@@ -435,7 +428,7 @@
   }
 
   /* View toggle: four plain links under the header, so Back and Forward move between the views. The Cost & LOE view
-     uses the same gutter as #pulse. */
+     uses the same gutter as #overview. */
   #views { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 6px 32px 0; font-family: var(--mono); font-size: 12px; }
   #views a { color: var(--muted); text-decoration: none; padding-bottom: 4px; border-bottom: 2px solid transparent; }
   #views a:hover { color: var(--text); }
@@ -448,6 +441,69 @@
   body[data-view="git"] .graph { padding-top: 20px; }
   body[data-view="stream"] .stream { margin-bottom: 40px; }
   @media (max-width: 640px) { #views, #cost { padding-left: 16px; padding-right: 16px; } }
+
+  /* Executive header bar, on every view under the view links: client and sprint on the left, the Executive Financial
+     Pulse line in the centre, the Live Event Stream link on the right. The owner asked for the look of their example
+     code as it is, so these rules copy its literal colours, fonts and sizes rather than the page's variables, and are
+     scoped under #exec-bar so nothing else changes. Added to the example: the bar wraps rather than overflow, the
+     page's 32px gutter, a grey dot for an unset sprint, the reason after an unknown figure, and the stream link's
+     current and focus states in the page's --active. */
+  #exec-bar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px;
+    margin-top: 8px; padding: 10px 32px; background-color: #121319; border-bottom: 1px solid #232632;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; color: #E2E8F0;
+  }
+  #exec-bar .header-left { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+  #exec-bar .field-group {
+    position: relative; min-width: 0; max-width: 100%; padding: 4px 10px 4px 10px;
+    border: 1px solid #2E3344; border-radius: 6px; background: #181A22;
+  }
+  #exec-bar .field-label {
+    position: absolute; top: -8px; left: 8px; padding: 0 4px; background: #121319;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; text-transform: uppercase;
+    color: #64748B;
+  }
+  #exec-bar .dropdown-select { display: flex; align-items: center; min-width: 0; }
+  /* Disabled: there is one engagement, so the select must not look like a way to switch. opacity keeps the client's
+     name as readable as the example's. */
+  #exec-bar .dropdown-select select {
+    min-width: 0; padding: 0 16px 0 0; appearance: none; background: transparent; border: none;
+    font-size: 13px; font-weight: 600; color: #F1F5F9; opacity: 1; outline: none;
+    text-overflow: ellipsis; cursor: default;
+  }
+  #exec-bar .dropdown-arrow { margin-left: -12px; font-size: 10px; color: #94A3B8; pointer-events: none; }
+  #exec-bar .sprint-pill {
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px; white-space: nowrap;
+    background: #181A22; border: 1px solid #2E3344; border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; font-weight: 700; color: #E2E8F0;
+  }
+  #exec-bar .sprint-dot {
+    flex: none; width: 8px; height: 8px; border-radius: 50%;
+    background-color: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+  }
+  #exec-bar .sprint-dot.unset { background-color: #64748B; box-shadow: none; }
+  #exec-bar .header-center { min-width: 0; font-size: 13px; color: #94A3B8; white-space: nowrap; }
+  #exec-bar .pulse-label { margin-right: 6px; font-weight: 500; color: #CBD5E1; }
+  #exec-bar .pulse-metrics { color: #E2E8F0; }
+  #exec-bar .spend-amount {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 15px; font-weight: 700; color: #F8FAFC;
+  }
+  #exec-bar .spend-percent, #exec-bar .pulse-reason { font-size: 12px; color: #94A3B8; }
+  #exec-bar .header-right { display: flex; align-items: center; gap: 10px; }
+  #exec-bar .btn-header {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; white-space: nowrap;
+    background: #1E2230; border: 1px solid #2E3448; border-radius: 6px; color: #E2E8F0;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-decoration: none; cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  #exec-bar .btn-header:hover { background: #282E42; border-color: #475569; color: #FFF; }
+  #exec-bar .btn-header:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  #exec-bar .btn-header[aria-current="page"] { border-color: var(--active); color: var(--active); }
+  #exec-bar .shortcut-tag { color: #818CF8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  @media (max-width: 640px) {
+    #exec-bar { padding-left: 16px; padding-right: 16px; }
+    #exec-bar .header-center { white-space: normal; }
+  }
 </style>
 </head>
 <body>
@@ -458,16 +514,19 @@
 <nav id="views" aria-label="Views">
   <a href="#board">Board</a><a href="#git">Git Graph</a><a href="#cost">Cost &amp; LOE</a><a href="#stream">Live Stream</a>
 </nav>
+<div class="portfolio-header" id="exec-bar">
+  <div class="header-left" id="exec-left"></div>
+  <div class="header-center" id="exec-centre"></div>
+  <div class="header-right">
+    <a href="#stream" class="btn-header btn-stream" id="btn-stream-trigger" aria-keyshortcuts="m"><span class="shortcut-tag">(m)</span> LIVE EVENT STREAM</a>
+  </div>
+</div>
 <div id="banner"></div>
 <details class="stream" id="stream">
   <summary>Live event stream <span class="m" id="stream-count"></span></summary>
   <div id="stream-body"></div>
 </details>
 <div class="strip" id="strip"></div>
-<section id="pulse" aria-labelledby="pulse-title">
-  <div class="col-head"><h2 id="pulse-title">Executive Financial Pulse</h2><span class="who">this calendar month, from the job files</span></div>
-  <div class="kpis" id="pulse-tiles"></div>
-</section>
 <section id="overview" aria-labelledby="overview-title">
   <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
   <div class="kpis" id="overview-tiles"></div>
@@ -1038,6 +1097,17 @@ function closeTips() {
 
 const percent = (n, of) => (of ? `${(n / of * 100).toFixed(1)}%` : '-')
 
+// Compact money, for the header bar only; usd() stays two-decimal everywhere else. The amount is first rounded to the
+// nearest whole dollar, half up. Under $1,000 it shows whole: $0, $45, $999. From $1,000 it shows thousands, the
+// amount / 1000 to one decimal with a trailing .0 dropped, suffix k: $1k, $1.2k, $12k. From 1,000k the same
+// in millions, suffix M: $1.5M. The bar's title holds the two-decimal figures, so the rounding is never the only source.
+function compactUsd(v) {
+  const n = Math.round(v)
+  if (n < 1000) return `$${n}`
+  const k = Math.round(n / 100) / 10
+  return k < 1000 ? `$${k}k` : `$${Math.round(n / 1e5) / 10}M`
+}
+
 // The KPI tiles under the Executive Overview Panel. Each figure comes from the job files; one with no source shows "-".
 function kpis() {
   const merged = jobs.filter((j) => j.stage === 'merged')
@@ -1047,8 +1117,9 @@ function kpis() {
     `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`).join('')
 }
 
-// The engagement strip. Client, stage, sprint and budget come only from the owner's engagement.json, never a default.
-// Spend is every job's full price at list price: the usage log has no dates, so it cannot be cut to this month.
+// The engagement strip: stage and all-time spend; client and sprint are in the header bar. Stage and budget come only
+// from the owner's engagement.json, never a default. Spend is every job's full price at list price: the usage log has
+// no dates, so it cannot be cut to this month.
 function strip() {
   const text = (k) => (isSet(engagement[k]) ? String(engagement[k]) : '-')
   const costs = jobs.map(costOf)
@@ -1058,12 +1129,13 @@ function strip() {
     : null
   const budget = isSet(engagement.monthly_budget_usd) ? usd(engagement.monthly_budget_usd) : '-'
   const item = (k, v) => `<span><span class="k">${k}</span> ${esc(v)}</span>`
-  return item('CLIENT', text('client')) + item('STAGE', text('stage')) + item('SPRINT', text('sprint')) +
+  return item('STAGE', text('stage')) +
     `<span><span class="k">SPEND (ALL JOBS, LIST PRICE)</span> ${esc(spent === null ? '-' : usd(spent))}` +
     ` / ${esc(budget)} <span class="m">monthly budget</span></span>`
 }
 
-// The Executive Financial Pulse tile: this calendar month's spend at list price against the owner's monthly budget.
+// The Executive Financial Pulse figures for the header bar: this calendar month's spend at list price, and the owner's
+// monthly budget, or null when it is not set.
 // The usage log has no dates, so each job's whole full price is placed in one month by one date: a merged job in the
 // month of its merged_at, a job not yet merged in this month, as its work is being paid for now. A merged job with no
 // readable merged_at cannot be placed, and a counted job with an unknown price makes the spend unknown: either shows
@@ -1074,8 +1146,6 @@ function pulse() {
   const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime()
   const month = new Date(start).toLocaleString('en-US', { month: 'short', year: 'numeric' })
-  // usd() has no thousands separators; the pulse shows them, as in the owner's image ($1,840.00).
-  const money = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   let spent = 0
   let counted = 0
   let gap = null
@@ -1092,15 +1162,42 @@ function pulse() {
     else spent += price
   }
   const budget = isSet(engagement.monthly_budget_usd) ? engagement.monthly_budget_usd : null
-  const value = gap ? '-' : `${money(spent)} / ${budget === null ? '-' : money(budget)} (${budget === null ? '-' : percent(spent, budget)})`
-  const subs = [
-    'this calendar month only, in your time zone; the strip above is all jobs, all time',
-    `list price, not paid · ${counted} ${counted === 1 ? 'job' : 'jobs'} this month`,
-    ...(gap ? [gap] : []),
-    ...(budget === null ? ['set monthly_budget_usd in factory/engagement.json'] : []),
+  return { month, spent, counted, gap, budget }
+}
+
+// The header bar's left and centre groups; its right group, the stream link, is static so a poll never redraws it.
+// Client and sprint come only from engagement.json and show "-" when unset. The select has the one engagement and is
+// disabled: the page cannot switch projects. The centre line is compact; its title has the two-decimal figures and
+// what they cover, and a figure that cannot be known shows "-" with the reason after the line.
+function execBar() {
+  const p = pulse()
+  const client = isSet(engagement.client) ? engagement.client : '-'
+  const sprint = isSet(engagement.sprint) ? String(engagement.sprint).toUpperCase() : '-'
+  const left = '<div class="field-group"><label class="field-label" for="project-select">Client/Project</label>' +
+    '<div class="dropdown-select"><select id="project-select" disabled title="Only one engagement: set client in ' +
+    `factory/engagement.json. Switching projects is not supported."><option>${esc(client)}</option></select>` +
+    '<span class="dropdown-arrow" aria-hidden="true">▾</span></div></div>' +
+    `<div class="sprint-pill"><span class="sprint-dot${isSet(engagement.sprint) ? '' : ' unset'}"></span>` +
+    `<span>SPRINT ${esc(sprint)}</span></div>`
+  const pct = p.gap || p.budget === null ? '-' : percent(p.spent, p.budget)
+  const reasons = [
+    ...(p.gap ? [p.gap] : []),
+    ...(p.budget === null ? ['set monthly_budget_usd in factory/engagement.json'] : []),
   ]
-  return `<div class="kpi"><div class="k">Spend (${esc(month)})</div>` +
-    `<div class="v">${esc(value)}</div>${subs.map((s) => `<div class="sub">${esc(s)}</div>`).join('')}</div>`
+  const centre = '<span class="pulse-label">Executive Financial Pulse:</span> <span class="pulse-metrics">' +
+    `<strong class="spend-amount">${esc(p.gap ? '-' : compactUsd(p.spent))}</strong> Spend this Month / ` +
+    `<strong>${esc(p.budget === null ? '-' : compactUsd(p.budget))}</strong> Budget ` +
+    `<span class="spend-percent">(${esc(pct)})</span></span>` +
+    reasons.map((r) => ` <span class="pulse-reason">(${esc(r)})</span>`).join('')
+  // usd() has no thousands separators; the title shows them, as in the owner's image ($1,840.00).
+  const money = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const title = [
+    `Spend (${p.month}): ${p.gap ? '-' : money(p.spent)} / ${p.budget === null ? '-' : money(p.budget)} monthly budget (${pct})`,
+    'this calendar month only, in your time zone; the strip is all jobs, all time',
+    `list price, not paid · ${p.counted} ${p.counted === 1 ? 'job' : 'jobs'} this month`,
+    ...reasons,
+  ].join('\n')
+  return { left, centre, title }
 }
 
 // Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
@@ -1339,7 +1436,7 @@ async function render() {
       ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const stripHtml = strip()
-  const pulseHtml = pulse()
+  const bar = execBar()
   const overviewHtml = overviewPanel(pasts)
   const kpiHtml = kpis()
   const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
@@ -1347,11 +1444,14 @@ async function render() {
   const costTileHtml = costPerPointTile()
   const costTableHtml = costLoeTable()
   const costHtml = costTileHtml + costTableHtml
-  if (html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner !== lastRender) {
-    lastRender = html + stripHtml + pulseHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner
+  const barHtml = bar.left + bar.centre + bar.title
+  if (html + stripHtml + barHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner !== lastRender) {
+    lastRender = html + stripHtml + barHtml + overviewHtml + kpiHtml + graphHtml + costHtml + banner
     $('board').innerHTML = html
     $('strip').innerHTML = stripHtml
-    $('pulse-tiles').innerHTML = pulseHtml
+    $('exec-left').innerHTML = bar.left
+    $('exec-centre').innerHTML = bar.centre
+    $('exec-centre').title = bar.title
     $('overview-tiles').innerHTML = overviewHtml
     $('kpis').innerHTML = kpiHtml
     $('graph').innerHTML = graphHtml
@@ -1721,6 +1821,13 @@ document.addEventListener('keydown', (e) => {
     openDrawer(e.target.dataset.job)
   }
 })
+// m opens the live event stream, as the header bar's (m) says. Not while typing in a field, with Ctrl, Meta or Alt held,
+// or on a held key's repeats.
+document.addEventListener('keydown', (e) => {
+  if ((e.key !== 'm' && e.key !== 'M') || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+  if (e.target.matches('input, textarea, select') || e.target.isContentEditable) return
+  location.hash = '#stream'
+})
 
 // ---- Compliance matrix ----------------------------------------------------
 
@@ -1937,16 +2044,17 @@ function markdown(src) {
 
 // The four views the nav's links pick by location.hash, each with the elements it shows; every other element named
 // here is hidden. Only the hash picks the view, never a poll, so a redraw cannot change it. An element that is absent
-// is skipped, so a page without #pulse still switches.
+// is skipped, so a page without one of them still switches. The header bar is on every view, so it is not named here.
 const VIEWS = {
-  board: ['#strip', '#pulse', '#overview', '#kpis', '#board'],
+  board: ['#strip', '#overview', '#kpis', '#board'],
   git: ['#strip', '.graph'],
   cost: ['#strip', '#cost'],
   stream: ['#stream'],
 }
 
-// An empty or unknown hash shows the board and leaves the address as it is. Entering the stream opens it; after that
-// its open state is the user's. The scroll goes back to the top, because #board and #stream are also element ids the
+// An empty or unknown hash shows the board and leaves the address as it is. The open view's nav link, and the header
+// bar's stream link in the stream view, are marked current. Entering the stream opens it; after that its open state is
+// the user's. The scroll goes back to the top, because #board and #stream are also element ids the
 // browser scrolls to.
 function showView() {
   const name = location.hash.slice(1)
@@ -1956,7 +2064,7 @@ function showView() {
     const el = document.querySelector(sel)
     if (el) el.style.display = VIEWS[view].includes(sel) ? '' : 'none'
   }
-  for (const a of document.querySelectorAll('#views a')) {
+  for (const a of document.querySelectorAll('#views a, #btn-stream-trigger')) {
     if (a.getAttribute('href') === `#${view}`) a.setAttribute('aria-current', 'page')
     else a.removeAttribute('aria-current')
   }
