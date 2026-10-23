@@ -229,23 +229,37 @@
   .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(920px, 100vw);
     background: var(--panel); border-left: 1px solid var(--line);
-    display: grid; grid-template-rows: auto auto 1fr; transform: translateX(100%);
+    display: grid; grid-template-rows: auto minmax(0, 1fr); transform: translateX(100%);
     transition: transform .25s ease;
   }
   .open .scrim { opacity: 1; pointer-events: auto; }
   .open .drawer { transform: none; }
+  /* The head and the Cost, Compliance matrix and Screenshots sections scroll as one region, capped so the Files
+     section below always keeps room; no section has a scrollbar of its own. */
+  .d-upper { max-height: 60vh; overflow-y: auto; min-width: 0; }
   .d-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); position: relative; }
   .d-head .num { font-size: 12px; }
   .d-head h3 { margin: 4px 40px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
-  .d-head .md { margin-top: 10px; }
-  .d-head .md table { margin: 0; }
-  /* Compliance matrix. contain stops the table's width from widening the drawer on a narrow screen, and the height
-     cap keeps the file list and document in view: the table scrolls both ways instead. */
-  .d-head .matrix { max-width: none; contain: inline-size; }
-  .matrix .m-title {
-    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
+  /* Accordion sections: a header button per section, in the small uppercase title look the sections had. A closed
+     section's body has the hidden attribute; the rule is needed because .d-body sets display. */
+  .d-sec { border-bottom: 1px solid var(--line); min-width: 0; }
+  .d-sh { margin: 0; padding: 0 24px; }
+  .d-sh button {
+    display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 0; background: none; border: 0;
+    cursor: pointer; text-align: left; font-family: inherit; font-weight: 400;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
   }
-  .matrix table { max-height: 30vh; overflow-y: auto; }
+  .d-sh button:hover { color: var(--muted); }
+  .d-sh button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .d-sh .chev { display: inline-block; transition: transform .15s; }
+  .d-sh [aria-expanded="false"] .chev { transform: rotate(-90deg); }
+  .drawer [hidden] { display: none; }
+  .d-upper .md { padding: 0 24px 14px; }
+  .d-upper .md table { margin: 0; }
+  .d-files { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-bottom: 0; }
+  /* Compliance matrix. contain stops the table's width from widening the drawer on a narrow screen: a wide table
+     scrolls sideways instead. */
+  .d-upper .matrix { max-width: none; contain: inline-size; }
   /* Gate and Check get set shares, so a long Evidence text (an escalation reason) cannot squeeze them. */
   .matrix thead th:nth-child(1) { width: 22%; }
   .matrix thead th:nth-child(2) { width: 25%; }
@@ -256,7 +270,6 @@
   /* A check that did not run is grey and italic, so it cannot be read as a pass. */
   .matrix .not-run td { color: var(--muted); }
   .matrix .not-run .st { font-style: italic; }
-  @media (max-width: 640px) { .matrix table { max-height: 20vh; } }
   .close {
     position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
@@ -282,8 +295,8 @@
   .v.good { background: var(--pass); } .v.warn { background: var(--changes); } .v.stop { background: var(--human); }
   .doc { overflow-y: auto; padding: 22px 28px 60px; min-width: 0; }
 
-  /* Screenshots from evidence/round-<N>/<agent>/, on the card and in the drawer. The drawer's section has its own
-     height cap and scroll, as the compliance matrix does, so the file list and document stay in view. */
+  /* Screenshots from evidence/round-<N>/<agent>/, on the card and in the drawer. The drawer's section shows at its
+     natural height inside the drawer's upper region. */
   .shots { margin-top: 8px; }
   .shots-k { font-family: var(--mono); font-size: 11px; color: var(--muted); }
   .shots .note, .d-shots .note { font-size: 12px; margin: 2px 0 0; }
@@ -294,10 +307,8 @@
   }
   .card .thumbs img { width: calc(25% - 3px); max-height: 48px; }
   .thumbs .more { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-  .d-shots {
-    padding: 12px 24px; border-bottom: 1px solid var(--line); max-height: 30vh; overflow-y: auto; min-width: 0;
-  }
-  .d-shots .s-title, .d-shots .group {
+  .d-shots { padding: 0 24px 14px; min-width: 0; }
+  .d-shots .group {
     font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
   }
   .d-shots .group { margin-top: 10px; }
@@ -477,7 +488,8 @@
     .graph { padding: 0 16px 32px; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
-    .d-shots { padding: 10px 16px; max-height: 24vh; }
+    .d-sh { padding: 0 16px; }
+    .d-upper .md, .d-shots { padding: 0 16px 12px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     .files {
       border-right: 0; border-bottom: 1px solid var(--line); display: flex; gap: 4px;
@@ -632,18 +644,36 @@
 <div id="overlay">
   <div class="scrim" data-close></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title">
-    <div class="d-head">
-      <div class="num" id="d-num"></div>
-      <h3 id="d-title"></h3>
-      <div class="branch" id="d-branch"></div>
-      <div class="md" id="d-cost"></div>
-      <div class="md matrix" id="d-compliance"></div>
-      <button class="close" data-close aria-label="Close">×</button>
+    <div class="d-upper">
+      <div class="d-head">
+        <div class="num" id="d-num"></div>
+        <h3 id="d-title"></h3>
+        <div class="branch" id="d-branch"></div>
+        <button class="close" data-close aria-label="Close">×</button>
+      </div>
+      <div class="d-sec">
+        <h4 class="d-sh"><button type="button" data-section="cost" aria-expanded="true" aria-controls="d-cost">
+          <span class="chev" aria-hidden="true">▾</span>Cost</button></h4>
+        <div class="md" id="d-cost"></div>
+      </div>
+      <div class="d-sec">
+        <h4 class="d-sh"><button type="button" id="d-matrix-title" data-section="matrix" aria-expanded="false"
+          aria-controls="d-compliance"><span class="chev" aria-hidden="true">▾</span>Compliance matrix</button></h4>
+        <div class="md matrix" id="d-compliance" hidden></div>
+      </div>
+      <div class="d-sec">
+        <h4 class="d-sh"><button type="button" data-section="shots" aria-expanded="false" aria-controls="d-shots">
+          <span class="chev" aria-hidden="true">▾</span>Screenshots</button></h4>
+        <section class="d-shots" id="d-shots" aria-label="Screenshots" hidden></section>
+      </div>
     </div>
-    <section class="d-shots" id="d-shots" aria-label="Screenshots"></section>
-    <div class="d-body">
-      <nav class="files" id="d-files"></nav>
-      <article class="doc"><div class="md" id="d-doc"></div></article>
+    <div class="d-sec d-files">
+      <h4 class="d-sh"><button type="button" data-section="files" aria-expanded="true" aria-controls="d-body">
+        <span class="chev" aria-hidden="true">▾</span>Files</button></h4>
+      <div class="d-body" id="d-body">
+        <nav class="files" id="d-files"></nav>
+        <article class="doc"><div class="md" id="d-doc"></div></article>
+      </div>
     </div>
   </aside>
 </div>
@@ -1410,10 +1440,9 @@ function shotsRow(job, entry) {
 }
 
 // The drawer's section: a button per round with images, then the chosen round's images under their agent's heading.
-// Each thumbnail links to the full image in a new tab.
+// Each thumbnail links to the full image in a new tab. The section's title is its accordion header, in the markup.
 function shotsSection(job, entry) {
-  const title = '<div class="s-title">Screenshots</div>'
-  if (!entry.shots.length) return `${title}<p class="note">${esc(noShots(job, entry))}</p>`
+  if (!entry.shots.length) return `<p class="note">${esc(noShots(job, entry))}</p>`
   const rounds = [...new Set(entry.shots.map((s) => s.round))]
   const round = rounds.includes(openShotRound) ? openShotRound : defaultRound(entry.shots)
   const buttons = rounds.map((n) => {
@@ -1431,7 +1460,7 @@ function shotsSection(job, entry) {
     }).join('')
     return `<div class="group">${esc(label)}</div><div class="thumbs">${figs}</div>`
   }).join('')
-  return `${title}<div class="s-rounds">${buttons}</div>${groups}`
+  return `<div class="s-rounds">${buttons}</div>${groups}`
 }
 
 function card(job, past, cost, rework, shots) {
@@ -1877,12 +1906,28 @@ async function refreshDrawer() {
   await refreshMatrix(base, files, openPath === 'decision.md' ? text : null)
 }
 
+// The drawer's accordion: which sections are open, keyed as each header's data-section. Only a header click changes
+// it, and openDrawer() resets it; the headers live in the static markup, so the poll's redraws leave them and their
+// focus alone. The matrix and screenshots start closed because they are the tall ones.
+const SECTIONS_DEFAULT = { cost: true, matrix: false, shots: false, files: true }
+let openSections = { ...SECTIONS_DEFAULT }
+
+function drawSections() {
+  for (const btn of document.querySelectorAll('.drawer [data-section]')) {
+    const open = openSections[btn.dataset.section]
+    btn.setAttribute('aria-expanded', String(open))
+    $(btn.getAttribute('aria-controls')).hidden = !open
+  }
+}
+
 async function openDrawer(id) {
   openJobId = id
   openPath = null
   openText = undefined
   openShotRound = null
   shotsHtml = null
+  openSections = { ...SECTIONS_DEFAULT }
+  drawSections()
   document.body.classList.add('open')
   try {
     const job = jobs.find((j) => j.id === id)
@@ -1903,6 +1948,11 @@ document.addEventListener('click', (e) => {
   if (approveEl) return copyApprove(approveEl)
   const cardEl = e.target.closest('[data-job]')
   if (cardEl) return openDrawer(cardEl.dataset.job)
+  const sectionEl = e.target.closest('[data-section]')
+  if (sectionEl) {
+    openSections[sectionEl.dataset.section] = !openSections[sectionEl.dataset.section]
+    return drawSections()
+  }
   const roundEl = e.target.closest('[data-shot-round]')
   if (roundEl) {
     openShotRound = Number(roundEl.dataset.shotRound)
@@ -2047,15 +2097,15 @@ function complianceRows(base, files, firstLines, decision) {
   }))
 }
 
-// The drawer's table, built from complianceRows() alone: one body per group, headed by the group's name.
+// The drawer's table, built from complianceRows() alone: one body per group, headed by the group's name. Its title is
+// the section's accordion header, #d-matrix-title in the markup.
 function complianceTable(rows) {
   const groups = [...new Set(rows.map((r) => r.group))]
   const body = groups.map((g) => `<tbody><tr><th colspan="4" scope="rowgroup">${esc(g)}</th></tr>` +
     rows.filter((r) => r.group === g).map((r) => `<tr class="${esc(r.status.replace(' ', '-'))}">` +
       `<td>${esc(r.gate)}</td><td>${esc(r.check)}</td><td class="st">${esc(r.status)}</td><td>${esc(r.evidence)}</td></tr>`)
       .join('') + '</tbody>').join('')
-  return '<div class="m-title" id="d-matrix-title">Compliance matrix</div>' +
-    '<table id="d-matrix" aria-labelledby="d-matrix-title"><thead><tr>' +
+  return '<table id="d-matrix" aria-labelledby="d-matrix-title"><thead><tr>' +
     `<th>Gate</th><th>Check</th><th>Status</th><th>Evidence</th></tr></thead>${body}</table>`
 }
 
