@@ -114,7 +114,7 @@ reads "Filter applied passed"), as the `evidence-driven-testing` skill says.
 
 The dashboard has four views, kept in the address's hash, so Back and Forward
 work and a poll never changes the view. The links under its title pick three of
-them (Board, Git Graph, Cost & LOE); the fourth, `#stream`, is opened by the
+them (Board, Git Graph & Inspector, Cost & LOE); the fourth, `#stream`, is opened by the
 header's Live Event Stream button or the `m` key.
 Every view has the header bar under those links: the client and sprint from
 `engagement.json`, the Executive Financial Pulse (this month's spend at
