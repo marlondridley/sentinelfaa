@@ -123,7 +123,10 @@ empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel (one row of five cards: the four overview tiles, then Pass
 rate) and the six lanes, each with its card count. `#git`
-shows the strip and the branch graph. `#cost` shows the strip, the cost per
+(Git Graph & Inspector) shows the strip, the branch graph as the job list and,
+for the job picked in it (the newest at first), a stages bar (Spec, Build,
+Review, Approver; a stage with no file yet is greyed out), its file tree and a
+viewer. `#cost` shows the strip, the cost per
 point tile and a table with one row per job: stage, points, full price and cost
 per point. `#stream` shows the live event stream from each job's
 `events.jsonl`.
