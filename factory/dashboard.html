@@ -216,6 +216,42 @@
     font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere;
   }
   .g-meta .k { color: var(--muted); }
+  .g-row.on { background: var(--card-hover); box-shadow: inset 0 0 0 1px var(--active); }
+
+  /* Git Graph & Inspector: the branch graph on the left is the job list; the selected job's stages bar, file tree and
+     viewer sit on the right. Both columns scroll inside the view's height, so the inspector stays in sight beside a
+     long graph. The tree and viewer reuse the drawer's .files, .file and .doc looks. */
+  .insp {
+    display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 16px;
+    height: max(560px, calc(100vh - 220px));
+  }
+  .insp-graph { overflow-y: auto; min-width: 0; }
+  .insp-main {
+    display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .insp-head { padding: 12px 16px 4px; }
+  .insp-head .feature { margin: 2px 0 0; }
+  .stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .stage {
+    min-width: 0; text-align: left; cursor: pointer; padding: 8px 10px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .stage:hover { background: var(--card-hover); }
+  .stage:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .stage.on { border-color: var(--active); }
+  .stage:disabled { cursor: default; opacity: .5; background: var(--card); }
+  .stage .k { display: block; font-size: 12px; font-weight: 600; }
+  .stage .sub {
+    display: block; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .insp-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; }
+  .insp-body .file:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+  .insp-body .file.sub { padding-left: 24px; }
+  .insp-body .doc { padding-top: 14px; }
+  .insp-path { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 14px; overflow-wrap: anywhere; }
+  .insp-doc > pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -476,6 +512,10 @@
     .col-head::after { display: none; }
     .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     #overview .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* The graph stacks above the inspector, each with its own scroll. */
+    .insp { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .insp-graph { max-height: 40vh; }
+    .insp-main { height: 80vh; }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
@@ -488,6 +528,8 @@
     #overview .kpis { grid-template-columns: minmax(0, 1fr); }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
     .graph { padding: 0 16px 32px; }
+    .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .insp-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
     .d-sh { padding: 0 16px; }
@@ -603,7 +645,7 @@
   <div class="status" id="status">connecting…</div>
 </header>
 <nav id="views" aria-label="Views">
-  <a href="#board">Board</a><a href="#git">Git Graph</a><a href="#cost">Cost &amp; LOE</a><a href="#stream">Live Stream</a>
+  <a href="#board">Board</a><a href="#git">Git Graph &amp; Inspector</a><a href="#cost">Cost &amp; LOE</a><a href="#stream">Live Stream</a>
 </nav>
 <div class="portfolio-header" id="exec-bar">
   <div class="header-left" id="exec-left"></div>
@@ -631,9 +673,19 @@
   <div class="kpis" id="overview-tiles"></div>
 </section>
 <main class="board" id="board"></main>
-<section class="graph">
-  <div class="col-head"><h2>Branch graph</h2><span class="who">one lane per job, off main</span></div>
-  <div id="graph"></div>
+<section class="graph" aria-labelledby="graph-title">
+  <div class="col-head"><h2 id="graph-title">Git Graph &amp; Inspector</h2><span class="who">one lane per job, off main · pick a job, then a stage or a file to read it</span></div>
+  <div class="insp">
+    <div class="insp-graph" id="graph"></div>
+    <div class="insp-main">
+      <div class="insp-head" id="insp-head"></div>
+      <div class="stages" id="insp-stages" aria-label="Stages"></div>
+      <div class="insp-body">
+        <nav class="files" id="insp-tree" aria-label="Job files"></nav>
+        <article class="doc"><div class="insp-path" id="insp-path"></div><div class="md insp-doc" id="insp-doc"></div></article>
+      </div>
+    </div>
+  </div>
 </section>
 <section id="cost" aria-labelledby="cost-title">
   <div class="col-head"><h2 id="cost-title">Cost &amp; LOE</h2><span class="who">every job, at list price, from the job files</span></div>
@@ -1545,7 +1597,8 @@ async function copyApprove(el) {
 // ---- Branch graph -----------------------------------------------------------
 
 // One row per job, oldest first: its lane leaves main, and a merged job joins main again at a merge node.
-// Unmerged jobs end at an open tip. main is the line every row's lane draws down its left edge.
+// Unmerged jobs end at an open tip. main is the line every row's lane draws down its left edge. A click on a row
+// selects the job in the inspector beside the graph.
 function graphRow(job) {
   const live = LIVE.has(job.stage)
   const merged = job.stage === 'merged'
@@ -1563,7 +1616,7 @@ function graphRow(job) {
   const state = `${job.stage}${live && job.round ? ` · round ${job.round}` : ''}`
   return `
     <div class="g-row ${live ? 'live' : ''} ${merged ? 'merged' : ''} ${human ? 'human' : ''}"
-         role="button" tabindex="0" data-job="${esc(job.id)}">
+         role="button" tabindex="0" data-git-job="${esc(job.id)}">
       <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
         <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
       <div class="g-text">
@@ -1583,6 +1636,151 @@ function graph() {
   if (!lanes.length) return '<div class="empty">—</div>'
   return '<div class="g-main"><div class="g-lane"></div><span class="num">main</span></div>' +
     lanes.map(graphRow).join('')
+}
+
+// ---- Inspector --------------------------------------------------------------
+
+// The selected job's stages, each with the file its card opens. Review opens the first file of the latest round
+// folder, so it works for a job with any number of rounds. A stage whose file does not exist yet is a disabled card
+// with a note, never a dead click.
+const INSP_STAGES = [
+  { key: 'spec', label: 'Spec', file: (files) => files.find((f) => f === 'spec.md'), none: 'No spec.md yet' },
+  { key: 'build', label: 'Build', file: (files) => files.find((f) => f === 'build.md'), none: 'No build.md yet' },
+  { key: 'review', label: 'Review', file: latestRoundFile, none: 'No review round yet' },
+  { key: 'approve', label: 'Approver', file: (files) => files.find((f) => f === 'decision.md'), none: 'No decision.md yet' },
+]
+
+let inspJobId = null
+let inspFiles = [] // the selected job's files, as sortFiles orders them
+let inspPath = null
+let inspSeq = 0 // bumped by every selection, so a slower earlier read cannot overwrite a later one
+const inspShut = new Set() // folders the user collapsed in the selected job's tree
+
+function latestRoundFile(files) {
+  const n = Math.max(0, ...files.map((f) => Number((f.match(/^round-(\d+)\//) || [])[1] || 0)))
+  return n ? files.find((f) => f.startsWith(`round-${n}/`)) : undefined
+}
+
+// The stage a file belongs to: any file in a round folder is the review's; rework notes and the rest have none.
+function stageOf(path) {
+  if (/^round-\d+\//.test(path || '')) return 'review'
+  return { 'spec.md': 'spec', 'build.md': 'build', 'decision.md': 'approve' }[path] || null
+}
+
+// With no job selected, or the selected one gone from the graph (cancelled), the inspector opens the newest job.
+function ensureInspJob() {
+  const lanes = jobs.filter((j) => !isCancelled(j))
+  if (lanes.length && !lanes.some((j) => j.id === inspJobId)) selectInspJob(lanes[lanes.length - 1].id)
+}
+
+// Marks are toggled rather than redrawn, so a row, card or file keeps keyboard focus after Enter.
+function markGraph() {
+  for (const row of document.querySelectorAll('.g-row[data-git-job]')) {
+    const on = row.dataset.gitJob === inspJobId
+    row.classList.toggle('on', on)
+    row.setAttribute('aria-current', String(on))
+  }
+}
+
+function markInsp() {
+  for (const el of document.querySelectorAll('#insp-tree [data-insp-file]')) {
+    const on = el.dataset.inspFile === inspPath
+    el.classList.toggle('on', on)
+    el.setAttribute('aria-current', String(on))
+  }
+  const stage = stageOf(inspPath)
+  for (const el of document.querySelectorAll('#insp-stages [data-insp-stage]')) {
+    el.classList.toggle('on', el.dataset.inspStage === stage)
+  }
+}
+
+function drawStages() {
+  $('insp-stages').innerHTML = INSP_STAGES.map((s) => {
+    const f = s.file(inspFiles)
+    return f
+      ? `<button type="button" class="stage" data-insp-stage="${s.key}"><span class="k">${s.label}</span>` +
+        `<span class="sub">${esc(f)}</span></button>`
+      : `<button type="button" class="stage" disabled><span class="k">${s.label}</span><span class="sub">${s.none}</span></button>`
+  }).join('')
+}
+
+// Files at the job's root first, then one folder row per round, its files under it while it is open.
+function drawTree() {
+  const file = (f, name, sub) =>
+    `<button type="button" class="file${sub ? ' sub' : ''}" data-insp-file="${esc(f)}">${esc(name)}</button>`
+  const roots = inspFiles.filter((f) => !f.includes('/'))
+  const folders = [...new Set(inspFiles.filter((f) => f.includes('/')).map((f) => f.split('/')[0]))]
+  $('insp-tree').innerHTML = (roots.map((f) => file(f, f, false)).join('') + folders.map((d) => {
+    const open = !inspShut.has(d)
+    const inside = open ? inspFiles.filter((f) => f.startsWith(`${d}/`)).map((f) => file(f, f.slice(d.length + 1), true)) : []
+    return `<button type="button" class="file" data-insp-folder="${esc(d)}" aria-expanded="${open}">` +
+      `<span class="chev" aria-hidden="true">${open ? '▾' : '▸'}</span>${esc(d)}/</button>${inside.join('')}`
+  }).join('')) || '<div class="empty">No files yet.</div>'
+  markInsp()
+}
+
+async function selectInspJob(id) {
+  const seq = ++inspSeq
+  const job = jobs.find((j) => j.id === id)
+  if (!job) return
+  inspJobId = id
+  inspFiles = []
+  inspPath = null
+  inspShut.clear()
+  markGraph()
+  $('insp-head').innerHTML = `<div class="num">${esc(idTitle(job))} · ${esc(job.stage)}</div>` +
+    `<p class="feature">${esc(job.feature)}</p>`
+  drawStages()
+  $('insp-tree').innerHTML = '<div class="empty">Loading…</div>'
+  $('insp-path').textContent = ''
+  $('insp-doc').innerHTML = ''
+  let files
+  try {
+    files = sortFiles(await listFiles(`jobs/${id}/`))
+  } catch (err) {
+    if (seq === inspSeq) $('insp-tree').innerHTML = `<div class="empty">${esc(`Could not read the job folder: ${err.message}`)}</div>`
+    return
+  }
+  if (seq !== inspSeq) return
+  inspFiles = files
+  drawStages()
+  drawTree()
+  const first = files.includes('spec.md') ? 'spec.md' : files[0]
+  if (first) return openInspFile(first)
+  $('insp-doc').innerHTML = '<p class="note">The spec-writer hasn’t written anything yet.</p>'
+}
+
+// Opens a file in the viewer. It never throws: a failed read says so in the viewer, and only the latest selection
+// writes its result.
+async function openInspFile(path) {
+  const seq = ++inspSeq
+  inspPath = path
+  const folder = path.includes('/') ? path.split('/')[0] : null
+  if (folder && inspShut.delete(folder)) drawTree()
+  markInsp()
+  $('insp-path').textContent = path
+  $('insp-doc').innerHTML = '<p class="note">Loading…</p>'
+  $('insp-doc').parentElement.scrollTop = 0
+  let html
+  try {
+    const text = await fetchText(`jobs/${inspJobId}/${path}`)
+    html = path.endsWith('.md') ? markdown(text) : `<pre>${esc(text)}</pre>`
+  } catch (err) {
+    html = `<p class="note">${esc(`Could not read file: ${err.message}`)}</p>`
+  }
+  if (seq === inspSeq) $('insp-doc').innerHTML = html
+}
+
+function openInspStage(key) {
+  const file = INSP_STAGES.find((s) => s.key === key).file(inspFiles)
+  if (file) return openInspFile(file)
+}
+
+// The folder row is redrawn with the tree, so it gets its focus back for the keyboard.
+function toggleInspFolder(folder) {
+  if (!inspShut.delete(folder)) inspShut.add(folder)
+  drawTree()
+  $('insp-tree').querySelector(`[data-insp-folder="${CSS.escape(folder)}"]`).focus()
 }
 
 async function render() {
@@ -1635,11 +1833,13 @@ async function render() {
     $('exec-centre').title = bar.title
     $('overview-tiles').innerHTML = overviewHtml
     $('graph').innerHTML = graphHtml
+    markGraph()
     $('cost-kpis').innerHTML = costTileHtml
     $('cost-cancelled').textContent = cancelledText
     $('cost-table').innerHTML = costTableHtml
     $('banner').innerHTML = banner
   }
+  if (document.body.dataset.view === 'git') ensureInspJob()
   renderStream()
 }
 
@@ -2021,6 +2221,14 @@ function closeDrawer() {
 document.addEventListener('click', (e) => {
   const approveEl = e.target.closest('[data-approve]')
   if (approveEl) return copyApprove(approveEl)
+  const gitEl = e.target.closest('[data-git-job]')
+  if (gitEl) return selectInspJob(gitEl.dataset.gitJob)
+  const stageEl = e.target.closest('[data-insp-stage]')
+  if (stageEl) return openInspStage(stageEl.dataset.inspStage)
+  const folderEl = e.target.closest('[data-insp-folder]')
+  if (folderEl) return toggleInspFolder(folderEl.dataset.inspFolder)
+  const inspFileEl = e.target.closest('[data-insp-file]')
+  if (inspFileEl) return openInspFile(inspFileEl.dataset.inspFile)
   const cardEl = e.target.closest('[data-job]')
   if (cardEl) return openDrawer(cardEl.dataset.job)
   const sectionEl = e.target.closest('[data-section]')
@@ -2053,9 +2261,13 @@ document.addEventListener('keydown', (e) => {
     return document.body.classList.contains('briefing') ? closeBriefing() : closeDrawer()
   }
   // Only when the card, graph row or Cost & LOE row itself has focus; Enter on the Approve button inside a card is that
-  // button's own click.
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], .g-row[data-job], tr[data-job]')) {
+  // button's own click. The inspector's stage cards and files are buttons, so Enter and Space click them already.
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.g-row[data-git-job]')) {
     e.preventDefault() // Space would otherwise scroll the page
+    selectInspJob(e.target.dataset.gitJob)
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card[data-job], tr[data-job]')) {
+    e.preventDefault()
     openDrawer(e.target.dataset.job)
   }
 })
@@ -2582,6 +2794,7 @@ function showView() {
     else a.removeAttribute('aria-current')
   }
   if (view === 'stream') $('stream').open = true
+  if (view === 'git') ensureInspJob()
   scrollTo(0, 0)
   // A hash set in the address bar or by location.hash makes the browser scroll to its element during the layout of the
   // next frame, once the element is shown. A frame callback runs before that layout, so the second one, a frame later,
