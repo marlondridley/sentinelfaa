@@ -109,14 +109,13 @@
   .col-head .count {
     margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
   }
-  /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
-  .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
+  /* No arrow after Merged, the last lane: nothing follows merging. */
+  .col:not(:last-child) .col-head::after {
     content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
   }
   .col.human .col-head { border-bottom-color: color-mix(in srgb, var(--human) 55%, transparent); }
   .col.human h2 { color: var(--human); }
   .col.merged-col h2 { color: var(--merged); }
-  .col.rework-col h2 { color: var(--changes); }
   .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
@@ -135,6 +134,12 @@
                 0 8px 24px -12px color-mix(in srgb, var(--human) 60%, transparent);
   }
   .card.merged { opacity: .72; }
+  /* Backlog lane outlines: orange for a job set to rework, grey for a cancelled job. After .live, which they override. */
+  .card.rework { border-color: var(--changes); }
+  .card.cancelled { border-color: var(--muted); }
+  /* An idea card has no click action, so it does not look clickable. */
+  .card.idea { cursor: default; }
+  .card.idea:hover { background: var(--card); transform: none; }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .card-top .num { min-width: 0; overflow-wrap: anywhere; }
@@ -764,18 +769,20 @@
 const POLL_MS = 2000
 // The board's six columns and the job stages each holds. Review & audit holds approve too: the approver is the
 // last audit step, and the card's chips show which step a job is at. Client approval is needs-human, where the owner
-// signs off. Rework is not a stage of its own: it holds build jobs the owner sent back (see reworkOf).
+// signs off. Backlog is not a stage of its own: render() fills it with the owner's idea files, the jobs set to rework
+// and the cancelled jobs.
 const STAGES = [
+  { key: 'backlog', label: 'BACKLOG', who: 'owner ideas · /factory next', stages: [] },
   { key: 'spec', label: 'SPEC', who: 'spec-writer · opus', stages: ['spec'] },
   { key: 'build', label: 'BUILD', who: 'builder · opus', stages: ['build'] },
   { key: 'review', label: 'REVIEW & AUDIT', who: 'sec · ux · ui · code', stages: ['review', 'approve'] },
   { key: 'needs-human', label: 'CLIENT APPROVAL', who: 'owner signs off · approve · rework', cls: 'human', stages: ['needs-human'] },
   { key: 'merged', label: 'MERGED', who: 'main', cls: 'merged-col', stages: ['merged'] },
-  { key: 'rework', label: 'REWORK', who: 'owner sent back · builder', cls: 'rework-col', stages: [] },
 ]
 const LIVE = new Set(['spec', 'build', 'review', 'approve'])
-// A cancelled job (/factory cancel) is in no lane: it is not an error, and it delivered nothing. It shows only in the
-// Cost & LOE table and the drawer; its spend stays in the pulse and the strip, as its tokens were spent.
+// A cancelled job (/factory cancel) is not an error, and it delivered nothing. Its card sits in the Backlog lane with
+// a grey outline, and it shows in the Cost & LOE table and the drawer; it is left out of the overview figures, but its
+// spend stays in the pulse and the strip, as its tokens were spent.
 const isCancelled = (job) => job.stage === 'cancelled'
 const REVIEWERS = [['security', 'sec'], ['ux', 'ux'], ['ui', 'ui'], ['code', 'code']]
 const POINTS = [1, 2, 3, 5, 8, 13]
@@ -1226,7 +1233,7 @@ function overviewFigures(pasts) {
 
   // Job files hold no sprint or date range, so the share is merged points over the sized points of every job on the
   // board, in any stage. Points count only when they are one of POINTS. Unlike velocity, merged_at is not needed. A
-  // cancelled job is not on the board and will never deliver, so its points are not in the share.
+  // cancelled job will never deliver, so its points are not in the share.
   const board = jobs.filter((j) => !isCancelled(j))
   const sized = board.filter((j) => POINTS.includes(j.points))
   const points = (list) => list.reduce((s, j) => s + j.points, 0)
@@ -1430,7 +1437,7 @@ function execBar() {
 
 // Rework is read from the job folder: /factory rework is the only thing that writes rework-<k>.md, so one or more
 // means the owner sent the job back. Limit: once such a file exists, the page cannot tell a later reviewer-requested
-// fix from an owner rework, so the job shows in Rework for any later time in build.
+// fix from an owner rework, so the job shows in Backlog for any later time in build.
 // Returns { count, error }; count is 0 for a job that needs no lookup or whose listing could not be read.
 async function reworkOf(job) {
   if (job.stage !== 'build' && !(Number.isInteger(job.round) && job.round >= 1)) return { count: 0, error: null }
@@ -1558,9 +1565,11 @@ function card(job, past, cost, rework, shots) {
   const rows = past.map((v, i) => chips(i + 1, v, false))
   if (job.round > 0) rows.push(chips(job.round, job.reviews, job.stage === 'review'))
   const [num] = job.id.split('-')
+  // render() passes a rework count only for a job it puts in the Backlog lane as set to rework.
+  const outline = isCancelled(job) ? 'cancelled' : rework ? 'rework' : ''
   // A div, not a button, so the Approve button can sit inside it; the keydown listener gives it Enter and Space.
   return `
-    <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''}"
+    <div class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${job.stage === 'merged' ? 'merged' : ''} ${outline}"
          role="button" tabindex="0" data-job="${esc(job.id)}">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
@@ -1592,6 +1601,65 @@ async function copyApprove(el) {
   } catch {
     msg.textContent = 'Could not copy. Select the /factory approve line above and copy it by hand.'
   }
+}
+
+// ---- Backlog ----------------------------------------------------------------
+
+let backlogIdeas = [] // { file, title, size, rank } for each readable idea file in backlog/, ordered by rank
+let backlogProblems = []
+
+// The owner's idea files, factory/backlog/<slug>.md (the factory skill, "The backlog"). Only the Title, Size and Rank
+// header lines, before the first blank line, are read. backlog/done/ holds promoted ideas and is a folder, so it is
+// not listed. A missing backlog/ is an empty one; a folder or file that cannot be read, or a file with no title, is
+// said in a banner, and only that file (or, for the folder, every idea) is left off the board.
+async function loadBacklog() {
+  backlogIdeas = []
+  backlogProblems = []
+  if (!(await listLinks('./')).includes('backlog/')) return
+  let names
+  try {
+    names = (await listLinks('backlog/')).filter((h) => !h.includes('/') && h.endsWith('.md'))
+  } catch (err) {
+    backlogProblems.push(`Could not list factory/backlog/ (${err.message}), so no ideas show in the Backlog lane`)
+    return
+  }
+  const ideas = await Promise.all(names.map(async (file) => {
+    let text
+    try {
+      text = await fetchText(`backlog/${encodeURIComponent(file)}`)
+    } catch (err) {
+      backlogProblems.push(`Could not read factory/backlog/${file} (${err.message}), so it is not in the Backlog lane`)
+      return null
+    }
+    const head = text.replace(/\r/g, '').split('\n\n')[0].split('\n')
+    const value = (key) => {
+      const line = head.find((l) => l.startsWith(`${key}:`))
+      return line === undefined ? '' : line.slice(key.length + 1).trim()
+    }
+    const title = value('Title')
+    if (!title) {
+      backlogProblems.push(`factory/backlog/${file} has no Title: line, so it is not in the Backlog lane`)
+      return null
+    }
+    const size = value('Size')
+    const rank = value('Rank')
+    return { file, title, size: /^[123]$/.test(size) ? Number(size) : null, rank: /^\d+$/.test(rank) ? Number(rank) : null }
+  }))
+  // Lowest rank first, ties by file name; an idea with no whole-number rank goes last.
+  backlogIdeas = ideas.filter(Boolean).sort((a, b) =>
+    (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.file.localeCompare(b.file))
+}
+
+// An idea card is read-only: it has no job, so no drawer, and no click or keyboard action.
+function ideaCard(idea) {
+  const size = idea.size === null ? 'size unknown' : `${idea.size} ${idea.size === 1 ? 'pt' : 'pts'}`
+  const rank = idea.rank === null ? 'rank unknown' : `rank ${idea.rank}`
+  return `
+    <div class="card idea">
+      <div class="card-top"><span class="num">${esc(idea.file.replace(/\.md$/, ''))}</span></div>
+      <p class="feature">${esc(idea.title)}</p>
+      <div class="figures">${esc(size)} · ${esc(rank)}</div>
+    </div>`
 }
 
 // ---- Branch graph -----------------------------------------------------------
@@ -1629,8 +1697,8 @@ function graphRow(job) {
     </div>`
 }
 
-// A cancelled job's branch is not an active lane, so it has no row. Cancelled jobs move to the Backlog drawer once it
-// exists (factory jobs 3 and 4 of the backlog design); until then they show only in the Cost & LOE table and the drawer.
+// A cancelled job's branch is not an active lane, so it has no row. Cancelled jobs show in the board's Backlog lane,
+// the Cost & LOE table and the drawer.
 function graph() {
   const lanes = jobs.filter((j) => !isCancelled(j))
   if (!lanes.length) return '<div class="empty">—</div>'
@@ -1787,7 +1855,10 @@ async function render() {
   const problems = pricesError ? [`Could not read prices.json (${pricesError}), so every full price shows unknown`] : []
   problems.push(...engagementProblems)
   problems.push(...eventProblems)
+  problems.push(...backlogProblems)
   const byStage = Object.fromEntries(STAGES.map((s) => [s.key, []]))
+  const reworkCards = []
+  const cancelledCards = []
   const pasts = await Promise.all(jobs.map(pastRounds))
   const reworks = await Promise.all(jobs.map(reworkOf))
   const shots = await Promise.all(jobs.map((job) => shotsOf(job, shotsFresh(job))))
@@ -1796,22 +1867,27 @@ async function render() {
     problems.push(...jobProblems(job, cost))
     const r = reworks[i]
     if (r.error) problems.push(`Could not read the folder of job ${job.id} (${r.error}), so it is counted as not sent back`)
-    // No card and no banner for a cancelled job; it moves to the Backlog drawer once that exists (backlog jobs 3 and 4).
-    if (isCancelled(job)) return
-    const col = job.stage === 'build' && r.count > 0
-      ? 'rework'
-      : (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
+    // A cancelled job goes to the Backlog lane with a grey outline, and no banner: it is not an error.
+    if (isCancelled(job)) return cancelledCards.push(card(job, pasts[i], cost, 0, shots[i]))
+    // A job set to rework is a job in stage build with one or more rework-<k>.md files (reworkOf). It goes to the
+    // Backlog lane with an orange outline. Once its stage is anything other than build, it is placed by its stage, with
+    // no outline.
+    if (job.stage === 'build' && r.count > 0) return reworkCards.push(card(job, pasts[i], cost, r.count, shots[i]))
+    const col = (STAGES.find((s) => s.stages.includes(job.stage)) || {}).key
     if (!col) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
-    else byStage[col].push(card(job, pasts[i], cost, col === 'rework' ? r.count : 0, shots[i]))
+    else byStage[col].push(card(job, pasts[i], cost, 0, shots[i]))
   })
-  // Newest first within a column.
+  // Newest first within a column. The Backlog lane lists the ideas by rank, then the jobs set to rework, then the
+  // cancelled jobs, each group of jobs newest first.
+  const shown = Object.fromEntries(STAGES.map((s) => [s.key, byStage[s.key].reverse()]))
+  shown.backlog = [...backlogIdeas.map(ideaCard), ...reworkCards.reverse(), ...cancelledCards.reverse()]
   const html = STAGES.map((s) => `
     <section class="col ${s.cls || ''}">
       <div class="col-head">
         <h2>${esc(s.label)}</h2><span class="who">${esc(s.who)}</span>
-        <span class="count">${byStage[s.key].length}</span>
+        <span class="count">${shown[s.key].length}</span>
       </div>
-      ${byStage[s.key].reverse().join('') || '<div class="empty">—</div>'}
+      ${shown[s.key].join('') || '<div class="empty">—</div>'}
     </section>`).join('')
   const stripHtml = strip()
   const bar = execBar()
@@ -1850,6 +1926,7 @@ async function poll() {
     await loadEvents()
     await loadPrices()
     await loadEngagement()
+    await loadBacklog()
     await render()
     if (openJobId) await refreshDrawer()
     status.className = 'status'

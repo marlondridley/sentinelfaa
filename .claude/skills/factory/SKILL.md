@@ -131,7 +131,12 @@ Event Stream button, which opens the stream view, as does the `m` key. `#board` 
 empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel (one row of five cards: the four overview tiles, then Pass
-rate) and the six lanes, each with its card count. `#git`
+rate) and the six lanes, each with its card count: Backlog, Spec, Build,
+Review & Audit, Client Approval, Merged. The Backlog lane holds the owner's
+idea files from `factory/backlog/` (not `done/`), read-only, by rank, with
+title, size and rank; then each job set to rework (stage `build` with one or
+more `rework-<k>.md` files), outlined orange, until its stage changes; then each
+cancelled job, outlined grey. Rework is a mark on a card, no longer a lane. `#git`
 (Git Graph & Inspector) shows the strip, the branch graph as the job list and,
 for the job picked in it (the newest at first), a stages bar (Spec, Build,
 Review, Approver; a stage with no file yet is greyed out), its file tree and a
