@@ -12,13 +12,14 @@
     --card-hover: #252835;
     --line: #2b2e3b;
     --text: #e4e5ea;
-    --muted: #868ba0;
-    --faint: #5b6075;
+    --muted: #a3a8bd;
+    --faint: #8a8fa6;
     --active: #8be9fd;
     --pass: #50fa7b;
     --changes: #ffb86c;
     --human: #ff79c6;
     --merged: #bd93f9;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -37,7 +38,7 @@
     flex-wrap: wrap; padding: 28px 32px 8px;
   }
   h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .status { font-family: var(--sans); font-size: 12px; color: var(--muted); }
   .status .dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
     background: var(--pass); margin-right: 6px; vertical-align: 1px;
@@ -46,11 +47,11 @@
   .status.error .dot { background: var(--human); }
   .banner {
     margin: 12px 32px 0; padding: 10px 14px; border: 1px solid var(--human);
-    border-radius: 8px; color: var(--human); font-family: var(--mono); font-size: 12px;
+    border-radius: 8px; color: var(--human); font-family: var(--sans); font-size: 12px;
   }
 
   /* Live event stream: a native <details>, collapsed by default. Only its body is redrawn, so it stays open or shut. */
-  .stream { margin: 14px 32px 0; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .stream { margin: 14px 32px 0; font-family: var(--sans); font-size: 12px; color: var(--muted); }
   .stream summary { cursor: pointer; color: var(--text); }
   .stream summary:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .stream summary .m { color: var(--muted); }
@@ -65,7 +66,7 @@
   /* Engagement strip and KPI tiles */
   .strip {
     display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 14px 32px 0;
-    font-family: var(--mono); font-size: 12px; color: var(--text);
+    font-family: var(--sans); font-size: 12px; color: var(--text);
   }
   .strip .k, .kpi .k { color: var(--faint); }
   .strip .m { color: var(--muted); }
@@ -77,10 +78,10 @@
     min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
     padding: 10px 12px;
   }
-  .kpi .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .kpi .k { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
   .kpi .v { font-family: var(--mono); font-size: 18px; margin: 2px 0; }
   .kpi .sub {
-    font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere;
+    font-family: var(--sans); font-size: 12px; color: var(--muted); overflow-wrap: anywhere;
   }
   /* The cost per point tile takes a whole row, for its learning curve: one bar per merged job, oldest merge first. */
   .kpi.wide { grid-column: 1 / -1; }
@@ -88,6 +89,7 @@
   .curve { list-style: none; margin: 4px 0 0; padding: 0; max-width: 760px; }
   .curve li {
     display: grid; grid-template-columns: minmax(0, 28ch) 10ch minmax(40px, 1fr); gap: 10px; align-items: center;
+    font-family: var(--mono);
   }
   .curve .id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .curve .usd { text-align: right; color: var(--text); }
@@ -105,9 +107,9 @@
     border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
   }
   .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
-  .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .col-head .who { font-size: 12px; color: var(--faint); font-family: var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count {
-    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted);
   }
   /* No arrow after Merged to main or Rework: Rework is a side lane the owner sends a job to, not the step after merging. */
   .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
@@ -143,23 +145,23 @@
     animation: pulse 1.6s ease-in-out infinite;
   }
   .flag {
-    margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: .06em;
+    margin-left: auto; font-size: 12px; font-weight: 600; letter-spacing: .06em;
     text-transform: uppercase; color: var(--human); white-space: nowrap;
   }
   .feature { font-size: 13px; line-height: 1.4; margin: 0 0 6px; }
   .branch {
-    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    font-family: var(--mono); font-size: 12px; color: var(--faint);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .figures {
-    margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-top: 4px; font-family: var(--mono); font-size: 12px; color: var(--muted);
     overflow-wrap: anywhere;
   }
   .rounds { margin-top: 10px; display: grid; gap: 5px; }
   .round { display: flex; align-items: center; gap: 4px; }
-  .round .r { font-family: var(--mono); font-size: 10px; color: var(--faint); width: 20px; }
+  .round .r { font-family: var(--sans); font-size: 12px; color: var(--faint); width: 20px; }
   .chip {
-    flex: 1; text-align: center; font-family: var(--mono); font-size: 10px;
+    flex: 1; text-align: center; font-family: var(--sans); font-size: 12px;
     padding: 2px 0; border-radius: 4px; border: 1px dashed var(--faint); color: var(--faint);
   }
   .chip.wait { animation: breathe 1.6s ease-in-out infinite; }
@@ -174,7 +176,7 @@
   .chip.bad { border: 1px solid var(--human); color: var(--human); }
   .hint {
     margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
-    font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.6;
+    font-family: var(--sans); font-size: 12px; color: var(--muted); line-height: 1.6;
     overflow-wrap: anywhere;
   }
   .approve { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
@@ -184,7 +186,7 @@
   }
   .approve button:hover { background: color-mix(in srgb, var(--human) 14%, transparent); }
   .approve button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
-  .approve-msg { font-size: 11px; line-height: 1.4; color: var(--muted); }
+  .approve-msg { font-size: 12px; line-height: 1.4; color: var(--muted); }
 
   /* Branch graph */
   .graph { padding: 0 32px 40px; min-width: 0; }
@@ -213,7 +215,7 @@
   .g-text { min-width: 0; flex: 1; padding: 8px 0 10px; }
   .g-text .feature { margin: 2px 0 4px; overflow-wrap: anywhere; }
   .g-meta {
-    font-family: var(--mono); font-size: 11px; color: var(--faint); overflow-wrap: anywhere;
+    font-family: var(--mono); font-size: 12px; color: var(--faint); overflow-wrap: anywhere;
   }
   .g-meta .k { color: var(--muted); }
   .g-row.on { background: var(--card-hover); box-shadow: inset 0 0 0 1px var(--active); }
@@ -243,7 +245,7 @@
   .stage:disabled { cursor: default; opacity: .5; background: var(--card); }
   .stage .k { display: block; font-size: 12px; font-weight: 600; }
   .stage .sub {
-    display: block; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    display: block; font-family: var(--mono); font-size: 12px; color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .insp-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; }
@@ -283,7 +285,7 @@
   .d-sh button {
     display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 0; background: none; border: 0;
     cursor: pointer; text-align: left; font-family: inherit; font-weight: 400;
-    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
   }
   .d-sh button:hover { color: var(--muted); }
   .d-sh button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
@@ -302,7 +304,7 @@
   .matrix thead th:nth-child(1) { width: 22%; }
   .matrix thead th:nth-child(2) { width: 25%; }
   .matrix tbody th { background: var(--card); color: var(--muted); font-weight: 600; }
-  .matrix .st { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .matrix .st { font-family: var(--sans); font-size: 12px; white-space: nowrap; }
   .matrix .passed .st { color: var(--pass); }
   .matrix .failed .st { color: var(--human); }
   /* A check that did not run is grey and italic, so it cannot be read as a pass. */
@@ -317,7 +319,7 @@
   .d-body { display: grid; grid-template-columns: 200px 1fr; min-height: 0; }
   .files { border-right: 1px solid var(--line); padding: 14px 10px; overflow-y: auto; }
   .files .group {
-    font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
     color: var(--faint); margin: 12px 8px 4px;
   }
   .files .group:first-child { margin-top: 0; }
@@ -336,7 +338,7 @@
   /* Screenshots from evidence/round-<N>/<agent>/, on the card and in the drawer. The drawer's section shows at its
      natural height inside the drawer's upper region. */
   .shots { margin-top: 8px; }
-  .shots-k { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .shots-k { font-family: var(--sans); font-size: 12px; color: var(--muted); }
   .shots .note, .d-shots .note { font-size: 12px; margin: 2px 0 0; }
   .thumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; min-width: 0; }
   .thumbs img {
@@ -344,15 +346,15 @@
     border: 1px solid var(--line); border-radius: 4px;
   }
   .card .thumbs img { width: calc(25% - 3px); max-height: 48px; }
-  .thumbs .more { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .thumbs .more { font-family: var(--sans); font-size: 12px; color: var(--muted); }
   .d-shots { padding: 0 24px 14px; min-width: 0; }
   .d-shots .group {
-    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin-bottom: 4px;
   }
   .d-shots .group { margin-top: 10px; }
   .s-rounds { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 2px; }
   .s-rounds button {
-    cursor: pointer; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 6px;
+    cursor: pointer; font-family: var(--sans); font-size: 12px; padding: 2px 8px; border-radius: 6px;
     border: 1px solid var(--line); background: none; color: var(--muted);
   }
   .s-rounds button:hover { color: var(--text); border-color: var(--muted); }
@@ -390,7 +392,7 @@
   .md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
   .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
   .verdict {
-    display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600;
+    display: inline-block; font-family: var(--sans); font-size: 12px; font-weight: 600;
     padding: 4px 10px; border-radius: 6px; margin-bottom: 14px;
   }
   .verdict + * { margin-top: .4em; }
@@ -400,7 +402,7 @@
   .note { color: var(--faint); font-size: 13px; }
 
   footer {
-    padding: 0 32px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
+    padding: 0 32px 32px; font-family: var(--mono); font-size: 12px; color: var(--faint);
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
@@ -425,7 +427,7 @@
   #overview .info {
     width: 16px; height: 16px; margin-left: 6px; padding: 0; vertical-align: 1px; cursor: help;
     border: 1px solid var(--muted); border-radius: 50%; background: none; color: var(--muted);
-    font-size: 10px; font-weight: 600; line-height: 14px;
+    font-size: 12px; font-weight: 600; line-height: 14px;
   }
   #overview .info:hover, #overview .about:focus-within .info { color: var(--text); border-color: var(--text); }
   #overview .info:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
@@ -468,7 +470,7 @@
     outline: 2px solid var(--focus); outline-offset: 2px;
   }
   #briefing .b-note { font-size: 12px; color: var(--muted); }
-  #briefing .b-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  #briefing .b-meta { font-family: var(--sans); font-size: 12px; color: var(--muted); }
   #briefing .b-figs { display: flex; flex-wrap: wrap; gap: 4px 24px; font-family: var(--mono); font-size: 13px; margin: 6px 0; }
   #briefing .b-figs .k { color: var(--muted); }
   #briefing .b-sub { font-size: 12px; color: var(--muted); }
@@ -479,14 +481,14 @@
   #briefing td.id { font-family: var(--mono); white-space: nowrap; }
   /* A verdict or status is a word in a box, so it reads on a black and white printer, never by colour alone. */
   #briefing .b-v {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600; white-space: nowrap;
+    display: inline-block; font-family: var(--sans); font-size: 12px; font-weight: 600; white-space: nowrap;
     border: 1px solid var(--text); border-radius: 4px; padding: 0 5px;
   }
   #briefing .b-v.CHANGES, #briefing .b-v.ESCALATE { border-width: 2px; }
   #briefing .b-v.not-run { font-style: italic; border-style: dashed; }
   #briefing pre {
     margin: 4px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
-    font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f6f6;
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f6f6;
   }
   #briefing ul { margin: 4px 0; padding-left: 1.3em; }
   #briefing .b-table { overflow-x: auto; }
@@ -547,7 +549,7 @@
 
   /* View toggle: four plain links under the header, so Back and Forward move between the views. The Cost & LOE view
      uses the same gutter as #overview. */
-  #views { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 6px 32px 0; font-family: var(--mono); font-size: 12px; }
+  #views { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 6px 32px 0; font-family: var(--sans); font-size: 12px; }
   #views a { color: var(--muted); text-decoration: none; padding-bottom: 4px; border-bottom: 2px solid transparent; }
   #views a:hover { color: var(--text); }
   #views a[aria-current="page"] { color: var(--text); border-bottom-color: var(--active); }
@@ -583,7 +585,7 @@
   }
   #exec-bar .field-label {
     position: absolute; top: -8px; left: 8px; padding: 0 4px; background: #121319;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; text-transform: uppercase;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1; text-transform: uppercase;
     color: #64748B;
   }
   #exec-bar .dropdown-select { display: flex; align-items: center; min-width: 0; }
@@ -594,7 +596,7 @@
     font-size: 13px; font-weight: 600; color: #F1F5F9; opacity: 1; outline: none;
     text-overflow: ellipsis; cursor: default;
   }
-  #exec-bar .dropdown-arrow { margin-left: -12px; font-size: 10px; color: #94A3B8; pointer-events: none; }
+  #exec-bar .dropdown-arrow { margin-left: -12px; font-size: 12px; color: #94A3B8; pointer-events: none; }
   #exec-bar .sprint-pill {
     display: flex; align-items: center; gap: 6px; padding: 6px 12px; white-space: nowrap;
     background: #181A22; border: 1px solid #2E3344; border-radius: 6px;
@@ -609,7 +611,7 @@
      sans-serif at the line's size. */
   #exec-bar .header-center { min-width: 0; font-size: 13px; color: #94A3B8; white-space: nowrap; }
   #exec-bar .pulse-label {
-    display: block; margin-bottom: 2px; font-size: 11px; line-height: 1.3; font-weight: 500; color: #CBD5E1;
+    display: block; margin-bottom: 2px; font-size: 12px; line-height: 1.3; font-weight: 500; color: #CBD5E1;
   }
   #exec-bar .pulse-metrics { display: block; font-size: 14px; line-height: 1.3; color: #E2E8F0; }
   #exec-bar .pulse-metrics strong { font-weight: 700; color: #F8FAFC; }
@@ -619,7 +621,7 @@
   #exec-bar .btn-header {
     display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; white-space: nowrap;
     background: #1E2230; border: 1px solid #2E3448; border-radius: 6px; color: #E2E8F0;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-decoration: none; cursor: pointer;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.02em; text-decoration: none; cursor: pointer;
     transition: all 0.15s ease;
   }
   #exec-bar .btn-header:hover { background: #282E42; border-color: #475569; color: #FFF; }
