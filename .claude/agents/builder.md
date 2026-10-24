@@ -63,13 +63,17 @@ you ran and its outcome, or the path of the screenshot you saved.
   for the areas you changed. They must pass.
 - Lint only the files you changed. Never run a command that rewrites files
   across the repo, such as a lint `--fix` over everything.
-- For criteria you can see on a page, start the dev server from AGENTS.md in the
-  worktree on your port, then look at the page with the `agent-browser` CLI (run
-  `agent-browser skills get core` first to learn it). Pass
-  `--session <job-id>-builder` on every `agent-browser` call, so other jobs
-  never drive your browser. Close it with
-  `agent-browser --session <job-id>-builder close` and stop the dev server when
-  you're done.
+- For criteria you can see on a page, start the dev server from AGENTS.md on
+  your port, without `cd` into the worktree and without a wrapper (no `nohup`,
+  no `&`), and write its process id to
+  `<job folder>/evidence/round-<N>/builder/server.pid`. Then look at the page
+  with the `agent-browser` CLI (run `agent-browser skills get core` first to
+  learn it). Pass `--session <job-id>-builder` on every `agent-browser` call, so
+  other jobs never drive your browser. Before you write build.md, stop the dev
+  server, run `agent-browser --session <job-id>-builder close` and check your
+  port is free, with the commands in the factory skill's Prompts section
+  (`.claude/skills/factory/SKILL.md`, "Test servers and browsers"). build.md
+  says "server stopped, browser closed, ports free", or what still runs.
 
 ## Commit
 

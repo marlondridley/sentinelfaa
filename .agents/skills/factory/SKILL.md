@@ -312,6 +312,50 @@ Agents that open pages also get a port. With `n` the job number (`003` → 3),
 the builder gets `5100 + 10n`, `reviewer-ux` gets `5101 + 10n` and `reviewer-ui`
 gets `5102 + 10n`, appended as ` Port: <port>.`
 
+**Test servers and browsers.** Every agent that starts a test server or a
+browser stops it, and checks it stopped, before it writes its one file; left
+running, they lock the job folder and Windows cannot remove the worktree.
+- Serve without changing folder: never `cd` into the worktree first, e.g.
+  `python -m http.server <port> --bind 127.0.0.1 --directory <served folder>`.
+  A Sentinel dashboard is AGENTS.md's `docker run`, container `<job-id>-dash`.
+- No wrappers: no `nohup`, no `&`, no detached shell; use the Bash tool's own
+  background run. Write the process id (from the check below), or the container
+  name, to `factory/jobs/<job-id>/evidence/round-<N>/<agent>/server.pid`
+  (`<agent>` is `builder`, `ux` or `ui`).
+- Name the browser session `<job-id>-<agent>`; closing it with
+  `agent-browser --session <name> close` also ends its hidden Chrome and helpers.
+- Before the report: stop the server, close the session, run the check. The
+  report says "server stopped, browser closed, ports free", or what still runs.
+
+The check lists listeners on exactly the job's three ports, `<p1>`, `<p2>`,
+`<p3>` (job 043: 5530, 5531, 5532), never a range, and the sessions whose names
+start with `<job-id>-`; leave out a port that is 8000. Remove the container by
+name first, and look up a listener's name before stopping it. Git Bash, then PowerShell:
+```bash
+docker rm -f "<job-id>-dash" 2>/dev/null || true
+netstat -ano | grep -E ':(<p1>|<p2>|<p3>) .*LISTENING' || true   # last column: process id
+tasklist //FI "PID eq <pid>"   # its name, before any taskkill
+taskkill //PID <pid> //T //F
+agent-browser session list | sed -n 's/^ *\(<job-id>-.*\)$/\1/p'
+```
+```powershell
+docker rm -f "<job-id>-dash" 2>$null
+Get-NetTCPConnection -State Listen -LocalPort <p1>,<p2>,<p3> -ErrorAction SilentlyContinue | ForEach-Object { Get-Process -Id $_.OwningProcess | Select-Object Id, ProcessName }
+Stop-Process -Id <pid> -Force
+agent-browser session list | Where-Object { $_.Trim() -like '<job-id>-*' }
+```
+Never stop a Docker process (`com.docker.*`, `wslrelay`, `vpnkit`, `docker*`): it
+holds a container's published port, and stopping it restarts Docker Desktop and
+the live stack. Report its name and process id instead.
+
+**Cleanup**: at the end of a job's loop the orchestrator runs the commands above,
+stops each listener that is not Docker's by its process id, closes each listed
+session, and checks again that nothing is left. It matches only this job's three
+ports and session names that start with `<job-id>-`: never the owner's dashboard
+on 8000, another job's ports, or a name that merely contains the job id. If a
+process will not stop, tell the user its name and process id and carry on; a
+merge never fails or stops because of a leftover process.
+
 ## The backlog
 
 The backlog is the owner's list of ideas. An idea is a feature written down for
@@ -645,7 +689,8 @@ you took in this Merge; never delete or break another job's lock.
    `/factory approve <job-id>` again once it is quiet.
 6. **Merge.** The main checkout may still hold the user's uncommitted files.
    Only read them: never stash, commit, reset, check out, clean or otherwise
-   touch them, here or in any other step.
+   touch them, here or in any other step. Run **Cleanup** (see **Prompts**)
+   first, so no leftover process holds the worktree.
    ```bash
    git merge --no-ff factory/<job-id> -m "Merge factory/<job-id>" &&
      git rev-parse --short=7 HEAD &&
@@ -673,8 +718,8 @@ you took in this Merge; never delete or break another job's lock.
 
 ### Needs human
 
-Set `stage: "needs-human"`, append a `stage_log` entry and a `stage_changed`
-event, and refresh `commit`
+Run **Cleanup** (see **Prompts**), then set `stage: "needs-human"`, append a
+`stage_log` entry and a `stage_changed` event, and refresh `commit`
 to the branch tip, and `behind` and `base`. The branch
 and its worktree stay for the human to inspect. Tell the user which job is waiting, give the worktree path, and quote
 why it stopped: `decision.md`, the BLOCKED reason from `build.md`, or the reason
@@ -839,7 +884,8 @@ write an empty `Reason:`. Otherwise, in this order:
    stopped run's result reports figures; if it reports none, write `null`
    tokens and seconds. Never estimate.
 2. **Refresh git ids.** If the branch `factory/<job-id>` exists, refresh
-   `commit`, `behind` and `base` from it, as in **Needs human**.
+   `commit`, `behind` and `base` from it, as in **Needs human**. Then run
+   **Cleanup** (see **Prompts**); the worktree stays, but leftovers still go.
 3. **Set the stage.** Set `stage: "cancelled"`, append a `stage_log` entry (only
    if the job already has a `stage_log`; never start one) and a
    `stage_changed` event from the previous stage to `cancelled`.
