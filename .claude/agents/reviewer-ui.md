@@ -33,13 +33,18 @@ checkout; your one file goes there.
 ## Look at it
 
 If the change shows up on a page, look at it. Start the dev server from
-AGENTS.md in the worktree, in the background, on your port.
+AGENTS.md on your port, without `cd` into the worktree and without a wrapper
+(no `nohup`, no `&`), and write its process id to
+`<job folder>/evidence/round-<N>/ui/server.pid`.
 
 Then use the `agent-browser` CLI (run `agent-browser skills get core` first) to
 screenshot the page at desktop and phone widths. Pass `--session <job-id>-ui` on
 every `agent-browser` call, so other jobs' reviewers never drive your browser.
-Don't sign in or submit forms. When you're done, run
-`agent-browser --session <job-id>-ui close` and stop the dev server.
+Don't sign in or submit forms. Before you write your review, stop the dev
+server, run `agent-browser --session <job-id>-ui close` and check your port is
+free, with the commands in the factory skill's Prompts section
+(`.claude/skills/factory/SKILL.md`, "Test servers and browsers"). The review
+says "server stopped, browser closed, ports free", or what still runs.
 
 Follow the `evidence-driven-testing` skill
 (`.claude/skills/evidence-driven-testing/SKILL.md` in the worktree). Keep the
