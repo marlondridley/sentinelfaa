@@ -192,7 +192,7 @@ The suite (about 2,000 tests as of 2026-10-22, 18 of them strict xfails that doc
 
 ## Software factory
 
-Changes to this repository are built by a separate project, the Sentinel Software Factory. Work is started there with `/factory --project sentinelfaa`. Each job runs in its own git worktree, a separate checkout on its own branch, and the factory merges it locally. The factory never pushes or touches a remote; pushing is left to a person.
+Changes to this repository are built by a separate project, the Sentinel Software Factory. Work is started there with `/factory --project sentinelfaa`. Each job runs in its own git worktree, a separate checkout on its own branch, and merges locally when it is done. The factory never pushes or touches a remote; pushing is left to a person.
 
 ---
 
