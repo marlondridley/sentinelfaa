@@ -190,6 +190,12 @@ The suite (about 2,000 tests as of 2026-10-22, 18 of them strict xfails that doc
 
 ---
 
+## Software factory
+
+Changes to this repository are built by a separate project, the Sentinel Software Factory. Work is started there with `/factory --project sentinelfaa`. Each job runs in its own git worktree, a separate checkout on its own branch, and merges locally when it is done. The factory never pushes or touches a remote; pushing is left to a person.
+
+---
+
 ## Models
 
 Every model call goes through one LiteLLM gateway (`instraclustr/litellm-config.yaml`). The application names aliases only (`primary-model`), and settings that name a provider route directly (`anthropic/...`) are refused at startup, so changing providers is an edit to that file, not to the application. Today `primary-model` is Claude Haiku 4.5 and nothing else: one provider, no fallback, held to that by a test (`instraclustr/tests/test_model_provider.py`). Real FAA operational data needs an authorized endpoint, for example Claude on Bedrock GovCloud, Azure OpenAI Government, or an on-premises vLLM or NIM deployment.
