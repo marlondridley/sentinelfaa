@@ -119,13 +119,15 @@ and in its drawer, the latest round with images by default. Only image files
 from the file name, so name files for what they show (`02-filter-applied-passed.png`
 reads "Filter applied passed"), as the `evidence-driven-testing` skill says.
 
-The dashboard has four views, picked by the links under its title and kept in
-the address's hash, so Back and Forward work and a poll never changes the view.
+The dashboard has four views, kept in the address's hash, so Back and Forward
+work and a poll never changes the view. The links under its title pick three of
+them (Board, Git Graph & Inspector, Cost & LOE); the fourth, `#stream`, is opened by the
+header's Live Event Stream button or the `m` key.
 Every view has the header bar under those links: the client and sprint from
 `engagement.json`, the Executive Financial Pulse (this month's spend at
 list price against the monthly budget, leaving out jobs with no date or price
 and saying how many), the Export Executive Briefing button and the Live
-Event Stream link, also opened by the `m` key. `#board` (the default, and for an
+Event Stream button, which opens the stream view, as does the `m` key. `#board` (the default, and for an
 empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel (one row of five cards: the four overview tiles, then Pass
