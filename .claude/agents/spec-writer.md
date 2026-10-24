@@ -77,6 +77,24 @@ title block, with N one of these and nothing else:
 Pick the smallest size that fits the whole spec. The orchestrator copies N into
 `job.json` and stops the job if the line is missing or N is not on this list.
 
+The factory builds only jobs of 1, 2 or 3 points. Whenever you would write 5, 8
+or 13, still write `Story points: N` with that real value, and also add a
+`## Split` section after Assumptions: at least two pieces of 3 points or fewer
+that together cover the feature, each a block in this form:
+
+```markdown
+## Split
+
+### <piece title, one line, plain words>
+Size: <1, 2 or 3>
+Files: <comma-separated repo paths the piece expects to touch, or unknown>
+Notes: <one or two plain sentences>
+```
+
+The orchestrator turns each piece into a backlog idea and cancels the job; it
+never splits or re-sizes pieces itself, so the split must be usable as written.
+A spec of 1, 2 or 3 points has no Split section.
+
 ## Rules
 
 - Prefer the smallest change that fully meets the request. Don't add options,
