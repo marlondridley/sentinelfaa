@@ -458,27 +458,42 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
    Wait for it to finish, append its `usage` entry and `agent_finished` with
    `verdict: null`, then check that `spec.md`
    exists and has a line `Story points: N`, directly under the title block.
-   A job is built only when N is 1, 2 or 3. The spec-writer's size is binding;
-   an idea's `Size:` is only an estimate. Never pick or change a value
-   yourself.
+   A job of 1, 2 or 3 points is built; a job of 5, 8 or 13 is split, or is
+   built as one job only when its spec says why it cannot be split. The
+   spec-writer's size is binding; an idea's `Size:` is only an estimate. Never
+   pick or change a value yourself.
    - N is 1, 2 or 3: copy N into `job.json` as `points` and go to step 4.
-   - N is 5, 8 or 13: copy N into `job.json` as `points`, then follow
-     **Too big: split into ideas** below. Do not build.
+   - N is 5, 8 or 13: copy N into `job.json` as `points`, then look at
+     `spec.md`:
+     - It has a `## Split` section: follow **Too big: split into ideas**
+       below. Do not build. This holds even if it also has the two sections
+       below.
+     - It has no `## Split` section, but has both a non-empty
+       `## Dependencies` section and a non-empty
+       `## Why this cannot be split` section: the spec-writer judged the
+       dependencies not understood well enough to cut safe pieces. Keep
+       `points`, write no ideas, cancel nothing, and go to step 4. Judging
+       whether the two sections are good enough is the approver's job.
+     - It has neither (or only one of the two sections, or an empty one):
+       stop, change nothing, and tell the owner the spec-writer left no usable
+       split and no stated reason why it cannot be split: they cancel the job
+       or send it back with a note.
    - `spec.md` is missing, the line is missing, or N is any other value: stop
      and tell the user which.
 
-   **Too big: split into ideas.** The spec-writer writes a `## Split` section
-   for any spec of 5 or more points: pieces of 3 points or fewer that together
-   cover the feature. Each piece is a block of a `### <title>` line, then the
+   **Too big: split into ideas.** For a spec of 5 or more points the
+   spec-writer writes a `## Split` section: pieces of 3 points or fewer that
+   together cover the feature. (Its other outcome, the two sections above, is
+   not split.) Each piece is a block of a `### <title>` line, then the
    lines `Size: <1, 2 or 3>`, `Files: <comma-separated paths or unknown>` and
    `Notes: <one or two plain sentences>`. You only copy its pieces into the
    backlog; you never promote, start, split or re-size a piece yourself.
    1. **Check the split.** `spec.md` must have a `## Split` section with at
       least two pieces, each with its `Size:`, `Files:` and `Notes:` lines. If
       not, stop, change nothing, and tell the owner the spec-writer left no
-      usable split: they cancel the job or send it back with a note. If a
-      piece's `Size:` is not 1, 2 or 3, write no ideas, cancel nothing, and
-      tell the owner which piece.
+      usable split and no stated reason why it cannot be split: they cancel
+      the job or send it back with a note. If a piece's `Size:` is not 1, 2 or
+      3, write no ideas, cancel nothing, and tell the owner which piece.
    2. **Check the main checkout**, before writing anything. Make each piece's
       slug from its title (see **The backlog**). If the main checkout is not
       on `main`, stop, change nothing, and tell the owner to switch it back to
@@ -557,7 +572,12 @@ with that `verdict` (`READY`, `BLOCKED`, or `null` if it is neither).
 
 Set `stage: "approve"` and append a `stage_log` entry and a `stage_changed`
 event. Append `agent_started` for `approver`, round N, then spawn `approver`
-with the prompt `<paths> Final round: N.`
+with the prompt `<paths> Final round: N.` When the job's `points` is 5 or more,
+add to the prompt: `This job is <points> points and was not split: in
+spec.md, read the ## Dependencies and ## Why this cannot be split sections,
+and ESCALATE if either is thin (a reason of only "it is big", or dependencies
+that do not show why the pieces cannot be built apart), or if Final round is
+greater than 1.`
 When it finishes, append its `usage` entry, then read the first line of
 `decision.md` and append `agent_finished` for `approver` with that `verdict`
 (`APPROVE`, `ESCALATE`, or `null` if it is neither):

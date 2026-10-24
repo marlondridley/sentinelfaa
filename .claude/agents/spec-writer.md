@@ -93,7 +93,17 @@ Notes: <one or two plain sentences>
 
 The orchestrator turns each piece into a backlog idea and cancels the job; it
 never splits or re-sizes pieces itself, so the split must be usable as written.
-A spec of 1, 2 or 3 points has no Split section.
+
+Only when the dependencies are not understood well enough to cut safe pieces,
+a spec of 5, 8 or 13 points may stay one job instead; prefer a Split whenever
+one is possible. Then write no Split section, and after Assumptions add
+`## Dependencies` (what the work depends on and what depends on it: files,
+other jobs, data, commands and the order of steps, in enough detail that a
+reader sees why the pieces cannot be built apart) and
+`## Why this cannot be split` (the specific dependency or unknown that stops a
+split; "it is big" is not a reason). Never write both outcomes.
+A spec of 1, 2 or 3 points has no `## Split`, `## Dependencies` or
+`## Why this cannot be split` section.
 
 ## Rules
 
