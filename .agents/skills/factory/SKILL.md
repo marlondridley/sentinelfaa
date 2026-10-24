@@ -125,7 +125,10 @@ empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel (one row of five cards: the four overview tiles, then Pass
 rate) and the six lanes, each with its card count. `#git`
-shows the strip and the branch graph. `#cost` shows the strip, the cost per
+(Git Graph & Inspector) shows the strip, the branch graph as the job list and,
+for the job picked in it (the newest at first), a stages bar (Spec, Build,
+Review, Approver; a stage with no file yet is greyed out), its file tree and a
+viewer. `#cost` shows the strip, the cost per
 point tile and a table with one row per job: stage, points, full price and cost
 per point. `#stream` shows the live event stream from each job's
 `events.jsonl`.
@@ -674,9 +677,11 @@ List-price spend (USD): <spend>
   With no `usage` entries they read `0` and `0.00`.
 
 A cancelled job's `usage` stays counted in the dashboard's monthly pulse, the
-strip's all-time spend and the cost view: the tokens were spent. Showing
-cancelled jobs on the dashboard is separate work; this skill only records the
-stage.
+strip's all-time spend and the cost view: the tokens were spent. The dashboard
+shows a cancelled job as a dimmed row in the Cost & LOE table, with a "spent on
+cancelled work" line above it, and in the job drawer that row opens, with the
+cancel summary and the revive command. It is not on the board, not in the
+branch graph and not in any flow, cycle, rework, value or pass-rate figure.
 
 **Migration.** Jobs `020-executive-briefing` and `027-pulse-in-header` were
 cancelled before this stage existed: the first line of their `decision.md`
