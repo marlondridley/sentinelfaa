@@ -33,6 +33,7 @@ worktree. The job folder is in the main checkout; your one file goes there.
 > Feature: <the request, verbatim>
 
 Story points: <N>
+Files: <comma-separated repo paths the job expects to touch, or unknown>
 
 ## Context
 Where this lives in the codebase: the files, components and data involved, and
@@ -104,6 +105,15 @@ reader sees why the pieces cannot be built apart) and
 split; "it is big" is not a reason). Never write both outcomes.
 A spec of 1, 2 or 3 points has no `## Split`, `## Dependencies` or
 `## Why this cannot be split` section.
+
+## Files
+
+The `Files:` line goes directly after `Story points: N` in every spec. It lists
+the repo paths the job expects to touch, separated by commas, or the word
+`unknown` when you cannot tell. The orchestrator copies it into `job.json` and
+uses it to warn the owner when another running job expects to touch the same
+files, so name real files from the worktree. Name a folder, ending in `/`, only
+when many files in it change.
 
 ## Rules
 
