@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory idea <title>, /factory approve <job-id>, /factory rework <job-id> <note>, /factory paid <job-id> <usd>, /factory cancel <job-id> <why>, or /factory revive <job-id> <stage>. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
+description: Run the software factory. Use when the user types /factory <feature>, /factory next, /factory idea <title>, /factory approve <job-id>, /factory rework <job-id> <note>, /factory paid <job-id> <usd>, /factory cancel <job-id> <why>, /factory revive <job-id> <stage>, or /factory status. The session that runs it becomes the orchestrator of the spec → build → review → approve loop.
 ---
 
 # Factory
@@ -68,8 +68,9 @@ share the machine and Docker fairly. Change the number here and nowhere else.
   is how a slot frees up. `/factory cancel` is not blocked either: cancelling
   frees a slot. `/factory idea` is not blocked: an idea (a feature written
   down for later, with no job yet) costs no slot, the backlog has no limit, and
-  only promotion, turning an idea into a job, takes a slot (see **The backlog**). `/factory revive` is blocked,
-  because reviving claims a slot.
+  only promotion, turning an idea into a job, takes a slot (see **The backlog**).
+  `/factory status` is not blocked: it only reads. `/factory revive` is
+  blocked, because reviving claims a slot.
 - Your session stays in the main checkout. Agents work in the job's worktree.
   The main checkout is the user's, and it may be dirty or on another branch.
   Only **Merge** touches it.
@@ -80,6 +81,31 @@ share the machine and Docker fairly. Change the number here and nowhere else.
   **Prompts**), so reviewers of different jobs never see each other's pages.
 - Merges are serialised by the merge lock, and every merge is re-tested against
   the current `main` before it lands (see **Merge**).
+
+### Overlap check
+
+Two jobs that change the same files may conflict when the second one merges.
+The overlap check warns the owner early, from the `files` each job's spec
+expects to touch (see **job.json**). Step 3 of **/factory <feature>** runs it
+for one job; **/factory status** runs it across all running jobs.
+
+1. Read every `factory/jobs/*/job.json`, skipping folders whose name starts
+   with `.`. Keep the other jobs whose `stage` is `spec`, `build`, `review` or
+   `approve`. Skip any job whose `files` is `null` or absent, and skip the
+   check altogether when this job's `files` is `null`.
+2. Compare this job's `files` with each kept job's `files`, path by path. Two
+   paths overlap when they are equal, or when one is a folder path (it ends in
+   `/`) and the other starts with it (`docs/` contains `docs/x.md`). A shared
+   path is the longer of the two, the one inside the folder; for equal paths,
+   that path. Nothing else counts: no other wildcard or pattern matching.
+3. For each other job with at least one shared path, tell the user in plain
+   words: that job's id, its stage, and the shared paths, and that the two
+   jobs may conflict when the second one merges, so they may want to approve,
+   rework or cancel one of them first. With no shared path, or no `files`,
+   say nothing.
+
+The warning is information only. It never blocks, pauses, cancels or reorders
+anything, writes no file and appends no event; the job carries on.
 
 ## Files
 
@@ -169,7 +195,8 @@ calls it.
   "commit": "4f2a9c1", "behind": 3, "base": "9b07e3d",
   "stage": "review", "round": 2,
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
-  "points": 3, "paid_usd": null, "merged_at": null,
+  "points": 3, "files": ["src/signup.py", "docs/"],
+  "paid_usd": null, "merged_at": null,
   "stage_log": [
     { "stage": "spec", "at": "2026-10-21T13:02:11Z" },
     { "stage": "build", "at": "2026-10-21T13:06:40Z" },
@@ -215,6 +242,12 @@ calls it.
   dashboard reads directly.
 - `points` is the job's size in story points, copied from the `Story points: N`
   line of `spec.md` after the spec step (`null` until then). You never pick one.
+- `files` is the list of repo paths the job expects to touch, an array of
+  strings, copied from the `Files:` line of `spec.md` after the spec step:
+  split the line's value on commas and trim each path. It is `null` until
+  then, and `null` when the line is `unknown` or missing. You never invent,
+  add to or edit the list. Every rewrite keeps it, as it keeps `points`. The
+  **Overlap check** reads it.
 - `paid_usd` is what the human actually paid for the job, in US dollars, set
   only by `/factory paid`. It stays `null` until they set it.
 - `merged_at` is the UTC time you set `stage: "merged"`, as ISO 8601 with `Z`
@@ -256,7 +289,7 @@ calls it.
   from the file the same way and append to it; never rebuild it.
 - Jobs from before these fields existed have none of them; the dashboard shows
   their cost and timing figures and git id as `-`. Never back-fill them,
-  `commit`, `behind`, `base` and `stage_log` included. A job whose `job.json`
+  `commit`, `behind`, `base`, `stage_log` and `files` included. A job whose `job.json`
   has no `stage_log` keeps none: never start one part-way through a job, and
   never work out times from file dates.
 
@@ -410,7 +443,8 @@ Grooming proposal:
   gets the highest `Rank` among the ideas directly in `factory/backlog/` plus
   10, or 10 when there are none.
 - `Files:` lists the paths the idea expects to touch, so overlapping jobs can
-  be spotted later.
+  be spotted later; the same comma-separated paths, in a job's `spec.md`, feed
+  the **Overlap check**.
 - The notes are everything between `Notes:` and `Grooming proposal:`.
 - The line `Grooming proposal:` and everything after it belong to the grooming
   agent. Nothing in this skill reads or edits that section, and the owner's
@@ -441,7 +475,7 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
    The worktree path is `$(cd .. && pwd)/$(basename "$PWD")-factory/<job-id>`,
    run from `<repo>`. Write `job.json` with that `worktree`, `stage: "spec"`,
    `round: 0`, all reviews `pending`, `commit`, `behind`, `base`, `points`,
-   `paid_usd` and `merged_at` `null`, `usage: []`, and a `stage_log` holding
+   `files`, `paid_usd` and `merged_at` `null`, `usage: []`, and a `stage_log` holding
    one entry, `{ "stage": "spec", "at": "<now>" }` (see **job.json**). Start
    `events.jsonl` with `stage_changed` from `null` to `spec` (see **Events**).
 2. **Worktree.** Create the branch and its worktree from `main`:
@@ -461,7 +495,12 @@ the format above in `factory/backlog/` and commit it. Either way, they may edit
    A job of 1, 2 or 3 points is built; a job of 5, 8 or 13 is split, or is
    built as one job only when its spec says why it cannot be split. The
    spec-writer's size is binding; an idea's `Size:` is only an estimate. Never
-   pick or change a value yourself.
+   pick or change a value yourself. Each time you copy N as `points` below,
+   copy the `Files:` line into `job.json` as `files` in the same rewrite (see
+   **job.json**), then run the **Overlap check** (see **Parallel jobs**) for
+   this job, which warns of any overlap with other running jobs. Unlike
+   `Story points`, a missing `Files:` line does not stop the job: `files` is
+   `null` and there is nothing to check.
    - N is 1, 2 or 3: copy N into `job.json` as `points` and go to step 4.
    - N is 5, 8 or 13: copy N into `job.json` as `points`, then look at
      `spec.md`:
@@ -1012,8 +1051,30 @@ short sentence:
    `N+1` (`N` the job's last round, as for a rework run) and a fresh
    `MAX_RESUMES`. Your session now orchestrates the job.
 
+## /factory status
+
+Prints where every job stands. It is read-only: it writes no file, appends no
+event and takes no slot, and it is not blocked by `MAX_RUNNING_JOBS`. It works
+from any session, whichever job that session orchestrates.
+
+1. Read every `factory/jobs/*/job.json`, skipping folders whose name starts
+   with `.`. Every stage is included, `needs-human`, `merged` and `cancelled`
+   too. With no jobs, say there are no jobs yet and stop.
+2. Print one line per job, ordered by job id:
+   ```
+   <id>  <stage>  round <round>  security <v>  ux <v>  ui <v>  code <v>  <worktree>
+   ```
+   Each `<v>` is that review's value from `reviews`. A field the job's
+   `job.json` does not have shows `-`.
+3. Under the lines, run the **Overlap check** for each running job against
+   the other running jobs, and print each pair of jobs that shares paths once,
+   with both ids and stages and the shared paths, in the check's plain words.
+   With no overlap, print nothing more.
+
 ## Reporting
 
 Keep the user posted with one short line per transition, for example
 `003-rate-limiting: round 2, security CHANGES, ux/ui/code PASS → resuming builder`.
-When the job ends, say whether it merged or needs a human, and why.
+When the job ends, say whether it merged or needs a human, and why. To see all
+jobs at once, the owner runs `/factory status`, from any session and at any
+time, whatever the `MAX_RUNNING_JOBS` count.
