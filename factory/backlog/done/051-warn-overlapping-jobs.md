@@ -2,6 +2,7 @@ Title: Warn about overlapping jobs and add /factory status: the spec-writer list
 Size: 3
 Rank: 10
 Files: .agents/skills/factory/SKILL.md, .claude/skills/factory/SKILL.md
+Job: 051-warn-overlapping-jobs
 
 Notes:
 
