@@ -153,6 +153,7 @@
     margin-left: auto; font-size: 12px; font-weight: 600; letter-spacing: .06em;
     text-transform: uppercase; color: var(--human); white-space: nowrap;
   }
+  .alert-icon { flex: none; color: var(--human); vertical-align: -2px; }
   .feature { font-size: 13px; line-height: 1.4; margin: 0 0 6px; }
   .branch {
     font-family: var(--mono); font-size: 12px; color: var(--faint);
@@ -1561,6 +1562,11 @@ function shotsSection(job, entry) {
   return `<div class="s-rounds">${buttons}</div>${groups}`
 }
 
+// A needs-human job's mark on its card and graph row. It has a name and a hover title, so the state is not colour only.
+const ALERT_ICON = '<svg class="alert-icon" role="img" aria-label="Needs your approval" width="14" height="14" ' +
+  'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<title>Needs your approval</title><path d="M12 3 L22 20 H2 Z"/><path d="M12 10 v4"/><path d="M12 17 v.01"/></svg>'
+
 function card(job, past, cost, rework, shots) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
@@ -1576,7 +1582,7 @@ function card(job, past, cost, rework, shots) {
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
         <span class="num">${esc(num)} · ${esc(titleOf(job))}</span>
-        ${human ? '<span class="flag">your call</span>' : ''}
+        ${human ? `<span class="flag">your call</span>${ALERT_ICON}` : ''}
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch">${esc(job.branch)}</div>
@@ -1690,7 +1696,7 @@ function graphRow(job) {
       <div class="g-lane"><svg width="48" height="56" viewBox="0 0 48 56" aria-hidden="true">
         <circle class="main-node" cx="12" cy="4" r="3"/>${lane}</svg></div>
       <div class="g-text">
-        <div class="num">${esc(idTitle(job))} · ${esc(state)}</div>
+        <div class="num">${esc(idTitle(job))} · ${esc(state)}${human ? ` ${ALERT_ICON}` : ''}</div>
         <p class="feature">${esc(job.feature)}</p>
         <div class="g-meta"><span class="k">branch</span> ${esc(job.branch)}</div>
         <div class="g-meta"><span class="k">${merged ? 'merge commit on main' : 'branch tip'}</span> ${esc(commit || '-')}</div>${drift}
