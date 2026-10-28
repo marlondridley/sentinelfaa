@@ -93,7 +93,7 @@ state that never lands in a commit.
 <repo>/factory/prices.json                     list price per model, for the dashboard's full price (committed)
 <repo>/factory/engagement.json                 optional, owner-written: client, stage, sprint, monthly_budget_usd, owner (the name shown in the pulse label) for the dashboard; never created or defaulted
 <repo>/factory/jobs/<job-id>/job.json          the job's state (you write it, the dashboard reads it)
-<repo>/factory/jobs/<job-id>/events.jsonl      the job's event log (you append to it, only the dashboard's live event stream reads it)
+<repo>/factory/jobs/<job-id>/events.jsonl      the job's event log (you append to it, only the dashboard's live event stream and stuck flag read it)
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/rework-<k>.md     written by you, from /factory rework
@@ -131,7 +131,7 @@ Event Stream button, which opens the stream view, as does the `m` key. `#board` 
 empty or unknown hash) shows the
 engagement strip (stage, and spend for all jobs, all time), the Executive
 Overview Panel (one row of five cards: the four overview tiles, then Pass
-rate) and the six lanes, each with its card count: Backlog, Spec, Build,
+rate), the Waiting on you panel (below) and the six lanes, each with its card count: Backlog, Spec, Build,
 Review & Audit, Client Approval, Merged. The Backlog lane holds the owner's
 idea files from `factory/backlog/` (not `done/`), read-only, by rank, with
 title, size and rank; then each job set to rework (stage `build` with one or
@@ -144,6 +144,20 @@ viewer. `#cost` shows the strip, the cost per
 point tile and a table with one row per job: stage, points, full price and cost
 per point. `#stream` shows the live event stream from each job's
 `events.jsonl`.
+
+The Waiting on you panel, between the overview and the lanes, lists every job
+in `needs-human` with why it waits and the exact `/factory approve`,
+`/factory rework` and `/factory cancel` commands to copy. The reason is, in this
+order: the `## Why` paragraph of an `ESCALATE` `decision.md`; the `## Blocked`
+section (else `## Why`, else first paragraph) of a `STATUS: BLOCKED`
+`build.md`; for an `APPROVE` `decision.md`, that the merge step stopped and its
+reason is in the factory session (it is in no job file); otherwise "No reason
+recorded in the job files." It also flags a job as stuck when its stage is
+`spec`, `build`, `review` or `approve` and the newest valid line of its
+`events.jsonl` is 30 minutes or more old; a job with no event lines is never
+flagged. Its two counts, Waiting on you and Stuck, are buttons that show only
+their own list. It reads only `job.json`, `decision.md`, `build.md` and
+`events.jsonl`, and changes no job.
 
 The dashboard's job drawer has a compliance matrix, read from these same files.
 Only the rows the factory really runs show a result: the four review verdicts of
@@ -300,8 +314,8 @@ finish and the job's `stage` is `spec`, `build`, `review` or `approve`.
 The log is separate from `job.json` and from the `stage_log` and `merged_at`
 timestamps: `job.json` stays the only source of every figure, stage and card on
 the dashboard. The log is for visibility only and may be missing, so nothing
-but the dashboard's live event stream reads it; no agent reads it and no figure
-depends on it. Never write an event for something you did not do, never
+but the dashboard's live event stream and its stuck flag (Waiting on you panel)
+read it; no agent reads it and no figure depends on it. Never write an event for something you did not do, never
 estimate a time, and never back-fill old jobs: a job without the file has no
 events. If an append fails, tell the user and carry on; the loop never depends
 on the log. It is bounded by the loop itself (about 20 lines per round), so it

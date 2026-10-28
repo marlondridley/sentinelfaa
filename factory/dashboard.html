@@ -453,6 +453,24 @@
   #overview .tip .line { display: block; overflow-wrap: anywhere; }
   #overview .tip .line + .line { margin-top: 6px; }
 
+  /* Waiting on you: the jobs in needs-human and the running jobs that look stuck, one .kpi box per job, in the overview's
+     gutter. The two counts in the head are the round buttons of the drawer's screenshots; a pressed one shows only its
+     list. The job id is a button that opens the job's drawer, as its card does. */
+  #attention { padding: 20px 32px 0; }
+  #attention .col-head { padding-left: 0; }
+  #attention .count { margin-bottom: 0; }
+  #attention .s-rounds button[aria-pressed="true"] { background: var(--card-hover); color: var(--text); border-color: var(--muted); }
+  #attention .a-list { display: grid; gap: 8px; margin-bottom: 12px; }
+  #attention .a-list:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  #attention .a-list[hidden] { display: none; }
+  #attention .a-k { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+  #attention .kpi .feature { margin: 4px 0; overflow-wrap: anywhere; }
+  #attention button.num { background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+  #attention button.num:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  #attention .approve { margin-top: 4px; flex-wrap: wrap; }
+  #attention .approve .num { color: var(--text); overflow-wrap: anywhere; }
+  @media (max-width: 640px) { #attention { padding-left: 16px; padding-right: 16px; } }
+
   /* Executive briefing: a full-page view shown by the body's briefing class, in place of everything else. It is a light
      panel on screen too, so the owner sees what will print. Its own variables override the dark theme inside it. */
   #briefing { display: none; }
@@ -679,6 +697,16 @@
 <section id="overview" aria-labelledby="overview-title">
   <div class="col-head"><h2 id="overview-title">Executive Overview Panel</h2><span class="who">all jobs on the board, from the job files</span></div>
   <div class="kpis" id="overview-tiles"></div>
+</section>
+<section id="attention" aria-labelledby="attention-title">
+  <div class="col-head"><h2 id="attention-title">Waiting on you</h2><span class="who">read from the job files · changes no job</span>
+    <span class="count s-rounds">
+      <button type="button" data-attention="waiting" aria-controls="attention-waiting" aria-pressed="false">Waiting on you: <span id="attention-n">-</span></button>
+      <button type="button" data-attention="stuck" aria-controls="attention-stuck" aria-pressed="false">Stuck: <span id="attention-m">-</span></button>
+    </span>
+  </div>
+  <div class="a-list" id="attention-waiting" tabindex="-1" aria-label="Jobs waiting on you"></div>
+  <div class="a-list" id="attention-stuck" tabindex="-1" aria-label="Running jobs that look stuck"></div>
 </section>
 <main class="board" id="board"></main>
 <section class="graph" aria-labelledby="graph-title">
@@ -1611,6 +1639,167 @@ async function copyApprove(el) {
   }
 }
 
+// ---- Waiting on you -----------------------------------------------------------
+
+// The panel reads job.json (already loaded), decision.md, build.md and events.jsonl (already loaded), and writes
+// nothing. The merge step's reason is told in the factory session and is in no job file, so an APPROVE decision on a
+// needs-human job says to look there; a reason is never guessed.
+const STUCK_MS = 30 * 60 * 1000
+const NO_REASON = 'No reason recorded in the job files.'
+const MERGE_STOPPED = 'Approved, but the merge step stopped. The reason was given in the factory session; check there.'
+const COPY_BEFORE = 'Copies the command. Paste it into a factory session; this page cannot merge or run it.'
+let attentionShow = null // 'waiting' or 'stuck' after a count is pressed: only that list shows; null shows both
+
+// The first paragraph of lines, skipping blank and heading lines before it, on one line; null when there is none.
+function firstParagraph(lines) {
+  const para = []
+  for (const l of lines) {
+    if (!l.trim() || l.startsWith('#')) {
+      if (para.length) break
+      continue
+    }
+    para.push(l.trim())
+  }
+  return para.length ? para.join(' ') : null
+}
+
+// A BLOCKED build.md's reason: its ## Blocked section, else its ## Why section, else its first paragraph after line 1.
+function blockedOf(text) {
+  const lines = text.replace(/\r/g, '').split('\n')
+  return firstParagraph(sectionOf(lines, 'Blocked') || sectionOf(lines, 'Why') || lines.slice(1))
+}
+
+// Why one needs-human job waits, as { reason, kind }, kind one of escalate, blocked, merge or none, plus the banner
+// lines for files that could not be read. The folder index is read first so a missing file is not fetched. A file that
+// is listed but cannot be read gives the fallback reason: without it the order below cannot be followed.
+async function waitingOf(job) {
+  const base = `jobs/${job.id}/`
+  const none = (problems) => ({ job, reason: NO_REASON, kind: 'none', problems })
+  let names
+  try {
+    names = await listLinks(base)
+  } catch (err) {
+    return none([`Could not read the folder of job ${job.id} (${err.message}), so Waiting on you shows no reason for it`])
+  }
+  const problems = []
+  const read = async (f) => {
+    if (!names.includes(f)) return null
+    try {
+      return await fetchText(base + f)
+    } catch (err) {
+      problems.push(`Could not read ${f} of job ${job.id} (${err.message}), so Waiting on you shows no reason for it`)
+      return null
+    }
+  }
+  const [decision, build] = await Promise.all([read('decision.md'), read('build.md')])
+  if (problems.length) return none(problems)
+  const first = (text) => (text === null ? null : text.replace(/\r/g, '').split('\n')[0].trim())
+  const why = first(decision) === 'ESCALATE' ? whyOf(decision) : null
+  if (why !== null) return { job, reason: why, kind: 'escalate', problems }
+  const blocked = /^STATUS:\s*BLOCKED$/.test(first(build) ?? '') ? blockedOf(build) : null
+  if (blocked !== null) return { job, reason: blocked, kind: 'blocked', problems }
+  if (first(decision) === 'APPROVE') return { job, reason: MERGE_STOPPED, kind: 'merge', problems }
+  return none(problems)
+}
+
+// Whole minutes since a running job's newest valid event, when that is STUCK_MS or more; otherwise null. A job that is
+// not running, or has no valid event line, is never stuck: an absent log is no evidence of a stall.
+function stuckMinutes(stage, list, now) {
+  if (!LIVE.has(stage) || !list || !list.length) return null
+  const age = now - Math.max(...list.map((e) => e.ms))
+  return age >= STUCK_MS ? Math.floor(age / 60000) : null
+}
+
+// One command line: the copy button, the exact command, and when it fits.
+function commandLine(cmd, when) {
+  return `<div class="approve"><button type="button" data-copy="${esc(cmd)}">Copy</button>` +
+    `<span class="num">${esc(cmd)}</span><span class="approve-msg">${esc(when)}</span></div>`
+}
+
+function waitingRow(w) {
+  const id = w.job.id
+  const approveWhen = w.kind === 'merge'
+    ? 'Fits this job: the approver said APPROVE and only the merge is left. Run it once the cause the session gave is fixed.'
+    : 'Run it only after you have fixed the cause above.'
+  return `
+    <div class="kpi" data-waiting="${esc(id)}">
+      <div class="card-top">
+        <button type="button" class="num" data-job="${esc(id)}" title="Open this job">${esc(id)}</button>
+        <span class="num">${esc(titleOf(w.job))}</span>
+        <span class="flag">who acts: you</span>
+      </div>
+      <p class="feature">Why it waits: ${esc(w.reason)}</p>
+      ${commandLine(`/factory approve ${id}`, approveWhen)}
+      ${commandLine(`/factory rework ${id} <note>`, 'Sends it back to the builder. Replace <note> with what to change.')}
+      ${commandLine(`/factory cancel ${id} <why>`, 'Drops the job. Replace <why> with the reason.')}
+      <span class="approve-msg" role="status">${COPY_BEFORE}</span>
+    </div>`
+}
+
+function stuckRow(s) {
+  const id = s.job.id
+  return `
+    <div class="kpi" data-stuck="${esc(id)}">
+      <div class="card-top">
+        <button type="button" class="num" data-job="${esc(id)}" title="Open this job">${esc(id)}</button>
+        <span class="num">stage ${esc(s.job.stage)}</span>
+        <span class="flag">who acts: you</span>
+      </div>
+      <p class="feature">No new event for ${s.minutes} min. Check the factory session first: the agent may still be working.</p>
+      ${commandLine(`/factory cancel ${id} <why>`, 'Only if the session shows the job has stopped. Replace <why> with the reason.')}
+      <span class="approve-msg" role="status">${COPY_BEFORE}</span>
+    </div>`
+}
+
+// The two lists, from the same arrays the counts are taken from, so a count always equals its rows.
+function attentionHtml(waiting, stuck) {
+  return {
+    waiting: '<div class="a-k">Waiting on you</div>' +
+      (waiting.map(waitingRow).join('') || '<div class="empty">Nothing is waiting on you.</div>'),
+    stuck: '<div class="a-k">Stuck</div>' +
+      (stuck.map(stuckRow).join('') || '<div class="empty">No running job looks stuck.</div>'),
+    n: waiting.length,
+    m: stuck.length,
+  }
+}
+
+let lastAttention = null // the lists last drawn, as attentionHtml() gave them
+
+function drawAttention(a) {
+  if (JSON.stringify(a) !== JSON.stringify(lastAttention)) {
+    lastAttention = a
+    $('attention-waiting').innerHTML = a.waiting
+    $('attention-stuck').innerHTML = a.stuck
+    $('attention-n').textContent = a.n
+    $('attention-m').textContent = a.m
+  }
+  for (const which of ['waiting', 'stuck']) {
+    $(`attention-${which}`).hidden = attentionShow !== null && attentionShow !== which
+    document.querySelector(`[data-attention="${which}"]`).setAttribute('aria-pressed', String(attentionShow === which))
+  }
+}
+
+// A count shows only its own list and moves focus to it; pressing it again shows both lists. Before the first poll
+// has drawn the lists there is nothing to show.
+function showAttention(which) {
+  if (lastAttention === null) return
+  attentionShow = attentionShow === which ? null : which
+  drawAttention(lastAttention)
+  const list = $(`attention-${attentionShow || which}`)
+  list.scrollIntoView({ block: 'nearest' })
+  list.focus()
+}
+
+async function copyCommand(el) {
+  const msg = el.closest('[data-waiting], [data-stuck]').querySelector('.approve-msg[role="status"]')
+  try {
+    await navigator.clipboard.writeText(el.dataset.copy)
+    msg.textContent = `Copied ${el.dataset.copy}. Paste it into a factory session.`
+  } catch {
+    msg.textContent = 'Could not copy. Select the command line above and copy it by hand.'
+  }
+}
+
 // ---- Backlog ----------------------------------------------------------------
 
 let backlogIdeas = [] // { file, title, size, rank } for each readable idea file in backlog/, ordered by rank
@@ -1870,6 +2059,12 @@ async function render() {
   const pasts = await Promise.all(jobs.map(pastRounds))
   const reworks = await Promise.all(jobs.map(reworkOf))
   const shots = await Promise.all(jobs.map((job) => shotsOf(job, shotsFresh(job))))
+  // Newest first, as in the lanes. The stuck age is taken against the time of this render.
+  const waiting = await Promise.all(jobs.filter((job) => job.stage === 'needs-human').reverse().map(waitingOf))
+  waiting.forEach((w) => problems.push(...w.problems))
+  const now = Date.now()
+  const stuck = jobs.map((job) => ({ job, minutes: stuckMinutes(job.stage, events.get(job.id)?.list, now) }))
+    .filter((s) => s.minutes !== null).reverse()
   jobs.forEach((job, i) => {
     const cost = costOf(job)
     problems.push(...jobProblems(job, cost))
@@ -1923,6 +2118,7 @@ async function render() {
     $('cost-table').innerHTML = costTableHtml
     $('banner').innerHTML = banner
   }
+  drawAttention(attentionHtml(waiting, stuck))
   if (document.body.dataset.view === 'git') ensureInspJob()
   renderStream()
 }
@@ -2010,8 +2206,8 @@ async function loadEngagement() {
 // ---- Live event stream ------------------------------------------------------
 
 // The orchestrator appends one JSON line to jobs/<id>/events.jsonl at each transition it makes (see the factory
-// skill's Events section). The stream is for visibility only: no figure, stage or card on the page reads it, and it
-// shows only lines that were really logged. A job with no file, every job from before the log existed, shows nothing.
+// skill's Events section). The log is for visibility only: the stream and the Waiting on you panel's stuck flag read it,
+// no figure, stage or card does, and the stream shows only lines that were really logged. A job with no file, every job from before the log existed, shows nothing.
 const EVENT_ROWS = 100 // newest events shown, across all jobs
 const EVENT_TAIL_BYTES = 64 * 1024 // only the end of each file is parsed, so a long log cannot grow without bound here
 const VERDICTS = ['PASS', 'CHANGES', 'READY', 'BLOCKED', 'APPROVE', 'ESCALATE']
@@ -2306,6 +2502,10 @@ function closeDrawer() {
 document.addEventListener('click', (e) => {
   const approveEl = e.target.closest('[data-approve]')
   if (approveEl) return copyApprove(approveEl)
+  const copyEl = e.target.closest('[data-copy]')
+  if (copyEl) return copyCommand(copyEl)
+  const attentionEl = e.target.closest('[data-attention]')
+  if (attentionEl) return showAttention(attentionEl.dataset.attention)
   const gitEl = e.target.closest('[data-git-job]')
   if (gitEl) return selectInspJob(gitEl.dataset.gitJob)
   const stageEl = e.target.closest('[data-insp-stage]')
@@ -2856,7 +3056,7 @@ function markdown(src) {
 // here is hidden. Only the hash picks the view, never a poll, so a redraw cannot change it. An element that is absent
 // is skipped, so a page without one of them still switches. The header bar is on every view, so it is not named here.
 const VIEWS = {
-  board: ['#strip', '#overview', '#board'],
+  board: ['#strip', '#overview', '#attention', '#board'],
   git: ['#strip', '.graph'],
   cost: ['#strip', '#cost'],
   stream: ['#stream'],
